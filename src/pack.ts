@@ -22,7 +22,8 @@ export interface OCIManifest {
 }
 
 export const MANIFEST_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
-export const CONFIG_MEDIA_TYPE = "application/vnd.oci.image.config.v1+json"
+export const INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json"
+export const EMPTY_CONFIG_MEDIA_TYPE = "application/vnd.oci.empty.v1+json"
 export const LAYER_MEDIA_TYPE = "application/vnd.oci.image.layer.v1.tar+gzip"
 
 export function buildManifest(
@@ -123,6 +124,7 @@ export async function writeOciLayout(
 
   const index = {
     schemaVersion: 2,
+    mediaType: INDEX_MEDIA_TYPE,
     manifests: [
       {
         mediaType: manifestDescriptor.mediaType,
@@ -256,7 +258,7 @@ export async function runPack(options: PackOptions): Promise<void> {
 
   const layerDescriptor = await createLayerTarball(options.dir, blobsDir)
 
-  const configDescriptor = await writeBlob(Buffer.from("{}"), blobsDir, CONFIG_MEDIA_TYPE)
+  const configDescriptor = await writeBlob(Buffer.from("{}"), blobsDir, EMPTY_CONFIG_MEDIA_TYPE)
 
   const manifest = buildManifest(configDescriptor, layerDescriptor, options.annotations)
   const manifestBuffer = Buffer.from(JSON.stringify(manifest))
