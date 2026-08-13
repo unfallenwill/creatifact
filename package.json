@@ -27,7 +27,8 @@
     "prepublishOnly": "npm run qa"
   },
   "dependencies": {
-    "@clack/prompts": "^0.9.1"
+    "@clack/prompts": "^0.9.1",
+    "tar-stream": "^3.2.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.8",
