@@ -141,3 +141,96 @@ export async function writeOciLayout(
 
   await writeFile(join(outputDir, "index.json"), JSON.stringify(index, null, 2))
 }
+
+export interface PackOptions {
+  name: string
+  dir: string
+  output: string
+  annotations: Record<string, string>
+}
+
+export interface ParsedArgs {
+  dir?: string
+  name?: string
+  output?: string
+  file?: string
+  annotations: Record<string, string>
+}
+
+type DescriptionFile = Partial<PackOptions>
+
+const SIMPLE_OPTS: Record<string, "dir" | "name" | "output" | "file"> = {
+  "--dir": "dir",
+  "--name": "name",
+  "--output": "output",
+  "-o": "output",
+  "--file": "file",
+  "-f": "file",
+}
+
+export function parsePackArgs(args: string[]): ParsedArgs {
+  const result: ParsedArgs = { annotations: {} }
+  let i = 0
+
+  while (i < args.length) {
+    const arg = args[i]
+    if (arg === undefined) {
+      i++
+      continue
+    }
+
+    const optKey = SIMPLE_OPTS[arg]
+    if (optKey !== undefined) {
+      const v = args[++i]
+      if (v !== undefined) {
+        result[optKey] = v
+      }
+      i++
+    } else if (arg === "--annotation") {
+      i = consumeAnnotation(args, i, result)
+    } else {
+      i++
+    }
+  }
+  return result
+}
+
+function consumeAnnotation(args: string[], i: number, result: ParsedArgs): number {
+  const v = args[i + 1]
+  if (v !== undefined) {
+    const eq = v.indexOf("=")
+    if (eq > 0) {
+      result.annotations[v.slice(0, eq)] = v.slice(eq + 1)
+    }
+  }
+  return i + 2
+}
+
+export async function loadDescriptionFile(filePath: string): Promise<DescriptionFile> {
+  try {
+    const content = await readFile(filePath, "utf8")
+    return JSON.parse(content) as DescriptionFile
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      return {}
+    }
+    throw new Error(`Failed to parse description file ${filePath}: ${(e as Error).message}`)
+  }
+}
+
+export function mergeOptions(cli: ParsedArgs, desc: DescriptionFile): PackOptions {
+  const name = cli.name ?? desc.name
+  if (name === undefined) {
+    throw new Error("--name is required (provide via --name or in description file)")
+  }
+  if (!name.includes(":")) {
+    throw new Error(`--name must be in format 'repo:tag', got: ${name}`)
+  }
+
+  return {
+    name,
+    dir: cli.dir ?? desc.dir ?? "./plugins",
+    output: cli.output ?? "./oci-layout",
+    annotations: { ...desc.annotations, ...cli.annotations },
+  }
+}

@@ -143,3 +143,100 @@ test("writeOciLayout writes oci-layout and index.json", async () => {
 
   await rm(tmp, { recursive: true })
 })
+
+import { mergeOptions, parsePackArgs, loadDescriptionFile, type PackOptions } from "../pack"
+
+test("parsePackArgs parses all flags", () => {
+  const result = parsePackArgs([
+    "--dir", "./plugins",
+    "--name", "org/plugins:1.0.0",
+    "-o", "./out",
+    "-f", "./openmm-pack.json",
+    "--annotation", "org.openmm.platform=CUDA",
+    "--annotation", "org.openmm.arch=arm64",
+  ])
+
+  expect(result.dir).toBe("./plugins")
+  expect(result.name).toBe("org/plugins:1.0.0")
+  expect(result.output).toBe("./out")
+  expect(result.file).toBe("./openmm-pack.json")
+  expect(result.annotations).toEqual({
+    "org.openmm.platform": "CUDA",
+    "org.openmm.arch": "arm64",
+  })
+})
+
+test("parsePackArgs handles missing values gracefully", () => {
+  const result = parsePackArgs(["--dir"])
+  expect(result.dir).toBeUndefined()
+})
+
+test("parsePackArgs ignores unknown flags", () => {
+  const result = parsePackArgs(["--unknown", "--dir", "x"])
+  expect(result.dir).toBe("x")
+})
+
+test("mergeOptions CLI overrides description file", () => {
+  const cli = parsePackArgs(["--name", "cli:1.0", "--dir", "./cli-dir"])
+  const desc = { name: "desc:2.0", dir: "./desc-dir", annotations: { a: "1" } }
+
+  const opts = mergeOptions(cli, desc)
+
+  expect(opts.name).toBe("cli:1.0")
+  expect(opts.dir).toBe("./cli-dir")
+})
+
+test("mergeOptions annotations merge with CLI priority", () => {
+  const cli = parsePackArgs(["--name", "x:1", "--annotation", "a=cli"])
+  const desc = { annotations: { a: "desc", b: "desc" } }
+
+  const opts = mergeOptions(cli, desc)
+
+  expect(opts.annotations).toEqual({ a: "cli", b: "desc" })
+})
+
+test("mergeOptions applies defaults", () => {
+  const cli = parsePackArgs(["--name", "x:1"])
+
+  const opts = mergeOptions(cli, {})
+
+  expect(opts.dir).toBe("./plugins")
+  expect(opts.output).toBe("./oci-layout")
+  expect(opts.annotations).toEqual({})
+})
+
+test("mergeOptions throws when name missing", () => {
+  expect(() => mergeOptions({}, {})).toThrow("--name")
+})
+
+test("mergeOptions throws when name has no colon", () => {
+  expect(() => mergeOptions({ annotations: {} }, { name: "invalid" })).toThrow("repo:tag")
+})
+
+test("loadDescriptionFile returns empty when file missing", async () => {
+  const result = await loadDescriptionFile("./nonexistent-file.json")
+  expect(result).toEqual({})
+})
+
+test("loadDescriptionFile parses valid JSON", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "oci-test-"))
+  const filePath = join(tmp, "desc.json")
+  await writeFile(filePath, JSON.stringify({ name: "test:1.0", dir: "./data" }))
+
+  const result = await loadDescriptionFile(filePath)
+
+  expect(result.name).toBe("test:1.0")
+  expect(result.dir).toBe("./data")
+
+  await rm(tmp, { recursive: true })
+})
+
+test("loadDescriptionFile throws on invalid JSON", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "oci-test-"))
+  const filePath = join(tmp, "desc.json")
+  await writeFile(filePath, "{ invalid json }")
+
+  await expect(loadDescriptionFile(filePath)).rejects.toThrow()
+
+  await rm(tmp, { recursive: true })
+})
