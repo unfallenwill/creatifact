@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { createWriteStream } from "node:fs"
+import { createWriteStream, existsSync } from "node:fs"
 import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { Writable } from "node:stream"
@@ -233,4 +233,60 @@ export function mergeOptions(cli: ParsedArgs, desc: DescriptionFile): PackOption
     output: cli.output ?? "./oci-layout",
     annotations: { ...desc.annotations, ...cli.annotations },
   }
+}
+
+export async function runPack(options: PackOptions): Promise<void> {
+  if (!existsSync(options.dir)) {
+    throw new Error(`--dir '${options.dir}' does not exist`)
+  }
+
+  const dirStat = await stat(options.dir)
+  if (!dirStat.isDirectory()) {
+    throw new Error(`--dir '${options.dir}' is not a directory`)
+  }
+
+  const dirEntries = await readdir(options.dir)
+  if (dirEntries.length === 0) {
+    throw new Error(`--dir '${options.dir}' is empty`)
+  }
+
+  if (existsSync(options.output)) {
+    const outputEntries = await readdir(options.output)
+    if (outputEntries.length > 0) {
+      throw new Error(`--output '${options.output}' already exists and is not empty`)
+    }
+  }
+
+  const blobsDir = join(options.output, "blobs", "sha256")
+  await mkdir(blobsDir, { recursive: true })
+
+  const layerDescriptor = await createLayerTarball(options.dir, blobsDir)
+
+  const configDescriptor = await writeBlob(
+    Buffer.from("{}"),
+    blobsDir,
+    CONFIG_MEDIA_TYPE,
+  )
+
+  const manifest = buildManifest(configDescriptor, layerDescriptor, options.annotations)
+  const manifestBuffer = Buffer.from(JSON.stringify(manifest))
+  const manifestDescriptor = await writeBlob(
+    manifestBuffer,
+    blobsDir,
+    MANIFEST_MEDIA_TYPE,
+  )
+
+  await writeOciLayout(options.output, manifestDescriptor, options.name)
+
+  console.log(`Packed ${options.name} → ${options.output}`)
+}
+
+export async function runPackFromArgs(args: string[]): Promise<void> {
+  const cliOpts = parsePackArgs(args)
+
+  const descFilePath = cliOpts.file ?? "./openmm-pack.json"
+  const desc = await loadDescriptionFile(descFilePath)
+
+  const options = mergeOptions(cliOpts, desc)
+  await runPack(options)
 }
