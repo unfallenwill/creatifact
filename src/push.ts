@@ -149,3 +149,85 @@ export async function pushManifest(
     throw new Error(`Failed to push manifest: ${resp.status} ${body}`)
   }
 }
+
+export interface ParsedAuthHeader {
+  scheme: string
+  params: Record<string, string>
+}
+
+export function parseAuthHeader(header: string): ParsedAuthHeader {
+  const spaceIdx = header.indexOf(" ")
+  const scheme = spaceIdx > 0 ? header.slice(0, spaceIdx) : header
+  const rest = spaceIdx > 0 ? header.slice(spaceIdx + 1) : ""
+
+  const params: Record<string, string> = {}
+  const regex = /(\w+)="([^"]*)"/g
+  let match = regex.exec(rest)
+  while (match !== null) {
+    const key = match[1]
+    const value = match[2]
+    if (key !== undefined && value !== undefined) {
+      params[key] = value
+    }
+    match = regex.exec(rest)
+  }
+
+  return { scheme, params }
+}
+
+export interface Credentials {
+  username: string
+  password: string
+}
+
+export async function resolveAuth(
+  wwwAuthenticate: string,
+  credentials: Credentials | undefined,
+): Promise<Record<string, string>> {
+  const parsed = parseAuthHeader(wwwAuthenticate)
+
+  if (parsed.scheme === "Basic") {
+    if (credentials) {
+      const encoded = Buffer.from(`${credentials.username}:${credentials.password}`).toString("base64")
+      return { Authorization: `Basic ${encoded}` }
+    }
+    return {}
+  }
+
+  if (parsed.scheme === "Bearer") {
+    const realm = parsed.params.realm
+    if (!realm) {
+      throw new Error("Bearer auth missing realm in WWW-Authenticate header")
+    }
+
+    const params = new URLSearchParams()
+    if (parsed.params.service) {
+      params.set("service", parsed.params.service)
+    }
+    if (parsed.params.scope) {
+      params.set("scope", parsed.params.scope)
+    }
+
+    const tokenUrl = `${realm}?${params.toString()}`
+    const headers: Record<string, string> = {}
+    if (credentials) {
+      const encoded = Buffer.from(`${credentials.username}:${credentials.password}`).toString("base64")
+      headers.Authorization = `Basic ${encoded}`
+    }
+
+    const resp = await fetch(tokenUrl, { method: "GET", headers })
+    if (!resp.ok) {
+      throw new Error(`Failed to fetch token: ${resp.status}`)
+    }
+
+    const body = (await resp.json()) as { token?: string; access_token?: string }
+    const token = body.token ?? body.access_token
+    if (!token) {
+      throw new Error("Token endpoint did not return a token")
+    }
+
+    return { Authorization: `Bearer ${token}` }
+  }
+
+  return {}
+}
