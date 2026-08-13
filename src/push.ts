@@ -127,3 +127,25 @@ export async function uploadBlob(
     throw new Error(`Failed to upload blob ${digest}: ${putResp.status} ${body}`)
   }
 }
+
+export async function pushManifest(
+  baseUrl: string,
+  repository: string,
+  tag: string,
+  data: Buffer,
+  mediaType: string,
+  headers: Record<string, string>,
+): Promise<void> {
+  const resp = await fetch(`${baseUrl}/v2/${repository}/manifests/${tag}`, {
+    method: "PUT",
+    headers: {
+      ...headers,
+      "Content-Type": mediaType,
+    },
+    body: data,
+  })
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "")
+    throw new Error(`Failed to push manifest: ${resp.status} ${body}`)
+  }
+}

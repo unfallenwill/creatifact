@@ -162,3 +162,57 @@ test("uploadBlob throws when POST fails", async () => {
 
   vi.unstubAllGlobals()
 })
+
+import { pushManifest } from "../push"
+
+test("pushManifest PUTs manifest to correct URL", async () => {
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 201 })
+  vi.stubGlobal("fetch", fetchMock)
+
+  const manifestData = Buffer.from('{"schemaVersion":2}')
+  await pushManifest(
+    "http://localhost:5000",
+    "myrepo",
+    "1.0",
+    manifestData,
+    "application/vnd.oci.image.manifest.v1+json",
+    {},
+  )
+
+  expect(fetchMock).toHaveBeenCalledWith(
+    "http://localhost:5000/v2/myrepo/manifests/1.0",
+    {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/vnd.oci.image.manifest.v1+json",
+      },
+      body: manifestData,
+    },
+  )
+
+  vi.unstubAllGlobals()
+})
+
+test("pushManifest throws on failure", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: () => Promise.resolve("bad request"),
+    }),
+  )
+
+  await expect(
+    pushManifest(
+      "http://localhost:5000",
+      "myrepo",
+      "1.0",
+      Buffer.from("{}"),
+      "application/vnd.oci.image.manifest.v1+json",
+      {},
+    ),
+  ).rejects.toThrow("400")
+
+  vi.unstubAllGlobals()
+})
