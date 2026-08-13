@@ -116,3 +116,28 @@ export async function createLayerTarball(
     size: totalSize,
   }
 }
+
+export async function writeOciLayout(
+  outputDir: string,
+  manifestDescriptor: OCIDescriptor,
+  ref: string,
+): Promise<void> {
+  await writeFile(
+    join(outputDir, "oci-layout"),
+    JSON.stringify({ imageLayoutVersion: "1.0.0" }),
+  )
+
+  const index = {
+    schemaVersion: 2,
+    manifests: [
+      {
+        mediaType: manifestDescriptor.mediaType,
+        digest: manifestDescriptor.digest,
+        size: manifestDescriptor.size,
+        annotations: { "org.opencontainers.image.ref.name": ref },
+      },
+    ],
+  }
+
+  await writeFile(join(outputDir, "index.json"), JSON.stringify(index, null, 2))
+}
