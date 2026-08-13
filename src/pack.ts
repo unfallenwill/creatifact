@@ -26,6 +26,18 @@ export const INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json"
 export const EMPTY_CONFIG_MEDIA_TYPE = "application/vnd.oci.empty.v1+json"
 export const LAYER_MEDIA_TYPE = "application/vnd.oci.image.layer.v1.tar+gzip"
 
+export const PACK_USAGE = `Usage: openmmcli pack [options]
+
+Pack a local directory into an OCI image layout directory.
+
+Options:
+  --dir <path>          Directory to pack (default: ./plugins)
+  --name <repo:tag>     Image reference, e.g. org/plugins:1.0.0
+  -f, --file <path>     Description file path (default: ./openmm-pack.json)
+  -o, --output <dir>    Output OCI layout directory (default: ./oci-layout)
+  --annotation k=v      Add manifest annotation (repeatable)
+  -h, --help            Show this help message`
+
 export function buildManifest(
   config: OCIDescriptor,
   layer: OCIDescriptor,
