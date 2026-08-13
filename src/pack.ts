@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { createWriteStream, existsSync } from "node:fs"
-import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises"
+import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { Writable } from "node:stream"
 import { pipeline } from "node:stream/promises"
@@ -73,10 +73,7 @@ async function readDirEntries(dir: string, base = ""): Promise<string[]> {
   return files
 }
 
-export async function createLayerTarball(
-  dir: string,
-  blobsDir: string,
-): Promise<OCIDescriptor> {
+export async function createLayerTarball(dir: string, blobsDir: string): Promise<OCIDescriptor> {
   const tempPath = join(blobsDir, ".tmp-layer")
   const fileStream = createWriteStream(tempPath)
   const hash = createHash("sha256")
@@ -122,10 +119,7 @@ export async function writeOciLayout(
   manifestDescriptor: OCIDescriptor,
   ref: string,
 ): Promise<void> {
-  await writeFile(
-    join(outputDir, "oci-layout"),
-    JSON.stringify({ imageLayoutVersion: "1.0.0" }),
-  )
+  await writeFile(join(outputDir, "oci-layout"), JSON.stringify({ imageLayoutVersion: "1.0.0" }))
 
   const index = {
     schemaVersion: 2,
@@ -262,19 +256,11 @@ export async function runPack(options: PackOptions): Promise<void> {
 
   const layerDescriptor = await createLayerTarball(options.dir, blobsDir)
 
-  const configDescriptor = await writeBlob(
-    Buffer.from("{}"),
-    blobsDir,
-    CONFIG_MEDIA_TYPE,
-  )
+  const configDescriptor = await writeBlob(Buffer.from("{}"), blobsDir, CONFIG_MEDIA_TYPE)
 
   const manifest = buildManifest(configDescriptor, layerDescriptor, options.annotations)
   const manifestBuffer = Buffer.from(JSON.stringify(manifest))
-  const manifestDescriptor = await writeBlob(
-    manifestBuffer,
-    blobsDir,
-    MANIFEST_MEDIA_TYPE,
-  )
+  const manifestDescriptor = await writeBlob(manifestBuffer, blobsDir, MANIFEST_MEDIA_TYPE)
 
   await writeOciLayout(options.output, manifestDescriptor, options.name)
 

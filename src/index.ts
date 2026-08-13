@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs"
 import { cancel, group, log, select, text } from "@clack/prompts"
 
 import { add } from "./add"
+import { runPackFromArgs } from "./pack"
 import { subtract } from "./subtract"
 
 if (process.argv.includes("--version")) {
@@ -13,6 +14,18 @@ if (process.argv.includes("--version")) {
   }
   console.log(pkg.version)
   process.exit(0)
+}
+
+const subcommand = process.argv[2]
+
+if (subcommand === "pack") {
+  try {
+    await runPackFromArgs(process.argv.slice(3))
+    process.exit(0)
+  } catch (e) {
+    console.error(`error: ${(e as Error).message}`)
+    process.exit(1)
+  }
 }
 
 // Docs: https://github.com/bombshell-dev/clack/tree/main/packages/prompts
