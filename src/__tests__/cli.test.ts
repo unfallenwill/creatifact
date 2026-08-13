@@ -133,3 +133,31 @@ describe("cli pack — integration", () => {
     }
   })
 })
+
+describe("cli push — integration", () => {
+  it("push --help prints usage and exits 0", () => {
+    const { stdout, code } = run(["push", "--help"])
+    expect(code).toBe(0)
+    expect(stdout).toContain("Usage: openmmcli push")
+    expect(stdout).toContain("--layout")
+    expect(stdout).toContain("--plain-http")
+  })
+
+  it("push -h prints usage and exits 0", () => {
+    const { stdout, code } = run(["push", "-h"])
+    expect(code).toBe(0)
+    expect(stdout).toContain("Usage: openmmcli push")
+  })
+
+  it("push fails when layout directory does not exist", () => {
+    const { stderr, code } = run([
+      "push",
+      "localhost:5000/test:1.0",
+      "--layout",
+      "/nonexistent/path/xyz",
+      "--plain-http",
+    ])
+    expect(code).toBe(1)
+    expect(stderr).toContain("error:")
+  })
+})
