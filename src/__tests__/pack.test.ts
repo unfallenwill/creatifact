@@ -276,7 +276,7 @@ test("runPack produces complete OCI layout from directory", async () => {
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"))
 
   expect(manifest.schemaVersion).toBe(2)
-  expect(manifest.config.mediaType).toBe("application/vnd.oci.image.config.v1+json")
+  expect(manifest.config.mediaType).toBe("application/vnd.oci.empty.v1+json")
   expect(manifest.layers).toHaveLength(1)
   expect(manifest.layers[0].mediaType).toBe("application/vnd.oci.image.layer.v1.tar+gzip")
   expect(manifest.annotations).toEqual({ "org.openmm.platform": "CUDA" })
