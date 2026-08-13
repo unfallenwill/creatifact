@@ -231,3 +231,158 @@ export async function resolveAuth(
 
   return {}
 }
+
+export interface PushOptions {
+  ref: string | undefined
+  layout: string
+  plainHttp: boolean
+  username: string | undefined
+  password: string | undefined
+  passwordStdin: boolean
+}
+
+export function parsePushArgs(args: string[]): {
+  ref: string | undefined
+  layout: string | undefined
+  username: string | undefined
+  password: string | undefined
+  passwordStdin: boolean
+  plainHttp: boolean
+} {
+  let ref: string | undefined
+  let layout: string | undefined
+  let username: string | undefined
+  let password: string | undefined
+  let passwordStdin = false
+  let plainHttp = false
+
+  let i = 0
+  while (i < args.length) {
+    const arg = args[i]
+    if (arg === undefined) {
+      i++
+      continue
+    }
+    if (arg === "--layout") {
+      layout = args[++i]
+      i++
+    } else if (arg === "--username") {
+      username = args[++i]
+      i++
+    } else if (arg === "--password") {
+      password = args[++i]
+      i++
+    } else if (arg === "--password-stdin") {
+      passwordStdin = true
+      i++
+    } else if (arg === "--plain-http") {
+      plainHttp = true
+      i++
+    } else if (!arg.startsWith("-")) {
+      ref = arg
+      i++
+    } else {
+      i++
+    }
+  }
+
+  return { ref, layout, username, password, passwordStdin, plainHttp }
+}
+
+export const PUSH_USAGE = `Usage: openmmcli push <registry>/<repo>:<tag> [options]
+
+Push an OCI image layout to a registry.
+
+Arguments:
+  <registry>/<repo>:<tag>  Destination reference (e.g. localhost:5000/myrepo:1.0)
+                           If omitted, uses ref from index.json
+
+Options:
+  --layout <dir>        OCI layout directory (default: ./oci-layout)
+  --username <user>     Registry username
+  --password <pw>       Registry password (prefer --password-stdin)
+  --password-stdin      Read password from stdin
+  --plain-http          Use HTTP instead of HTTPS (for local registries)
+  -h, --help            Show this help message`
+
+export async function runPush(options: PushOptions): Promise<void> {
+  const layoutDir = options.layout || "./oci-layout"
+
+  const layout = await readOciLayout(layoutDir)
+
+  const effectiveRef = options.ref ?? layout.refName
+  if (!effectiveRef) {
+    throw new Error("No ref specified and no ref found in index.json")
+  }
+
+  const parsed = parseRef(effectiveRef)
+  const scheme = options.plainHttp ? "http" : "https"
+  const baseUrl = `${scheme}://${parsed.registry}`
+
+  let authHeaders: Record<string, string> = {}
+  const credentials =
+    options.username && options.password
+      ? { username: options.username, password: options.password }
+      : undefined
+
+  // Probe for auth requirement
+  const probeResp = await fetch(`${baseUrl}/v2/`, {
+    method: "GET",
+    headers: authHeaders,
+  })
+  if (probeResp.status === 401) {
+    const wwwAuth = probeResp.headers.get("www-authenticate")
+    if (wwwAuth) {
+      authHeaders = await resolveAuth(wwwAuth, credentials)
+    }
+  }
+
+  // Upload blobs (config + layers)
+  const allDescriptors = [layout.manifest.config, ...layout.manifest.layers]
+  for (const desc of allDescriptors) {
+    const exists = await checkBlobExists(baseUrl, parsed.repository, desc.digest, authHeaders)
+    if (!exists) {
+      const blobData = layout.blobs.get(desc.digest)
+      if (!blobData) {
+        throw new Error(`Blob ${desc.digest} not found in layout`)
+      }
+      await uploadBlob(baseUrl, parsed.repository, desc.digest, blobData, authHeaders)
+      console.log(`Uploaded ${desc.digest} (${desc.size} bytes)`)
+    }
+  }
+
+  // Push manifest
+  await pushManifest(
+    baseUrl,
+    parsed.repository,
+    parsed.tag,
+    layout.manifestBuffer,
+    layout.manifestDescriptor.mediaType,
+    authHeaders,
+  )
+  console.log(`Pushed ${effectiveRef}`)
+}
+
+export async function runPushFromArgs(args: string[]): Promise<void> {
+  const parsed = parsePushArgs(args)
+
+  let password = parsed.password
+  if (parsed.passwordStdin) {
+    const chunks: Buffer[] = []
+    await new Promise<void>((resolve) => {
+      process.stdin.on("data", (chunk) => chunks.push(chunk))
+      process.stdin.on("end", () => resolve())
+      process.stdin.on("error", () => resolve())
+    })
+    password = Buffer.concat(chunks).toString("utf8").trim() || undefined
+  }
+
+  await runPush({
+    ref: parsed.ref,
+    layout: parsed.layout ?? "./oci-layout",
+    plainHttp: parsed.plainHttp,
+    username: parsed.username,
+    password,
+    passwordStdin: parsed.passwordStdin,
+  })
+}
