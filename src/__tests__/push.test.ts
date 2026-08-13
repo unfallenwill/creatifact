@@ -324,3 +324,171 @@ test("resolveAuth throws when token fetch fails", async () => {
 
   vi.unstubAllGlobals()
 })
+
+import { runPush, parsePushArgs } from "../push"
+import { existsSync } from "node:fs"
+
+test("parsePushArgs parses positional ref and flags", () => {
+  const result = parsePushArgs([
+    "localhost:5000/myrepo:1.0",
+    "--layout", "./my-layout",
+    "--username", "user",
+    "--password", "secret",
+    "--plain-http",
+  ])
+  expect(result.ref).toBe("localhost:5000/myrepo:1.0")
+  expect(result.layout).toBe("./my-layout")
+  expect(result.username).toBe("user")
+  expect(result.password).toBe("secret")
+  expect(result.plainHttp).toBe(true)
+})
+
+test("parsePushArgs applies defaults", () => {
+  const result = parsePushArgs(["test:1.0"])
+  expect(result.ref).toBe("test:1.0")
+  expect(result.layout).toBeUndefined()
+  expect(result.plainHttp).toBe(false)
+})
+
+test("parsePushArgs handles no positional arg", () => {
+  const result = parsePushArgs(["--layout", "./x"])
+  expect(result.ref).toBeUndefined()
+})
+
+async function setupTestLayout(tmp: string): Promise<void> {
+  const blobsDir = join(tmp, "blobs", "sha256")
+  await mkdir(blobsDir, { recursive: true })
+
+  const configData = "{}"
+  const configDigest = `sha256:${sha256hex(configData)}`
+  const layerData = "layer-content"
+  const layerDigest = `sha256:${sha256hex(layerData)}`
+  const manifestObj = {
+    schemaVersion: 2,
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    config: { mediaType: "application/vnd.oci.empty.v1+json", digest: configDigest, size: 2 },
+    layers: [{ mediaType: "application/vnd.oci.image.layer.v1.tar+gzip", digest: layerDigest, size: 13 }],
+  }
+  const manifestData = JSON.stringify(manifestObj)
+  const manifestDigest = `sha256:${sha256hex(manifestData)}`
+
+  await writeFile(join(blobsDir, configDigest.slice(7)), configData)
+  await writeFile(join(blobsDir, layerDigest.slice(7)), layerData)
+  await writeFile(join(blobsDir, manifestDigest.slice(7)), manifestData)
+
+  const index = {
+    schemaVersion: 2,
+    mediaType: "application/vnd.oci.image.index.v1+json",
+    manifests: [
+      {
+        mediaType: "application/vnd.oci.image.manifest.v1+json",
+        digest: manifestDigest,
+        size: manifestData.length,
+        annotations: { "org.opencontainers.image.ref.name": "localhost:5000/test:1.0" },
+      },
+    ],
+  }
+  await writeFile(join(tmp, "index.json"), JSON.stringify(index))
+  await writeFile(join(tmp, "oci-layout"), JSON.stringify({ imageLayoutVersion: "1.0.0" }))
+}
+
+test("runPush uploads blobs and manifest to registry", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "push-test-"))
+  await setupTestLayout(tmp)
+
+  const fetchMock = vi.fn()
+  // Interleaved: probe → HEAD config → POST config → PUT config → HEAD layer → POST layer → PUT layer → PUT manifest
+  fetchMock
+    .mockResolvedValueOnce({ ok: true, status: 200, headers: { get: () => null } }) // probe
+    .mockResolvedValueOnce({ ok: false, status: 404 }) // HEAD config → not exists
+    .mockResolvedValueOnce({
+      ok: true, status: 202,
+      headers: { get: () => "http://localhost:5000/v2/test/blobs/uploads/uuid-1" },
+    }) // POST config upload
+    .mockResolvedValueOnce({ ok: true, status: 201 }) // PUT config upload
+    .mockResolvedValueOnce({ ok: false, status: 404 }) // HEAD layer → not exists
+    .mockResolvedValueOnce({
+      ok: true, status: 202,
+      headers: { get: () => "http://localhost:5000/v2/test/blobs/uploads/uuid-2" },
+    }) // POST layer upload
+    .mockResolvedValueOnce({ ok: true, status: 201 }) // PUT layer upload
+    .mockResolvedValueOnce({ ok: true, status: 201 }) // PUT manifest
+
+  vi.stubGlobal("fetch", fetchMock)
+
+  try {
+    await runPush({
+      ref: "localhost:5000/test:1.0",
+      layout: tmp,
+      plainHttp: true,
+    })
+
+    // Should have made 8 requests (probe + 2 HEAD + 4 upload + manifest)
+    expect(fetchMock).toHaveBeenCalledTimes(8)
+
+    // Second call should be HEAD config blob
+    const headCall = fetchMock.mock.calls[1]
+    expect(headCall?.[0]).toContain("/v2/test/blobs/sha256:")
+    expect(headCall?.[1]).toEqual(expect.objectContaining({ method: "HEAD" }))
+
+    // Last call should be PUT manifest
+    const lastCall = fetchMock.mock.calls[7]
+    expect(lastCall?.[0]).toContain("/v2/test/manifests/1.0")
+    expect(lastCall?.[1]).toEqual(expect.objectContaining({ method: "PUT" }))
+  } finally {
+    vi.unstubAllGlobals()
+    await rm(tmp, { recursive: true })
+  }
+})
+
+test("runPush skips existing blobs", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "push-test-"))
+  await setupTestLayout(tmp)
+
+  const fetchMock = vi.fn()
+  // probe + both blobs exist → skip upload, only push manifest
+  fetchMock
+    .mockResolvedValueOnce({ ok: true, status: 200, headers: { get: () => null } }) // probe
+    .mockResolvedValueOnce({ ok: true, status: 200 }) // HEAD config exists
+    .mockResolvedValueOnce({ ok: true, status: 200 }) // HEAD layer exists
+    .mockResolvedValueOnce({ ok: true, status: 201 }) // PUT manifest
+
+  vi.stubGlobal("fetch", fetchMock)
+
+  try {
+    await runPush({ ref: "localhost:5000/test:1.0", layout: tmp, plainHttp: true })
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  } finally {
+    vi.unstubAllGlobals()
+    await rm(tmp, { recursive: true })
+  }
+})
+
+test("runPush uses ref from index.json when ref not specified", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "push-test-"))
+  await setupTestLayout(tmp)
+
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce({ ok: true, status: 200, headers: { get: () => null } }) // probe
+    .mockResolvedValueOnce({ ok: true, status: 200 })
+    .mockResolvedValueOnce({ ok: true, status: 200 })
+    .mockResolvedValueOnce({ ok: true, status: 201 })
+
+  vi.stubGlobal("fetch", fetchMock)
+
+  try {
+    await runPush({ ref: undefined, layout: tmp, plainHttp: true })
+    // Manifest URL should use ref from index.json: localhost:5000/test:1.0
+    const manifestCall = fetchMock.mock.calls[3]
+    expect(manifestCall?.[0]).toContain("/v2/test/manifests/1.0")
+  } finally {
+    vi.unstubAllGlobals()
+    await rm(tmp, { recursive: true })
+  }
+})
+
+test("runPush throws when layout directory missing", async () => {
+  await expect(
+    runPush({ ref: "localhost:5000/test:1.0", layout: "/nonexistent/path", plainHttp: true }),
+  ).rejects.toThrow()
+})
