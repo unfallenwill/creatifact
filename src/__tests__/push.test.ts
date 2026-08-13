@@ -216,3 +216,111 @@ test("pushManifest throws on failure", async () => {
 
   vi.unstubAllGlobals()
 })
+
+import { parseAuthHeader, resolveAuth } from "../push"
+
+test("parseAuthHeader extracts Bearer realm, service, scope", () => {
+  const header = `Bearer realm="https://auth.example.com/token",service="registry.example.com",scope="repository:myrepo:push,pull"`
+  const result = parseAuthHeader(header)
+  expect(result).toEqual({
+    scheme: "Bearer",
+    params: {
+      realm: "https://auth.example.com/token",
+      service: "registry.example.com",
+      scope: "repository:myrepo:push,pull",
+    },
+  })
+})
+
+test("parseAuthHeader handles Basic scheme", () => {
+  const result = parseAuthHeader('Basic realm="Registry"')
+  expect(result.scheme).toBe("Basic")
+  expect(result.params).toEqual({ realm: "Registry" })
+})
+
+test("resolveAuth fetches Bearer token from realm", async () => {
+  const fetchMock = vi.fn().mockResolvedValue({
+    ok: true,
+    json: () => Promise.resolve({ token: "jwt-token-123" }),
+  })
+  vi.stubGlobal("fetch", fetchMock)
+
+  const headers = await resolveAuth(
+    `Bearer realm="https://auth.example.com/token",service="registry.example.com",scope="repository:myrepo:push"`,
+    undefined,
+  )
+
+  expect(headers).toEqual({ Authorization: "Bearer jwt-token-123" })
+  expect(fetchMock).toHaveBeenCalledWith(
+    expect.stringContaining("https://auth.example.com/token"),
+    expect.objectContaining({ method: "GET" }),
+  )
+  const calledUrl = fetchMock.mock.calls[0]?.[0] as string
+  expect(calledUrl).toContain("service=registry.example.com")
+  expect(calledUrl).toContain("scope=repository%3Amyrepo%3Apush")
+
+  vi.unstubAllGlobals()
+})
+
+test("resolveAuth sends Basic auth to token endpoint when credentials provided", async () => {
+  const fetchMock = vi.fn().mockResolvedValue({
+    ok: true,
+    json: () => Promise.resolve({ token: "jwt-token-456" }),
+  })
+  vi.stubGlobal("fetch", fetchMock)
+
+  await resolveAuth(
+    `Bearer realm="https://auth.example.com/token",service="registry.example.com",scope="repository:myrepo:push"`,
+    { username: "user", password: "pass" },
+  )
+
+  expect(fetchMock).toHaveBeenCalledWith(
+    expect.any(String),
+    expect.objectContaining({
+      headers: expect.objectContaining({
+        Authorization: expect.stringContaining("Basic "),
+      }),
+    }),
+  )
+
+  vi.unstubAllGlobals()
+})
+
+test("resolveAuth uses access_token fallback", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ access_token: "fallback-token" }),
+    }),
+  )
+
+  const headers = await resolveAuth(
+    `Bearer realm="https://auth.example.com/token",service="r",scope="repository:x:push"`,
+    undefined,
+  )
+  expect(headers).toEqual({ Authorization: "Bearer fallback-token" })
+
+  vi.unstubAllGlobals()
+})
+
+test("resolveAuth returns Basic header for Basic scheme", async () => {
+  const headers = await resolveAuth('Basic realm="Registry"', {
+    username: "user",
+    password: "pass",
+  })
+  expect(headers.Authorization).toMatch(/^Basic /)
+})
+
+test("resolveAuth throws when token fetch fails", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 401 }))
+
+  await expect(
+    resolveAuth(
+      `Bearer realm="https://auth.example.com/token",service="r",scope="repository:x:push"`,
+      undefined,
+    ),
+  ).rejects.toThrow("token")
+
+  vi.unstubAllGlobals()
+})
