@@ -120,7 +120,7 @@ export async function uploadBlob(
       "Content-Type": "application/octet-stream",
       "Content-Length": data.length.toString(),
     },
-    body: data,
+    body: new Uint8Array(data),
   })
   if (!putResp.ok) {
     const body = await putResp.text().catch(() => "")
@@ -142,7 +142,7 @@ export async function pushManifest(
       ...headers,
       "Content-Type": mediaType,
     },
-    body: data,
+    body: new Uint8Array(data),
   })
   if (!resp.ok) {
     const body = await resp.text().catch(() => "")
@@ -180,52 +180,59 @@ export interface Credentials {
   password: string
 }
 
+function encodeBasicAuth(creds: Credentials): string {
+  const encoded = Buffer.from(`${creds.username}:${creds.password}`).toString("base64")
+  return `Basic ${encoded}`
+}
+
+async function fetchBearerToken(
+  parsed: ParsedAuthHeader,
+  credentials: Credentials | undefined,
+): Promise<string> {
+  const realm = parsed.params["realm"]
+  if (!realm) {
+    throw new Error("Bearer auth missing realm in WWW-Authenticate header")
+  }
+
+  const params = new URLSearchParams()
+  if (parsed.params["service"]) {
+    params.set("service", parsed.params["service"])
+  }
+  if (parsed.params["scope"]) {
+    params.set("scope", parsed.params["scope"])
+  }
+
+  const tokenUrl = `${realm}?${params.toString()}`
+  const headers: Record<string, string> = {}
+  if (credentials) {
+    headers["Authorization"] = encodeBasicAuth(credentials)
+  }
+
+  const resp = await fetch(tokenUrl, { method: "GET", headers })
+  if (!resp.ok) {
+    throw new Error(`Failed to fetch token: ${resp.status}`)
+  }
+
+  const body = (await resp.json()) as { token?: string; access_token?: string }
+  const token = body.token ?? body.access_token
+  if (!token) {
+    throw new Error("Token endpoint did not return a token")
+  }
+  return token
+}
+
 export async function resolveAuth(
   wwwAuthenticate: string,
   credentials: Credentials | undefined,
 ): Promise<Record<string, string>> {
   const parsed = parseAuthHeader(wwwAuthenticate)
 
-  if (parsed.scheme === "Basic") {
-    if (credentials) {
-      const encoded = Buffer.from(`${credentials.username}:${credentials.password}`).toString("base64")
-      return { Authorization: `Basic ${encoded}` }
-    }
-    return {}
+  if (parsed.scheme === "Basic" && credentials) {
+    return { Authorization: encodeBasicAuth(credentials) }
   }
 
   if (parsed.scheme === "Bearer") {
-    const realm = parsed.params.realm
-    if (!realm) {
-      throw new Error("Bearer auth missing realm in WWW-Authenticate header")
-    }
-
-    const params = new URLSearchParams()
-    if (parsed.params.service) {
-      params.set("service", parsed.params.service)
-    }
-    if (parsed.params.scope) {
-      params.set("scope", parsed.params.scope)
-    }
-
-    const tokenUrl = `${realm}?${params.toString()}`
-    const headers: Record<string, string> = {}
-    if (credentials) {
-      const encoded = Buffer.from(`${credentials.username}:${credentials.password}`).toString("base64")
-      headers.Authorization = `Basic ${encoded}`
-    }
-
-    const resp = await fetch(tokenUrl, { method: "GET", headers })
-    if (!resp.ok) {
-      throw new Error(`Failed to fetch token: ${resp.status}`)
-    }
-
-    const body = (await resp.json()) as { token?: string; access_token?: string }
-    const token = body.token ?? body.access_token
-    if (!token) {
-      throw new Error("Token endpoint did not return a token")
-    }
-
+    const token = await fetchBearerToken(parsed, credentials)
     return { Authorization: `Bearer ${token}` }
   }
 
@@ -241,6 +248,17 @@ export interface PushOptions {
   passwordStdin: boolean
 }
 
+const VALUE_OPTS: Record<string, "layout" | "username" | "password"> = {
+  "--layout": "layout",
+  "--username": "username",
+  "--password": "password",
+}
+
+const BOOL_FLAGS: Record<string, "passwordStdin" | "plainHttp"> = {
+  "--password-stdin": "passwordStdin",
+  "--plain-http": "plainHttp",
+}
+
 export function parsePushArgs(args: string[]): {
   ref: string | undefined
   layout: string | undefined
@@ -249,12 +267,21 @@ export function parsePushArgs(args: string[]): {
   passwordStdin: boolean
   plainHttp: boolean
 } {
-  let ref: string | undefined
-  let layout: string | undefined
-  let username: string | undefined
-  let password: string | undefined
-  let passwordStdin = false
-  let plainHttp = false
+  const result: {
+    ref: string | undefined
+    layout: string | undefined
+    username: string | undefined
+    password: string | undefined
+    passwordStdin: boolean
+    plainHttp: boolean
+  } = {
+    ref: undefined,
+    layout: undefined,
+    username: undefined,
+    password: undefined,
+    passwordStdin: false,
+    plainHttp: false,
+  }
 
   let i = 0
   while (i < args.length) {
@@ -263,30 +290,29 @@ export function parsePushArgs(args: string[]): {
       i++
       continue
     }
-    if (arg === "--layout") {
-      layout = args[++i]
+
+    const valueKey = VALUE_OPTS[arg]
+    if (valueKey !== undefined) {
+      const v = args[++i]
+      if (v !== undefined) result[valueKey] = v
       i++
-    } else if (arg === "--username") {
-      username = args[++i]
-      i++
-    } else if (arg === "--password") {
-      password = args[++i]
-      i++
-    } else if (arg === "--password-stdin") {
-      passwordStdin = true
-      i++
-    } else if (arg === "--plain-http") {
-      plainHttp = true
-      i++
-    } else if (!arg.startsWith("-")) {
-      ref = arg
-      i++
-    } else {
-      i++
+      continue
     }
+
+    const boolKey = BOOL_FLAGS[arg]
+    if (boolKey !== undefined) {
+      result[boolKey] = true
+      i++
+      continue
+    }
+
+    if (!arg.startsWith("-")) {
+      result.ref = arg
+    }
+    i++
   }
 
-  return { ref, layout, username, password, passwordStdin, plainHttp }
+  return result
 }
 
 export const PUSH_USAGE = `Usage: openmmcli push <registry>/<repo>:<tag> [options]
