@@ -67,6 +67,20 @@ describe("cli pack — integration", () => {
     }
   })
 
+  it("pack --help prints usage and exits 0", () => {
+    const { stdout, code } = run(["pack", "--help"])
+    expect(code).toBe(0)
+    expect(stdout).toContain("Usage: openmmcli pack")
+    expect(stdout).toContain("--name")
+    expect(stdout).toContain("--annotation")
+  })
+
+  it("pack -h prints usage and exits 0", () => {
+    const { stdout, code } = run(["pack", "-h"])
+    expect(code).toBe(0)
+    expect(stdout).toContain("Usage: openmmcli pack")
+  })
+
   it("pack fails when dir does not exist", () => {
     const { stderr, code } = run(["pack", "--dir", "/nonexistent/path/xyz", "--name", "test:1.0"])
     expect(code).toBe(1)
