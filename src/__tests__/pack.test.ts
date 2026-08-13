@@ -39,13 +39,13 @@ test("buildManifest omits annotations when empty", () => {
   expect(manifest.annotations).toBeUndefined()
 })
 
-import { createLayerTarball, writeBlob } from "../pack"
-import { gunzipSync } from "node:zlib"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Readable } from "node:stream"
+import { gunzipSync } from "node:zlib"
 import { extract } from "tar-stream"
+import { createLayerTarball, writeBlob } from "../pack"
 
 test("writeBlob writes content and returns correct descriptor", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "oci-test-"))
@@ -112,8 +112,8 @@ async function extractTarEntries(gzipData: Buffer): Promise<Record<string, Buffe
   })
 }
 
-import { writeOciLayout } from "../pack"
 import { existsSync } from "node:fs"
+import { writeOciLayout } from "../pack"
 
 test("writeOciLayout writes oci-layout and index.json", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "oci-test-"))
@@ -144,16 +144,22 @@ test("writeOciLayout writes oci-layout and index.json", async () => {
   await rm(tmp, { recursive: true })
 })
 
-import { mergeOptions, parsePackArgs, loadDescriptionFile, type PackOptions } from "../pack"
+import { loadDescriptionFile, mergeOptions, parsePackArgs } from "../pack"
 
 test("parsePackArgs parses all flags", () => {
   const result = parsePackArgs([
-    "--dir", "./plugins",
-    "--name", "org/plugins:1.0.0",
-    "-o", "./out",
-    "-f", "./openmm-pack.json",
-    "--annotation", "org.openmm.platform=CUDA",
-    "--annotation", "org.openmm.arch=arm64",
+    "--dir",
+    "./plugins",
+    "--name",
+    "org/plugins:1.0.0",
+    "-o",
+    "./out",
+    "-f",
+    "./openmm-pack.json",
+    "--annotation",
+    "org.openmm.platform=CUDA",
+    "--annotation",
+    "org.openmm.arch=arm64",
   ])
 
   expect(result.dir).toBe("./plugins")
@@ -206,7 +212,7 @@ test("mergeOptions applies defaults", () => {
 })
 
 test("mergeOptions throws when name missing", () => {
-  expect(() => mergeOptions({}, {})).toThrow("--name")
+  expect(() => mergeOptions({ annotations: {} }, {})).toThrow("--name")
 })
 
 test("mergeOptions throws when name has no colon", () => {
@@ -275,12 +281,7 @@ test("runPack produces complete OCI layout from directory", async () => {
   expect(manifest.layers[0].mediaType).toBe("application/vnd.oci.image.layer.v1.tar+gzip")
   expect(manifest.annotations).toEqual({ "org.openmm.platform": "CUDA" })
 
-  const configPath = join(
-    outputDir,
-    "blobs",
-    "sha256",
-    manifest.config.digest.slice(7),
-  )
+  const configPath = join(outputDir, "blobs", "sha256", manifest.config.digest.slice(7))
   const config = JSON.parse(await readFile(configPath, "utf8"))
   expect(config).toEqual({})
 
