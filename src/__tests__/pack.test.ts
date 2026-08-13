@@ -240,3 +240,86 @@ test("loadDescriptionFile throws on invalid JSON", async () => {
 
   await rm(tmp, { recursive: true })
 })
+
+import { runPack } from "../pack"
+
+test("runPack produces complete OCI layout from directory", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "oci-test-"))
+  const srcDir = join(tmp, "src")
+  const outputDir = join(tmp, "output")
+  await mkdir(srcDir, { recursive: true })
+  await writeFile(join(srcDir, "plugin.txt"), "plugin data")
+
+  await runPack({
+    name: "org/plugins:1.0.0",
+    dir: srcDir,
+    output: outputDir,
+    annotations: { "org.openmm.platform": "CUDA" },
+  })
+
+  expect(existsSync(join(outputDir, "oci-layout"))).toBe(true)
+  expect(existsSync(join(outputDir, "index.json"))).toBe(true)
+
+  const index = JSON.parse(await readFile(join(outputDir, "index.json"), "utf8"))
+  expect(index.manifests[0].annotations["org.opencontainers.image.ref.name"]).toBe(
+    "org/plugins:1.0.0",
+  )
+
+  const manifestDigest = index.manifests[0].digest
+  const manifestPath = join(outputDir, "blobs", "sha256", manifestDigest.slice(7))
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"))
+
+  expect(manifest.schemaVersion).toBe(2)
+  expect(manifest.config.mediaType).toBe("application/vnd.oci.image.config.v1+json")
+  expect(manifest.layers).toHaveLength(1)
+  expect(manifest.layers[0].mediaType).toBe("application/vnd.oci.image.layer.v1.tar+gzip")
+  expect(manifest.annotations).toEqual({ "org.openmm.platform": "CUDA" })
+
+  const configPath = join(
+    outputDir,
+    "blobs",
+    "sha256",
+    manifest.config.digest.slice(7),
+  )
+  const config = JSON.parse(await readFile(configPath, "utf8"))
+  expect(config).toEqual({})
+
+  await rm(tmp, { recursive: true })
+})
+
+test("runPack throws when dir does not exist", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "oci-test-"))
+  await expect(
+    runPack({ name: "x:1", dir: join(tmp, "nope"), output: join(tmp, "out"), annotations: {} }),
+  ).rejects.toThrow()
+
+  await rm(tmp, { recursive: true })
+})
+
+test("runPack throws when dir is empty", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "oci-test-"))
+  const emptyDir = join(tmp, "empty")
+  await mkdir(emptyDir, { recursive: true })
+
+  await expect(
+    runPack({ name: "x:1", dir: emptyDir, output: join(tmp, "out"), annotations: {} }),
+  ).rejects.toThrow("empty")
+
+  await rm(tmp, { recursive: true })
+})
+
+test("runPack throws when output dir exists and is not empty", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "oci-test-"))
+  const srcDir = join(tmp, "src")
+  const outputDir = join(tmp, "out")
+  await mkdir(srcDir, { recursive: true })
+  await mkdir(outputDir, { recursive: true })
+  await writeFile(join(srcDir, "file.txt"), "data")
+  await writeFile(join(outputDir, "existing.txt"), "blocking")
+
+  await expect(
+    runPack({ name: "x:1", dir: srcDir, output: outputDir, annotations: {} }),
+  ).rejects.toThrow("already exists")
+
+  await rm(tmp, { recursive: true })
+})
