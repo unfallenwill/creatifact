@@ -75,3 +75,55 @@ export async function readOciLayout(layoutDir: string): Promise<OciLayoutData> {
     blobs,
   }
 }
+
+export async function checkBlobExists(
+  baseUrl: string,
+  repository: string,
+  digest: string,
+  headers: Record<string, string>,
+): Promise<boolean> {
+  const resp = await fetch(`${baseUrl}/v2/${repository}/blobs/${digest}`, {
+    method: "HEAD",
+    headers,
+  })
+  return resp.ok
+}
+
+export async function uploadBlob(
+  baseUrl: string,
+  repository: string,
+  digest: string,
+  data: Buffer,
+  headers: Record<string, string>,
+): Promise<void> {
+  const postResp = await fetch(`${baseUrl}/v2/${repository}/blobs/uploads/`, {
+    method: "POST",
+    headers,
+  })
+  if (!postResp.ok) {
+    throw new Error(`Failed to initiate upload for ${digest}: ${postResp.status}`)
+  }
+
+  const location = postResp.headers.get("location")
+  if (!location) {
+    throw new Error("Registry did not return upload Location")
+  }
+
+  const uploadUrl = location.startsWith("http")
+    ? `${location}?digest=${digest}`
+    : `${baseUrl}${location}?digest=${digest}`
+
+  const putResp = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: {
+      ...headers,
+      "Content-Type": "application/octet-stream",
+      "Content-Length": data.length.toString(),
+    },
+    body: data,
+  })
+  if (!putResp.ok) {
+    const body = await putResp.text().catch(() => "")
+    throw new Error(`Failed to upload blob ${digest}: ${putResp.status} ${body}`)
+  }
+}

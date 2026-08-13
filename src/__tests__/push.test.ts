@@ -89,3 +89,76 @@ test("readOciLayout reads index.json and manifest blob", async () => {
 
   await rm(tmp, { recursive: true })
 })
+
+import { checkBlobExists, uploadBlob } from "../push"
+import { vi } from "vitest"
+
+test("checkBlobExists returns true when blob exists (200)", async () => {
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 })
+  vi.stubGlobal("fetch", fetchMock)
+
+  const exists = await checkBlobExists(
+    "http://localhost:5000",
+    "myrepo",
+    "sha256:abc",
+    {},
+  )
+  expect(exists).toBe(true)
+  expect(fetchMock).toHaveBeenCalledWith(
+    "http://localhost:5000/v2/myrepo/blobs/sha256:abc",
+    expect.objectContaining({ method: "HEAD" }),
+  )
+
+  vi.unstubAllGlobals()
+})
+
+test("checkBlobExists returns false when blob not found (404)", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404 }))
+
+  const exists = await checkBlobExists("http://localhost:5000", "myrepo", "sha256:abc", {})
+  expect(exists).toBe(false)
+
+  vi.unstubAllGlobals()
+})
+
+test("uploadBlob does POST then PUT with blob data", async () => {
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce({
+      ok: true,
+      status: 202,
+      headers: { get: () => "http://localhost:5000/v2/myrepo/blobs/uploads/uuid-123" },
+    })
+    .mockResolvedValueOnce({ ok: true, status: 201 })
+
+  vi.stubGlobal("fetch", fetchMock)
+
+  const blobData = Buffer.from("test content")
+  await uploadBlob("http://localhost:5000", "myrepo", "sha256:abc", blobData, {})
+
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(fetchMock).toHaveBeenNthCalledWith(
+    1,
+    "http://localhost:5000/v2/myrepo/blobs/uploads/",
+    expect.objectContaining({ method: "POST" }),
+  )
+  expect(fetchMock).toHaveBeenNthCalledWith(
+    2,
+    "http://localhost:5000/v2/myrepo/blobs/uploads/uuid-123?digest=sha256:abc",
+    expect.objectContaining({
+      method: "PUT",
+      body: blobData,
+    }),
+  )
+
+  vi.unstubAllGlobals()
+})
+
+test("uploadBlob throws when POST fails", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500 }))
+
+  await expect(
+    uploadBlob("http://localhost:5000", "myrepo", "sha256:abc", Buffer.from("x"), {}),
+  ).rejects.toThrow("initiate upload")
+
+  vi.unstubAllGlobals()
+})
