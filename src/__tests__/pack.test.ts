@@ -111,3 +111,35 @@ async function extractTarEntries(gzipData: Buffer): Promise<Record<string, Buffe
     Readable.from([unzipped]).pipe(ex)
   })
 }
+
+import { writeOciLayout } from "../pack"
+import { existsSync } from "node:fs"
+
+test("writeOciLayout writes oci-layout and index.json", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "oci-test-"))
+  const manifestDescriptor = {
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    digest: "sha256:abc123",
+    size: 42,
+  }
+
+  await writeOciLayout(tmp, manifestDescriptor, "org/plugins:1.0.0")
+
+  expect(existsSync(join(tmp, "oci-layout"))).toBe(true)
+  expect(existsSync(join(tmp, "index.json"))).toBe(true)
+
+  const layout = JSON.parse(await readFile(join(tmp, "oci-layout"), "utf8"))
+  expect(layout).toEqual({ imageLayoutVersion: "1.0.0" })
+
+  const index = JSON.parse(await readFile(join(tmp, "index.json"), "utf8"))
+  expect(index.schemaVersion).toBe(2)
+  expect(index.manifests).toHaveLength(1)
+  expect(index.manifests[0]).toEqual({
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    digest: "sha256:abc123",
+    size: 42,
+    annotations: { "org.opencontainers.image.ref.name": "org/plugins:1.0.0" },
+  })
+
+  await rm(tmp, { recursive: true })
+})
