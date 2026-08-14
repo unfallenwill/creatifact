@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs"
 import { cancel, group, log, select, text } from "@clack/prompts"
 
 import { add } from "./add"
-import { PACK_USAGE, runPackFromArgs } from "./pack"
+import { BUILD_USAGE, runBuildFromArgs } from "./build"
 import { PULL_USAGE, runPullFromArgs } from "./pull"
 import { PUSH_USAGE, runPushFromArgs } from "./push"
 import { subtract } from "./subtract"
@@ -20,14 +20,14 @@ if (process.argv.includes("--version")) {
 
 const subcommand = process.argv[2]
 
-if (subcommand === "pack") {
-  const packArgs = process.argv.slice(3)
-  if (packArgs.includes("--help") || packArgs.includes("-h")) {
-    console.log(PACK_USAGE)
+if (subcommand === "build") {
+  const buildArgs = process.argv.slice(3)
+  if (buildArgs.includes("--help") || buildArgs.includes("-h")) {
+    console.log(BUILD_USAGE)
     process.exit(0)
   }
   try {
-    await runPackFromArgs(packArgs)
+    await runBuildFromArgs(buildArgs)
     process.exit(0)
   } catch (e) {
     console.error(`error: ${(e as Error).message}`)

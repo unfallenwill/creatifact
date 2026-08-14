@@ -26,17 +26,17 @@ export const INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json"
 export const EMPTY_CONFIG_MEDIA_TYPE = "application/vnd.oci.empty.v1+json"
 export const LAYER_MEDIA_TYPE = "application/vnd.oci.image.layer.v1.tar+gzip"
 
-export const PACK_USAGE = `Usage: openmmcli pack [options]
+export const BUILD_USAGE = `Usage: openmmcli build [options]
 
-Pack a local directory into an OCI image layout directory.
+Build a local directory into an OCI image layout directory.
 
 Options:
-  --dir <path>          Directory to pack (default: ./plugins)
-  --name <repo:tag>     Image reference, e.g. org/plugins:1.0.0
-  -f, --file <path>     Description file path (default: ./openmm-pack.json)
-  -o, --output <dir>    Output OCI layout directory (default: ./oci-layout)
-  --annotation k=v      Add manifest annotation (repeatable)
-  -h, --help            Show this help message`
+  -t, --tag <repo:tag>   Image reference, e.g. org/plugins:1.0.0
+      --dir <path>       Directory to build (default: ./plugins)
+  -f, --file <path>      Description file path (default: ./openmm-build.json)
+  -o, --output <dir>     Output OCI layout directory (default: ./oci-layout)
+      --annotation k=v   Add manifest annotation (repeatable)
+  -h, --help             Show this help message`
 
 export function buildManifest(
   config: OCIDescriptor,
@@ -150,8 +150,8 @@ export async function writeOciLayout(
   await writeFile(join(outputDir, "index.json"), JSON.stringify(index, null, 2))
 }
 
-export interface PackOptions {
-  name: string
+export interface BuildOptions {
+  tag: string
   dir: string
   output: string
   annotations: Record<string, string>
@@ -159,24 +159,25 @@ export interface PackOptions {
 
 export interface ParsedArgs {
   dir?: string
-  name?: string
+  tag?: string
   output?: string
   file?: string
   annotations: Record<string, string>
 }
 
-type DescriptionFile = Partial<PackOptions>
+type DescriptionFile = Partial<BuildOptions>
 
-const SIMPLE_OPTS: Record<string, "dir" | "name" | "output" | "file"> = {
+const SIMPLE_OPTS: Record<string, "dir" | "tag" | "output" | "file"> = {
   "--dir": "dir",
-  "--name": "name",
+  "--tag": "tag",
+  "-t": "tag",
   "--output": "output",
   "-o": "output",
   "--file": "file",
   "-f": "file",
 }
 
-export function parsePackArgs(args: string[]): ParsedArgs {
+export function parseBuildArgs(args: string[]): ParsedArgs {
   const result: ParsedArgs = { annotations: {} }
   let i = 0
 
@@ -226,24 +227,24 @@ export async function loadDescriptionFile(filePath: string): Promise<Description
   }
 }
 
-export function mergeOptions(cli: ParsedArgs, desc: DescriptionFile): PackOptions {
-  const name = cli.name ?? desc.name
-  if (name === undefined) {
-    throw new Error("--name is required (provide via --name or in description file)")
+export function mergeOptions(cli: ParsedArgs, desc: DescriptionFile): BuildOptions {
+  const tag = cli.tag ?? desc.tag
+  if (tag === undefined) {
+    throw new Error("--tag is required (provide via -t/--tag or in description file)")
   }
-  if (!name.includes(":")) {
-    throw new Error(`--name must be in format 'repo:tag', got: ${name}`)
+  if (!tag.includes(":")) {
+    throw new Error(`--tag must be in format 'repo:tag', got: ${tag}`)
   }
 
   return {
-    name,
+    tag,
     dir: cli.dir ?? desc.dir ?? "./plugins",
     output: cli.output ?? "./oci-layout",
     annotations: { ...desc.annotations, ...cli.annotations },
   }
 }
 
-export async function runPack(options: PackOptions): Promise<void> {
+export async function runBuild(options: BuildOptions): Promise<void> {
   if (!existsSync(options.dir)) {
     throw new Error(`--dir '${options.dir}' does not exist`)
   }
@@ -276,17 +277,17 @@ export async function runPack(options: PackOptions): Promise<void> {
   const manifestBuffer = Buffer.from(JSON.stringify(manifest))
   const manifestDescriptor = await writeBlob(manifestBuffer, blobsDir, MANIFEST_MEDIA_TYPE)
 
-  await writeOciLayout(options.output, manifestDescriptor, options.name)
+  await writeOciLayout(options.output, manifestDescriptor, options.tag)
 
-  console.log(`Packed ${options.name} → ${options.output}`)
+  console.log(`Built ${options.tag} → ${options.output}`)
 }
 
-export async function runPackFromArgs(args: string[]): Promise<void> {
-  const cliOpts = parsePackArgs(args)
+export async function runBuildFromArgs(args: string[]): Promise<void> {
+  const cliOpts = parseBuildArgs(args)
 
-  const descFilePath = cliOpts.file ?? "./openmm-pack.json"
+  const descFilePath = cliOpts.file ?? "./openmm-build.json"
   const desc = await loadDescriptionFile(descFilePath)
 
   const options = mergeOptions(cliOpts, desc)
-  await runPack(options)
+  await runBuild(options)
 }

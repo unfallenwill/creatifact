@@ -38,8 +38,8 @@ describe("cli — integration", () => {
   })
 })
 
-describe("cli pack — integration", () => {
-  it("pack creates valid OCI layout", () => {
+describe("cli build — integration", () => {
+  it("build creates valid OCI layout", () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
     const fixtureDir = path.join(tmp, "fixture")
     const outputDir = path.join(tmp, "output")
@@ -48,17 +48,17 @@ describe("cli pack — integration", () => {
 
     try {
       const { stdout, code } = run([
-        "pack",
+        "build",
         "--dir",
         fixtureDir,
-        "--name",
+        "-t",
         "test/fixture:1.0.0",
         "-o",
         outputDir,
       ])
 
       expect(code).toBe(0)
-      expect(stdout).toContain("Packed")
+      expect(stdout).toContain("Built")
       expect(existsSync(path.join(outputDir, "oci-layout"))).toBe(true)
       expect(existsSync(path.join(outputDir, "index.json"))).toBe(true)
       expect(existsSync(path.join(outputDir, "blobs", "sha256"))).toBe(true)
@@ -67,59 +67,59 @@ describe("cli pack — integration", () => {
     }
   })
 
-  it("pack --help prints usage and exits 0", () => {
-    const { stdout, code } = run(["pack", "--help"])
+  it("build --help prints usage and exits 0", () => {
+    const { stdout, code } = run(["build", "--help"])
     expect(code).toBe(0)
-    expect(stdout).toContain("Usage: openmmcli pack")
-    expect(stdout).toContain("--name")
+    expect(stdout).toContain("Usage: openmmcli build")
+    expect(stdout).toContain("--tag")
     expect(stdout).toContain("--annotation")
   })
 
-  it("pack -h prints usage and exits 0", () => {
-    const { stdout, code } = run(["pack", "-h"])
+  it("build -h prints usage and exits 0", () => {
+    const { stdout, code } = run(["build", "-h"])
     expect(code).toBe(0)
-    expect(stdout).toContain("Usage: openmmcli pack")
+    expect(stdout).toContain("Usage: openmmcli build")
   })
 
-  it("pack fails when dir does not exist", () => {
-    const { stderr, code } = run(["pack", "--dir", "/nonexistent/path/xyz", "--name", "test:1.0"])
+  it("build fails when dir does not exist", () => {
+    const { stderr, code } = run(["build", "--dir", "/nonexistent/path/xyz", "-t", "test:1.0"])
     expect(code).toBe(1)
     expect(stderr).toContain("does not exist")
   })
 
-  it("pack fails when name is missing", () => {
+  it("build fails when tag is missing", () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
     const fixtureDir = path.join(tmp, "fixture")
     mkdirSync(fixtureDir, { recursive: true })
     writeFileSync(path.join(fixtureDir, "file.txt"), "data")
 
     try {
-      const { stderr, code } = run(["pack", "--dir", fixtureDir])
+      const { stderr, code } = run(["build", "--dir", fixtureDir])
       expect(code).toBe(1)
-      expect(stderr).toContain("--name")
+      expect(stderr).toContain("--tag")
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
   })
 
-  it("pack with description file", () => {
+  it("build with description file", () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
     const fixtureDir = path.join(tmp, "fixture")
     const outputDir = path.join(tmp, "output")
     mkdirSync(fixtureDir, { recursive: true })
     writeFileSync(path.join(fixtureDir, "plugin.txt"), "from desc file")
-    const descPath = path.join(tmp, "openmm-pack.json")
+    const descPath = path.join(tmp, "openmm-build.json")
     writeFileSync(
       descPath,
       JSON.stringify({
-        name: "desc/test:2.0.0",
+        tag: "desc/test:2.0.0",
         dir: fixtureDir,
         annotations: { "test.key": "test-value" },
       }),
     )
 
     try {
-      const { stdout, code } = run(["pack", "-f", descPath, "-o", outputDir])
+      const { stdout, code } = run(["build", "-f", descPath, "-o", outputDir])
 
       expect(code).toBe(0)
       expect(stdout).toContain("desc/test:2.0.0")
