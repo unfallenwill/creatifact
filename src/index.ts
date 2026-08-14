@@ -6,6 +6,7 @@ import { cancel, group, log, select, text } from "@clack/prompts"
 
 import { add } from "./add"
 import { PACK_USAGE, runPackFromArgs } from "./pack"
+import { PULL_USAGE, runPullFromArgs } from "./pull"
 import { PUSH_USAGE, runPushFromArgs } from "./push"
 import { subtract } from "./subtract"
 
@@ -42,6 +43,21 @@ if (subcommand === "push") {
   }
   try {
     await runPushFromArgs(pushArgs)
+    process.exit(0)
+  } catch (e) {
+    console.error(`error: ${(e as Error).message}`)
+    process.exit(1)
+  }
+}
+
+if (subcommand === "pull") {
+  const pullArgs = process.argv.slice(3)
+  if (pullArgs.includes("--help") || pullArgs.includes("-h")) {
+    console.log(PULL_USAGE)
+    process.exit(0)
+  }
+  try {
+    await runPullFromArgs(pullArgs)
     process.exit(0)
   } catch (e) {
     console.error(`error: ${(e as Error).message}`)
