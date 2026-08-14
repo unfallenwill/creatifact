@@ -7,14 +7,19 @@ test("fetchManifest GETs manifest from registry", async () => {
     ok: true,
     status: 200,
     headers: { get: () => "application/vnd.oci.image.manifest.v1+json" },
-    json: () => Promise.resolve(JSON.parse(manifestData)),
+    text: () => Promise.resolve(manifestData),
   })
   vi.stubGlobal("fetch", fetchMock)
 
-  const { manifest, mediaType } = await fetchManifest("http://localhost:5000", "myrepo", "1.0", {})
+  const {
+    manifest,
+    mediaType,
+    manifestData: rawData,
+  } = await fetchManifest("http://localhost:5000", "myrepo", "1.0", {})
 
   expect(mediaType).toBe("application/vnd.oci.image.manifest.v1+json")
   expect(manifest.schemaVersion).toBe(2)
+  expect(rawData).toBe(manifestData)
   expect(fetchMock).toHaveBeenCalledWith(
     "http://localhost:5000/v2/myrepo/manifests/1.0",
     expect.objectContaining({
@@ -143,10 +148,12 @@ test("parsePullArgs parses positional ref and flags", () => {
     "--output",
     "./my-layout",
     "--plain-http",
+    "--password-stdin",
   ])
   expect(result.ref).toBe("localhost:5000/myrepo:1.0")
   expect(result.output).toBe("./my-layout")
   expect(result.plainHttp).toBe(true)
+  expect(result.passwordStdin).toBe(true)
 })
 
 test("parsePullArgs applies defaults", () => {
@@ -154,6 +161,7 @@ test("parsePullArgs applies defaults", () => {
   expect(result.ref).toBe("test:1.0")
   expect(result.output).toBeUndefined()
   expect(result.plainHttp).toBe(false)
+  expect(result.passwordStdin).toBe(false)
 })
 
 test("runPull fetches manifest and blobs then saves layout", async () => {
@@ -171,6 +179,7 @@ test("runPull fetches manifest and blobs then saves layout", async () => {
       { mediaType: "application/vnd.oci.image.layer.v1.tar+gzip", digest: layerDigest, size: 11 },
     ],
   }
+  const manifestData = JSON.stringify(manifestObj)
 
   const fetchMock = vi
     .fn()
@@ -179,7 +188,7 @@ test("runPull fetches manifest and blobs then saves layout", async () => {
       ok: true,
       status: 200,
       headers: { get: () => "application/vnd.oci.image.manifest.v1+json" },
-      json: () => Promise.resolve(manifestObj),
+      text: () => Promise.resolve(manifestData),
     })
     .mockResolvedValueOnce({
       ok: true,
@@ -201,6 +210,7 @@ test("runPull fetches manifest and blobs then saves layout", async () => {
       plainHttp: true,
       username: undefined,
       password: undefined,
+      passwordStdin: false,
     })
 
     expect(existsSync(join(tmp, "oci-layout"))).toBe(true)
@@ -226,8 +236,55 @@ test("runPull throws when output dir exists and not empty", async () => {
       plainHttp: true,
       username: undefined,
       password: undefined,
+      passwordStdin: false,
     }),
   ).rejects.toThrow("already exists")
 
   await rm(tmp, { recursive: true })
+})
+
+test("runPull throws when blob digest mismatch", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "pull-test-"))
+  const configData = "{}"
+  const configDigest = `sha256:${sha256hex(configData)}`
+  const manifestObj = {
+    schemaVersion: 2 as const,
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    config: { mediaType: "application/vnd.oci.empty.v1+json", digest: configDigest, size: 2 },
+    layers: [],
+  }
+  const manifestData = JSON.stringify(manifestObj)
+
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValueOnce({ ok: true, status: 200, headers: { get: () => null } })
+    .mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/vnd.oci.image.manifest.v1+json" },
+      text: () => Promise.resolve(manifestData),
+    })
+    .mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      arrayBuffer: () => Promise.resolve(Buffer.from("tampered")),
+    })
+
+  vi.stubGlobal("fetch", fetchMock)
+
+  try {
+    await expect(
+      runPull({
+        ref: "localhost:5000/test:1.0",
+        output: tmp,
+        plainHttp: true,
+        username: undefined,
+        password: undefined,
+        passwordStdin: false,
+      }),
+    ).rejects.toThrow("digest mismatch")
+  } finally {
+    vi.unstubAllGlobals()
+    await rm(tmp, { recursive: true })
+  }
 })

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
 import { mkdir, readdir, writeFile } from "node:fs/promises"
 import { join } from "node:path"
-import type { OCIManifest } from "./pack"
+import type { OCIManifest } from "./build"
 import { overrideScope, parseRef, resolveAuth } from "./push"
 
 export async function fetchManifest(
@@ -10,7 +10,7 @@ export async function fetchManifest(
   repository: string,
   tag: string,
   headers: Record<string, string>,
-): Promise<{ manifest: OCIManifest; mediaType: string }> {
+): Promise<{ manifest: OCIManifest; mediaType: string; manifestData: string }> {
   const resp = await fetch(`${baseUrl}/v2/${repository}/manifests/${tag}`, {
     method: "GET",
     headers: {
@@ -24,8 +24,9 @@ export async function fetchManifest(
   }
 
   const mediaType = resp.headers.get("content-type") ?? "application/vnd.oci.image.manifest.v1+json"
-  const manifest = (await resp.json()) as OCIManifest
-  return { manifest, mediaType }
+  const manifestData = await resp.text()
+  const manifest = JSON.parse(manifestData) as OCIManifest
+  return { manifest, mediaType, manifestData }
 }
 
 export async function fetchBlob(
@@ -66,7 +67,7 @@ export async function saveLayout(
       {
         mediaType: manifest.mediaType,
         digest: manifestDigest,
-        size: manifestData.length,
+        size: Buffer.byteLength(manifestData),
         annotations: { "org.opencontainers.image.ref.name": ref },
       },
     ],
@@ -88,6 +89,7 @@ export interface PullOptions {
   plainHttp: boolean
   username: string | undefined
   password: string | undefined
+  passwordStdin: boolean
 }
 
 const PULL_STR_OPTS: Record<string, "output" | "username" | "password"> = {
@@ -97,8 +99,9 @@ const PULL_STR_OPTS: Record<string, "output" | "username" | "password"> = {
   "--password": "password",
 }
 
-const PULL_BOOL_FLAGS: Record<string, "plainHttp"> = {
+const PULL_BOOL_FLAGS: Record<string, "plainHttp" | "passwordStdin"> = {
   "--plain-http": "plainHttp",
+  "--password-stdin": "passwordStdin",
 }
 
 export function parsePullArgs(args: string[]): {
@@ -107,6 +110,7 @@ export function parsePullArgs(args: string[]): {
   username: string | undefined
   password: string | undefined
   plainHttp: boolean
+  passwordStdin: boolean
 } {
   const result = {
     ref: undefined as string | undefined,
@@ -114,6 +118,7 @@ export function parsePullArgs(args: string[]): {
     username: undefined as string | undefined,
     password: undefined as string | undefined,
     plainHttp: false,
+    passwordStdin: false,
   }
 
   let i = 0
@@ -158,7 +163,8 @@ Arguments:
 Options:
   -o, --output <dir>     Output OCI layout directory (default: ./oci-layout)
   --username <user>      Registry username
-  --password <pw>        Registry password
+  --password <pw>        Registry password (prefer --password-stdin)
+  --password-stdin       Read password from stdin
   --plain-http           Use HTTP instead of HTTPS (for local registries)
   -h, --help             Show this help message`
 
@@ -192,17 +198,25 @@ export async function runPull(options: PullOptions): Promise<void> {
     }
   }
 
-  const { manifest } = await fetchManifest(baseUrl, parsed.repository, parsed.tag, authHeaders)
+  const { manifest, manifestData } = await fetchManifest(
+    baseUrl,
+    parsed.repository,
+    parsed.tag,
+    authHeaders,
+  )
 
   const blobs = new Map<string, Buffer>()
   const allDescriptors = [manifest.config, ...manifest.layers]
   for (const desc of allDescriptors) {
     const blobData = await fetchBlob(baseUrl, parsed.repository, desc.digest, authHeaders)
+    const computed = `sha256:${createHash("sha256").update(blobData).digest("hex")}`
+    if (computed !== desc.digest) {
+      throw new Error(`Blob digest mismatch: expected ${desc.digest}, got ${computed}`)
+    }
     blobs.set(desc.digest, blobData)
     console.log(`Downloaded ${desc.digest} (${desc.size} bytes)`)
   }
 
-  const manifestData = JSON.stringify(manifest)
   const manifestHash = createHash("sha256").update(manifestData).digest("hex")
   const manifestDigest = `sha256:${manifestHash}`
 
@@ -217,11 +231,23 @@ export async function runPullFromArgs(args: string[]): Promise<void> {
     throw new Error("pull requires a <registry>/<repo>:<tag> argument")
   }
 
+  let password = parsed.password
+  if (parsed.passwordStdin) {
+    const chunks: Buffer[] = []
+    await new Promise<void>((resolve) => {
+      process.stdin.on("data", (chunk) => chunks.push(chunk))
+      process.stdin.on("end", () => resolve())
+      process.stdin.on("error", () => resolve())
+    })
+    password = Buffer.concat(chunks).toString("utf8").trim() || undefined
+  }
+
   await runPull({
     ref: parsed.ref,
     output: parsed.output ?? "./oci-layout",
     plainHttp: parsed.plainHttp,
     username: parsed.username,
-    password: parsed.password,
+    password,
+    passwordStdin: parsed.passwordStdin,
   })
 }
