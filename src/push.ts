@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
-import type { OCIDescriptor, OCIManifest } from "./pack"
+import type { OCIDescriptor, OCIManifest } from "./build"
 
 export interface ParsedRef {
   registry: string

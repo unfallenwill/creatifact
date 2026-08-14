@@ -1,4 +1,4 @@
-import { buildManifest, type OCIDescriptor } from "../pack"
+import { buildManifest, type OCIDescriptor } from "../build"
 
 test("buildManifest produces valid OCI manifest with annotations", () => {
   const config: OCIDescriptor = {
@@ -45,7 +45,7 @@ import { join } from "node:path"
 import { Readable } from "node:stream"
 import { gunzipSync } from "node:zlib"
 import { extract } from "tar-stream"
-import { createLayerTarball, writeBlob } from "../pack"
+import { createLayerTarball, writeBlob } from "../build"
 
 test("writeBlob writes content and returns correct descriptor", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "oci-test-"))
@@ -113,7 +113,7 @@ async function extractTarEntries(gzipData: Buffer): Promise<Record<string, Buffe
 }
 
 import { existsSync } from "node:fs"
-import { writeOciLayout } from "../pack"
+import { writeOciLayout } from "../build"
 
 test("writeOciLayout writes oci-layout and index.json", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "oci-test-"))
@@ -144,18 +144,18 @@ test("writeOciLayout writes oci-layout and index.json", async () => {
   await rm(tmp, { recursive: true })
 })
 
-import { loadDescriptionFile, mergeOptions, parsePackArgs } from "../pack"
+import { loadDescriptionFile, mergeOptions, parseBuildArgs } from "../build"
 
-test("parsePackArgs parses all flags", () => {
-  const result = parsePackArgs([
+test("parseBuildArgs parses all flags", () => {
+  const result = parseBuildArgs([
     "--dir",
     "./plugins",
-    "--name",
+    "-t",
     "org/plugins:1.0.0",
     "-o",
     "./out",
     "-f",
-    "./openmm-pack.json",
+    "./openmm-build.json",
     "--annotation",
     "org.openmm.platform=CUDA",
     "--annotation",
@@ -163,37 +163,37 @@ test("parsePackArgs parses all flags", () => {
   ])
 
   expect(result.dir).toBe("./plugins")
-  expect(result.name).toBe("org/plugins:1.0.0")
+  expect(result.tag).toBe("org/plugins:1.0.0")
   expect(result.output).toBe("./out")
-  expect(result.file).toBe("./openmm-pack.json")
+  expect(result.file).toBe("./openmm-build.json")
   expect(result.annotations).toEqual({
     "org.openmm.platform": "CUDA",
     "org.openmm.arch": "arm64",
   })
 })
 
-test("parsePackArgs handles missing values gracefully", () => {
-  const result = parsePackArgs(["--dir"])
+test("parseBuildArgs handles missing values gracefully", () => {
+  const result = parseBuildArgs(["--dir"])
   expect(result.dir).toBeUndefined()
 })
 
-test("parsePackArgs ignores unknown flags", () => {
-  const result = parsePackArgs(["--unknown", "--dir", "x"])
+test("parseBuildArgs ignores unknown flags", () => {
+  const result = parseBuildArgs(["--unknown", "--dir", "x"])
   expect(result.dir).toBe("x")
 })
 
 test("mergeOptions CLI overrides description file", () => {
-  const cli = parsePackArgs(["--name", "cli:1.0", "--dir", "./cli-dir"])
-  const desc = { name: "desc:2.0", dir: "./desc-dir", annotations: { a: "1" } }
+  const cli = parseBuildArgs(["--tag", "cli:1.0", "--dir", "./cli-dir"])
+  const desc = { tag: "desc:2.0", dir: "./desc-dir", annotations: { a: "1" } }
 
   const opts = mergeOptions(cli, desc)
 
-  expect(opts.name).toBe("cli:1.0")
+  expect(opts.tag).toBe("cli:1.0")
   expect(opts.dir).toBe("./cli-dir")
 })
 
 test("mergeOptions annotations merge with CLI priority", () => {
-  const cli = parsePackArgs(["--name", "x:1", "--annotation", "a=cli"])
+  const cli = parseBuildArgs(["--tag", "x:1", "--annotation", "a=cli"])
   const desc = { annotations: { a: "desc", b: "desc" } }
 
   const opts = mergeOptions(cli, desc)
@@ -202,7 +202,7 @@ test("mergeOptions annotations merge with CLI priority", () => {
 })
 
 test("mergeOptions applies defaults", () => {
-  const cli = parsePackArgs(["--name", "x:1"])
+  const cli = parseBuildArgs(["--tag", "x:1"])
 
   const opts = mergeOptions(cli, {})
 
@@ -211,12 +211,12 @@ test("mergeOptions applies defaults", () => {
   expect(opts.annotations).toEqual({})
 })
 
-test("mergeOptions throws when name missing", () => {
-  expect(() => mergeOptions({ annotations: {} }, {})).toThrow("--name")
+test("mergeOptions throws when tag is missing", () => {
+  expect(() => mergeOptions({ annotations: {} }, {})).toThrow("--tag")
 })
 
-test("mergeOptions throws when name has no colon", () => {
-  expect(() => mergeOptions({ annotations: {} }, { name: "invalid" })).toThrow("repo:tag")
+test("mergeOptions throws when tag has no colon", () => {
+  expect(() => mergeOptions({ annotations: {} }, { tag: "invalid" })).toThrow("repo:tag")
 })
 
 test("loadDescriptionFile returns empty when file missing", async () => {
@@ -227,11 +227,11 @@ test("loadDescriptionFile returns empty when file missing", async () => {
 test("loadDescriptionFile parses valid JSON", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "oci-test-"))
   const filePath = join(tmp, "desc.json")
-  await writeFile(filePath, JSON.stringify({ name: "test:1.0", dir: "./data" }))
+  await writeFile(filePath, JSON.stringify({ tag: "test:1.0", dir: "./data" }))
 
   const result = await loadDescriptionFile(filePath)
 
-  expect(result.name).toBe("test:1.0")
+  expect(result.tag).toBe("test:1.0")
   expect(result.dir).toBe("./data")
 
   await rm(tmp, { recursive: true })
@@ -247,17 +247,17 @@ test("loadDescriptionFile throws on invalid JSON", async () => {
   await rm(tmp, { recursive: true })
 })
 
-import { runPack } from "../pack"
+import { runBuild } from "../build"
 
-test("runPack produces complete OCI layout from directory", async () => {
+test("runBuild produces complete OCI layout from directory", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "oci-test-"))
   const srcDir = join(tmp, "src")
   const outputDir = join(tmp, "output")
   await mkdir(srcDir, { recursive: true })
   await writeFile(join(srcDir, "plugin.txt"), "plugin data")
 
-  await runPack({
-    name: "org/plugins:1.0.0",
+  await runBuild({
+    tag: "org/plugins:1.0.0",
     dir: srcDir,
     output: outputDir,
     annotations: { "org.openmm.platform": "CUDA" },
@@ -288,28 +288,28 @@ test("runPack produces complete OCI layout from directory", async () => {
   await rm(tmp, { recursive: true })
 })
 
-test("runPack throws when dir does not exist", async () => {
+test("runBuild throws when dir does not exist", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "oci-test-"))
   await expect(
-    runPack({ name: "x:1", dir: join(tmp, "nope"), output: join(tmp, "out"), annotations: {} }),
+    runBuild({ tag: "x:1", dir: join(tmp, "nope"), output: join(tmp, "out"), annotations: {} }),
   ).rejects.toThrow()
 
   await rm(tmp, { recursive: true })
 })
 
-test("runPack throws when dir is empty", async () => {
+test("runBuild throws when dir is empty", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "oci-test-"))
   const emptyDir = join(tmp, "empty")
   await mkdir(emptyDir, { recursive: true })
 
   await expect(
-    runPack({ name: "x:1", dir: emptyDir, output: join(tmp, "out"), annotations: {} }),
+    runBuild({ tag: "x:1", dir: emptyDir, output: join(tmp, "out"), annotations: {} }),
   ).rejects.toThrow("empty")
 
   await rm(tmp, { recursive: true })
 })
 
-test("runPack throws when output dir exists and is not empty", async () => {
+test("runBuild throws when output dir exists and is not empty", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "oci-test-"))
   const srcDir = join(tmp, "src")
   const outputDir = join(tmp, "out")
@@ -319,7 +319,7 @@ test("runPack throws when output dir exists and is not empty", async () => {
   await writeFile(join(outputDir, "existing.txt"), "blocking")
 
   await expect(
-    runPack({ name: "x:1", dir: srcDir, output: outputDir, annotations: {} }),
+    runBuild({ tag: "x:1", dir: srcDir, output: outputDir, annotations: {} }),
   ).rejects.toThrow("already exists")
 
   await rm(tmp, { recursive: true })
