@@ -44,7 +44,7 @@ describe("cli build — integration", () => {
     const fixtureDir = path.join(tmp, "fixture")
     const outputDir = path.join(tmp, "output")
     mkdirSync(fixtureDir, { recursive: true })
-    writeFileSync(path.join(fixtureDir, "plugin.txt"), "test plugin content")
+    writeFileSync(path.join(fixtureDir, "asset.txt"), "test asset content")
 
     try {
       const { stdout, code } = run([
@@ -121,7 +121,7 @@ describe("cli build — integration", () => {
     const fixtureDir = path.join(tmp, "fixture")
     const outputDir = path.join(tmp, "output")
     mkdirSync(fixtureDir, { recursive: true })
-    writeFileSync(path.join(fixtureDir, "plugin.txt"), "from desc file")
+    writeFileSync(path.join(fixtureDir, "asset.txt"), "from manifest")
     const descPath = path.join(tmp, "openmm-build.json")
     writeFileSync(
       descPath,

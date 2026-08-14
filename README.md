@@ -18,13 +18,13 @@ npx openmmcli --version
 
 ```bash
 # 1. Build an OCI image layout from a build manifest
-openmmcli build -t org/plugins:1.0.0
+openmmcli build -t org/myapp:1.0.0
 
 # 2. Push to a registry
-openmmcli push localhost:5000/org/plugins:1.0.0 --plain-http
+openmmcli push localhost:5000/org/myapp:1.0.0 --plain-http
 
 # 3. Pull from a registry
-openmmcli pull localhost:5000/org/plugins:1.0.0 -o ./pulled-layout --plain-http
+openmmcli pull localhost:5000/org/myapp:1.0.0 -o ./pulled-layout --plain-http
 ```
 
 ## Commands
@@ -37,7 +37,7 @@ Build an OCI image layout from a build manifest (`openmm-build.json` by default)
 Usage: openmmcli build [options]
 
 Options:
-  -t, --tag <repo:tag>   Image reference, e.g. org/plugins:1.0.0 (required)
+  -t, --tag <repo:tag>   Image reference, e.g. org/myapp:1.0.0 (required)
       --dir <path>       Local directory to pack as the top layer
                          (overrides "assets" in the manifest)
   -f, --file <path>      Build manifest path (default: ./openmm-build.json)
