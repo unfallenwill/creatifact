@@ -134,4 +134,6 @@ dist
 
 # Qoder
 .qoder
+
+# firecrawl search cache
 .firecrawl/
