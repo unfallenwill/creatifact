@@ -131,3 +131,6 @@ dist
 
 # Superpowers SDD workspace
 .superpowers
+
+# Qoder
+.qoder
