@@ -86,11 +86,105 @@ import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { saveLayout } from "../pull"
+import { fetchImage, saveLayout } from "../pull"
 
 function sha256hex(data: string): string {
   return createHash("sha256").update(data).digest("hex")
 }
+
+test("fetchImage downloads manifest and blobs into a LoadedImage", async () => {
+  const configData = "{}"
+  const configDigest = `sha256:${sha256hex(configData)}`
+  const layerData = "layer-bytes"
+  const layerDigest = `sha256:${sha256hex(layerData)}`
+  const manifestObj = {
+    schemaVersion: 2 as const,
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    config: { mediaType: "application/vnd.oci.empty.v1+json", digest: configDigest, size: 2 },
+    layers: [
+      { mediaType: "application/vnd.oci.image.layer.v1.tar+gzip", digest: layerDigest, size: 11 },
+    ],
+  }
+  const manifestData = JSON.stringify(manifestObj)
+
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValueOnce({ ok: true, status: 200, headers: { get: () => null } })
+    .mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/vnd.oci.image.manifest.v1+json" },
+      text: () => Promise.resolve(manifestData),
+    })
+    .mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      arrayBuffer: () => Promise.resolve(Buffer.from(configData)),
+    })
+    .mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      arrayBuffer: () => Promise.resolve(Buffer.from(layerData)),
+    })
+
+  vi.stubGlobal("fetch", fetchMock)
+
+  try {
+    const image = await fetchImage("localhost:5000/test:1.0", {
+      plainHttp: true,
+      username: undefined,
+      password: undefined,
+    })
+
+    expect(image.manifestDescriptor.digest).toBe(`sha256:${sha256hex(manifestData)}`)
+    expect(image.blobs.get(configDigest)?.toString()).toBe(configData)
+    expect(image.blobs.get(layerDigest)?.toString()).toBe(layerData)
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})
+
+test("fetchImage throws on blob digest mismatch", async () => {
+  const configData = "{}"
+  const configDigest = `sha256:${sha256hex(configData)}`
+  const manifestObj = {
+    schemaVersion: 2 as const,
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    config: { mediaType: "application/vnd.oci.empty.v1+json", digest: configDigest, size: 2 },
+    layers: [],
+  }
+  const manifestData = JSON.stringify(manifestObj)
+
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValueOnce({ ok: true, status: 200, headers: { get: () => null } })
+    .mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/vnd.oci.image.manifest.v1+json" },
+      text: () => Promise.resolve(manifestData),
+    })
+    .mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      arrayBuffer: () => Promise.resolve(Buffer.from("tampered")),
+    })
+
+  vi.stubGlobal("fetch", fetchMock)
+
+  try {
+    await expect(
+      fetchImage("localhost:5000/test:1.0", {
+        plainHttp: true,
+        username: undefined,
+        password: undefined,
+      }),
+    ).rejects.toThrow("digest mismatch")
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})
 
 test("saveLayout writes complete OCI layout from manifest + blobs", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "pull-test-"))
@@ -210,7 +304,6 @@ test("runPull fetches manifest and blobs then saves layout", async () => {
       plainHttp: true,
       username: undefined,
       password: undefined,
-      passwordStdin: false,
     })
 
     expect(existsSync(join(tmp, "oci-layout"))).toBe(true)
@@ -236,7 +329,6 @@ test("runPull throws when output dir exists and not empty", async () => {
       plainHttp: true,
       username: undefined,
       password: undefined,
-      passwordStdin: false,
     }),
   ).rejects.toThrow("already exists")
 
@@ -280,7 +372,6 @@ test("runPull throws when blob digest mismatch", async () => {
         plainHttp: true,
         username: undefined,
         password: undefined,
-        passwordStdin: false,
       }),
     ).rejects.toThrow("digest mismatch")
   } finally {

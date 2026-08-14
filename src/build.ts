@@ -1,160 +1,51 @@
-import { createHash } from "node:crypto"
-import { createWriteStream, existsSync } from "node:fs"
-import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises"
-import { join } from "node:path"
-import { Writable } from "node:stream"
-import { pipeline } from "node:stream/promises"
-import { createGzip } from "node:zlib"
-import { pack } from "tar-stream"
+import { existsSync } from "node:fs"
+import { mkdir, readdir, stat } from "node:fs/promises"
+import { isAbsolute, join } from "node:path"
+import { createLayerFromView, createLayerTarball, mergeImageLayers, selectPaths } from "./layers"
+import { type BuildManifestFile, type CopyEntry, loadBuildManifest } from "./manifest"
+import {
+  EMPTY_CONFIG_MEDIA_TYPE,
+  type LoadedImage,
+  MANIFEST_MEDIA_TYPE,
+  materializeBlob,
+  type OCIDescriptor,
+  type OCIManifest,
+  readOciLayout,
+  writeBlob,
+  writeOciLayout,
+} from "./oci"
+import { fetchImage, type ImageFetchOptions } from "./pull"
+import { ensureOutputDirEmpty, parseCliArgs, resolvePassword } from "./util"
 
-export interface OCIDescriptor {
-  mediaType: string
-  digest: string
-  size: number
-}
-
-export interface OCIManifest {
-  schemaVersion: 2
-  mediaType: string
-  config: OCIDescriptor
-  layers: OCIDescriptor[]
-  annotations?: Record<string, string>
-}
-
-export const MANIFEST_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
-export const INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json"
-export const EMPTY_CONFIG_MEDIA_TYPE = "application/vnd.oci.empty.v1+json"
-export const LAYER_MEDIA_TYPE = "application/vnd.oci.image.layer.v1.tar+gzip"
+export type { OCIDescriptor, OCIManifest } from "./oci"
 
 export const BUILD_USAGE = `Usage: openmmcli build [options]
 
-Build a local directory into an OCI image layout directory.
+Build an OCI image layout from a build manifest (default: ./openmm-build.json).
 
 Options:
-  -t, --tag <repo:tag>   Image reference, e.g. org/plugins:1.0.0
-      --dir <path>       Directory to build (default: ./plugins)
-  -f, --file <path>      Description file path (default: ./openmm-build.json)
+  -t, --tag <repo:tag>   Image reference, e.g. org/plugins:1.0.0 (required)
+      --dir <path>       Local directory to pack as the top layer
+                         (overrides "assets" in the manifest)
+  -f, --file <path>      Build manifest path (default: ./openmm-build.json)
   -o, --output <dir>     Output OCI layout directory (default: ./oci-layout)
-      --annotation k=v   Add manifest annotation (repeatable)
+      --annotation k=v   Add manifest annotation (repeatable, overrides manifest)
+      --username <user>  Registry username for from/copy sources
+      --password <pw>    Registry password (prefer --password-stdin)
+      --password-stdin   Read password from stdin
+      --plain-http       Use HTTP for registry sources (local registries)
   -h, --help             Show this help message`
-
-export function buildManifest(
-  config: OCIDescriptor,
-  layer: OCIDescriptor,
-  annotations: Record<string, string>,
-): OCIManifest {
-  const base: OCIManifest = {
-    schemaVersion: 2,
-    mediaType: MANIFEST_MEDIA_TYPE,
-    config,
-    layers: [layer],
-  }
-  if (Object.keys(annotations).length > 0) {
-    return { ...base, annotations }
-  }
-  return base
-}
-
-export async function writeBlob(
-  data: Buffer,
-  blobsDir: string,
-  mediaType: string,
-): Promise<OCIDescriptor> {
-  const hash = createHash("sha256")
-  hash.update(data)
-  const hex = hash.digest("hex")
-  await writeFile(join(blobsDir, hex), data)
-  return {
-    mediaType,
-    digest: `sha256:${hex}`,
-    size: data.length,
-  }
-}
-
-async function readDirEntries(dir: string, base = ""): Promise<string[]> {
-  const entries = await readdir(dir, { withFileTypes: true })
-  const files: string[] = []
-  for (const entry of entries) {
-    const fullPath = join(dir, entry.name)
-    const relPath = base ? `${base}/${entry.name}` : entry.name
-    if (entry.isDirectory()) {
-      files.push(...(await readDirEntries(fullPath, relPath)))
-    } else if (entry.isFile()) {
-      files.push(relPath)
-    }
-  }
-  return files
-}
-
-export async function createLayerTarball(dir: string, blobsDir: string): Promise<OCIDescriptor> {
-  const tempPath = join(blobsDir, ".tmp-layer")
-  const fileStream = createWriteStream(tempPath)
-  const hash = createHash("sha256")
-  let totalSize = 0
-
-  const hashedWriter = new Writable({
-    write(chunk, _encoding, callback) {
-      hash.update(chunk)
-      totalSize += chunk.length
-      fileStream.write(chunk, callback)
-    },
-    final(callback) {
-      fileStream.end(() => callback())
-    },
-  })
-
-  const tarPack = pack()
-
-  const files = await readDirEntries(dir)
-  for (const relPath of files) {
-    const fullPath = join(dir, relPath)
-    const content = await readFile(fullPath)
-    const fileStat = await stat(fullPath)
-    tarPack.entry({ name: relPath, mode: fileStat.mode & 0o777, size: fileStat.size }, content)
-  }
-  tarPack.finalize()
-
-  await pipeline(tarPack, createGzip(), hashedWriter)
-
-  const hex = hash.digest("hex")
-  const digest = `sha256:${hex}`
-  await rename(tempPath, join(blobsDir, hex))
-
-  return {
-    mediaType: LAYER_MEDIA_TYPE,
-    digest,
-    size: totalSize,
-  }
-}
-
-export async function writeOciLayout(
-  outputDir: string,
-  manifestDescriptor: OCIDescriptor,
-  ref: string,
-): Promise<void> {
-  await writeFile(join(outputDir, "oci-layout"), JSON.stringify({ imageLayoutVersion: "1.0.0" }))
-
-  const index = {
-    schemaVersion: 2,
-    mediaType: INDEX_MEDIA_TYPE,
-    manifests: [
-      {
-        mediaType: manifestDescriptor.mediaType,
-        digest: manifestDescriptor.digest,
-        size: manifestDescriptor.size,
-        annotations: { "org.opencontainers.image.ref.name": ref },
-      },
-    ],
-  }
-
-  await writeFile(join(outputDir, "index.json"), JSON.stringify(index, null, 2))
-}
 
 export interface BuildOptions {
   tag: string
-  dir: string
+  assetsDir: string | undefined
   output: string
   annotations: Record<string, string>
+  from: string[]
+  copy: CopyEntry[]
+  plainHttp: boolean
+  username: string | undefined
+  password: string | undefined
 }
 
 export interface ParsedArgs {
@@ -163,11 +54,13 @@ export interface ParsedArgs {
   output?: string
   file?: string
   annotations: Record<string, string>
+  username?: string
+  password?: string
+  passwordStdin: boolean
+  plainHttp: boolean
 }
 
-type DescriptionFile = Partial<BuildOptions>
-
-const SIMPLE_OPTS: Record<string, "dir" | "tag" | "output" | "file"> = {
+const VALUE_OPTS: Record<string, string> = {
   "--dir": "dir",
   "--tag": "tag",
   "-t": "tag",
@@ -175,62 +68,62 @@ const SIMPLE_OPTS: Record<string, "dir" | "tag" | "output" | "file"> = {
   "-o": "output",
   "--file": "file",
   "-f": "file",
+  "--username": "username",
+  "--password": "password",
+  "--annotation": "annotation",
+}
+
+const BOOL_FLAGS: Record<string, string> = {
+  "--password-stdin": "passwordStdin",
+  "--plain-http": "plainHttp",
 }
 
 export function parseBuildArgs(args: string[]): ParsedArgs {
-  const result: ParsedArgs = { annotations: {} }
-  let i = 0
+  const parsed = parseCliArgs(args, {
+    values: VALUE_OPTS,
+    flags: BOOL_FLAGS,
+    repeats: new Set(["--annotation"]),
+  })
 
-  while (i < args.length) {
-    const arg = args[i]
-    if (arg === undefined) {
-      i++
-      continue
-    }
-
-    const optKey = SIMPLE_OPTS[arg]
-    if (optKey !== undefined) {
-      const v = args[++i]
-      if (v !== undefined) {
-        result[optKey] = v
-      }
-      i++
-    } else if (arg === "--annotation") {
-      i = consumeAnnotation(args, i, result)
-    } else {
-      i++
+  const annotations: Record<string, string> = {}
+  const rawAnnotations = parsed.values["annotation"]
+  const annotationList = Array.isArray(rawAnnotations) ? rawAnnotations : [rawAnnotations]
+  for (const item of annotationList) {
+    if (item === undefined) continue
+    const eq = item.indexOf("=")
+    if (eq > 0) {
+      annotations[item.slice(0, eq)] = item.slice(eq + 1)
     }
   }
+
+  const result: ParsedArgs = {
+    annotations,
+    passwordStdin: parsed.flags["passwordStdin"] === true,
+    plainHttp: parsed.flags["plainHttp"] === true,
+  }
+  const dir = singleValue(parsed.values["dir"])
+  if (dir !== undefined) result.dir = dir
+  const tag = singleValue(parsed.values["tag"])
+  if (tag !== undefined) result.tag = tag
+  const output = singleValue(parsed.values["output"])
+  if (output !== undefined) result.output = output
+  const file = singleValue(parsed.values["file"])
+  if (file !== undefined) result.file = file
+  const username = singleValue(parsed.values["username"])
+  if (username !== undefined) result.username = username
+  const password = singleValue(parsed.values["password"])
+  if (password !== undefined) result.password = password
   return result
 }
 
-function consumeAnnotation(args: string[], i: number, result: ParsedArgs): number {
-  const v = args[i + 1]
-  if (v !== undefined) {
-    const eq = v.indexOf("=")
-    if (eq > 0) {
-      result.annotations[v.slice(0, eq)] = v.slice(eq + 1)
-    }
-  }
-  return i + 2
+function singleValue(value: string | string[] | undefined): string | undefined {
+  return typeof value === "string" ? value : undefined
 }
 
-export async function loadDescriptionFile(filePath: string): Promise<DescriptionFile> {
-  try {
-    const content = await readFile(filePath, "utf8")
-    return JSON.parse(content) as DescriptionFile
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
-      return {}
-    }
-    throw new Error(`Failed to parse description file ${filePath}: ${(e as Error).message}`)
-  }
-}
-
-export function mergeOptions(cli: ParsedArgs, desc: DescriptionFile): BuildOptions {
-  const tag = cli.tag ?? desc.tag
+export function mergeOptions(cli: ParsedArgs, manifestFile: BuildManifestFile): BuildOptions {
+  const tag = cli.tag
   if (tag === undefined) {
-    throw new Error("--tag is required (provide via -t/--tag or in description file)")
+    throw new Error("--tag is required (provide via -t/--tag)")
   }
   if (!tag.includes(":")) {
     throw new Error(`--tag must be in format 'repo:tag', got: ${tag}`)
@@ -238,42 +131,132 @@ export function mergeOptions(cli: ParsedArgs, desc: DescriptionFile): BuildOptio
 
   return {
     tag,
-    dir: cli.dir ?? desc.dir ?? "./plugins",
+    assetsDir: cli.dir ?? manifestFile.assets,
     output: cli.output ?? "./oci-layout",
-    annotations: { ...desc.annotations, ...cli.annotations },
+    annotations: { ...manifestFile.annotations, ...cli.annotations },
+    from: manifestFile.from === undefined ? [] : [manifestFile.from].flat(),
+    copy: manifestFile.copy ?? [],
+    plainHttp: cli.plainHttp,
+    username: cli.username,
+    password: cli.password,
   }
 }
 
-export async function runBuild(options: BuildOptions): Promise<void> {
-  if (!existsSync(options.dir)) {
-    throw new Error(`--dir '${options.dir}' does not exist`)
-  }
-
-  const dirStat = await stat(options.dir)
-  if (!dirStat.isDirectory()) {
-    throw new Error(`--dir '${options.dir}' is not a directory`)
-  }
-
-  const dirEntries = await readdir(options.dir)
-  if (dirEntries.length === 0) {
-    throw new Error(`--dir '${options.dir}' is empty`)
-  }
-
-  if (existsSync(options.output)) {
-    const outputEntries = await readdir(options.output)
-    if (outputEntries.length > 0) {
-      throw new Error(`--output '${options.output}' already exists and is not empty`)
+export async function resolveImageSource(
+  spec: string,
+  baseDir: string,
+  auth: ImageFetchOptions,
+): Promise<LoadedImage> {
+  const localPath = isAbsolute(spec) ? spec : join(baseDir, spec)
+  if (isLocalSpec(spec) || (existsSync(localPath) && (await stat(localPath)).isDirectory())) {
+    if (!existsSync(localPath)) {
+      throw new Error(`local layout '${spec}' not found`)
     }
+    return readOciLayout(localPath)
   }
+
+  return fetchImage(spec, auth)
+}
+
+function isLocalSpec(spec: string): boolean {
+  return spec.startsWith(".") || spec.startsWith("/")
+}
+
+async function validateAssetsDir(dir: string): Promise<void> {
+  if (!existsSync(dir)) {
+    throw new Error(`--dir '${dir}' does not exist`)
+  }
+  const dirStat = await stat(dir)
+  if (!dirStat.isDirectory()) {
+    throw new Error(`--dir '${dir}' is not a directory`)
+  }
+  if ((await readdir(dir)).length === 0) {
+    throw new Error(`--dir '${dir}' is empty`)
+  }
+}
+
+export function buildManifest(
+  config: OCIDescriptor,
+  layers: OCIDescriptor[],
+  annotations: Record<string, string>,
+): OCIManifest {
+  const base: OCIManifest = {
+    schemaVersion: 2,
+    mediaType: MANIFEST_MEDIA_TYPE,
+    config,
+    layers,
+  }
+  if (Object.keys(annotations).length > 0) {
+    return { ...base, annotations }
+  }
+  return base
+}
+
+async function inheritFromLayers(
+  spec: string,
+  baseDir: string,
+  blobsDir: string,
+  auth: ImageFetchOptions,
+): Promise<OCIDescriptor[]> {
+  const image = await resolveImageSource(spec, baseDir, auth)
+  for (const layer of image.manifest.layers) {
+    const blob = image.blobs.get(layer.digest)
+    if (!blob) {
+      throw new Error(`Layer blob ${layer.digest} missing from source ${spec}`)
+    }
+    await materializeBlob(blobsDir, layer.digest, blob)
+  }
+  return image.manifest.layers
+}
+
+async function copyLayer(
+  entry: CopyEntry,
+  baseDir: string,
+  blobsDir: string,
+  auth: ImageFetchOptions,
+): Promise<OCIDescriptor> {
+  const image = await resolveImageSource(entry.from, baseDir, auth)
+  const layerBlobs: Buffer[] = []
+  for (const layer of image.manifest.layers) {
+    const blob = image.blobs.get(layer.digest)
+    if (!blob) {
+      throw new Error(`Layer blob ${layer.digest} missing from source ${entry.from}`)
+    }
+    layerBlobs.push(blob)
+  }
+  const { view, opaqueDirs } = await mergeImageLayers(layerBlobs)
+  const { selected, opaqueDirs: selectedOpaque } = selectPaths(view, entry.paths, opaqueDirs)
+  return createLayerFromView(selected, selectedOpaque, blobsDir)
+}
+
+export async function runBuild(options: BuildOptions): Promise<void> {
+  await ensureOutputDirEmpty(options.output)
 
   const blobsDir = join(options.output, "blobs", "sha256")
   await mkdir(blobsDir, { recursive: true })
 
-  const layerDescriptor = await createLayerTarball(options.dir, blobsDir)
+  const auth: ImageFetchOptions = {
+    plainHttp: options.plainHttp,
+    username: options.username,
+    password: options.password,
+  }
+
+  const inherited = await Promise.all(
+    options.from.map((spec) => inheritFromLayers(spec, process.cwd(), blobsDir, auth)),
+  )
+  const copied = await Promise.all(
+    options.copy.map((entry) => copyLayer(entry, process.cwd(), blobsDir, auth)),
+  )
+
+  const layers: OCIDescriptor[] = [...inherited.flat(), ...copied]
+  if (options.assetsDir !== undefined) {
+    await validateAssetsDir(options.assetsDir)
+    layers.push(await createLayerTarball(options.assetsDir, blobsDir))
+  }
 
   const configDescriptor = await writeBlob(Buffer.from("{}"), blobsDir, EMPTY_CONFIG_MEDIA_TYPE)
 
-  const manifest = buildManifest(configDescriptor, layerDescriptor, options.annotations)
+  const manifest = buildManifest(configDescriptor, layers, options.annotations)
   const manifestBuffer = Buffer.from(JSON.stringify(manifest))
   const manifestDescriptor = await writeBlob(manifestBuffer, blobsDir, MANIFEST_MEDIA_TYPE)
 
@@ -285,9 +268,30 @@ export async function runBuild(options: BuildOptions): Promise<void> {
 export async function runBuildFromArgs(args: string[]): Promise<void> {
   const cliOpts = parseBuildArgs(args)
 
-  const descFilePath = cliOpts.file ?? "./openmm-build.json"
-  const desc = await loadDescriptionFile(descFilePath)
+  const manifestPath = cliOpts.file ?? "./openmm-build.json"
+  const loaded = await loadBuildManifest(manifestPath)
 
-  const options = mergeOptions(cliOpts, desc)
+  const password = await resolvePassword(cliOpts.password, cliOpts.passwordStdin)
+  const options = mergeOptions(
+    { ...cliOpts, ...(password === undefined ? {} : { password }) },
+    loaded.file,
+  )
+  options.assetsDir = resolveLocalDir(options.assetsDir, loaded.baseDir)
+  options.from = options.from.map((spec) => resolveLocalSpec(spec, loaded.baseDir))
+  options.copy = options.copy.map((entry) => ({
+    ...entry,
+    from: resolveLocalSpec(entry.from, loaded.baseDir),
+  }))
+
   await runBuild(options)
+}
+
+function resolveLocalDir(assetsDir: string | undefined, baseDir: string): string | undefined {
+  if (assetsDir === undefined) return undefined
+  return isAbsolute(assetsDir) ? assetsDir : join(baseDir, assetsDir)
+}
+
+function resolveLocalSpec(spec: string, baseDir: string): string {
+  if (!isLocalSpec(spec)) return spec
+  return isAbsolute(spec) ? spec : join(baseDir, spec)
 }

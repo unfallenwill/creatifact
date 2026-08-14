@@ -1,9 +1,67 @@
 import { createHash } from "node:crypto"
-import { existsSync } from "node:fs"
-import { mkdir, readdir, writeFile } from "node:fs/promises"
-import { join } from "node:path"
-import type { OCIManifest } from "./build"
-import { overrideScope, parseRef, resolveAuth } from "./push"
+import {
+  type LoadedImage,
+  MANIFEST_MEDIA_TYPE,
+  type OCIManifest,
+  parseRef,
+  saveLayout,
+} from "./oci"
+
+export { saveLayout }
+
+import { getAuthHeaders, toCredentials } from "./push"
+import { ensureOutputDirEmpty, parseCliArgs, resolvePassword } from "./util"
+
+export interface ImageFetchOptions {
+  plainHttp: boolean
+  username: string | undefined
+  password: string | undefined
+}
+
+export async function fetchImage(ref: string, opts: ImageFetchOptions): Promise<LoadedImage> {
+  const parsed = parseRef(ref)
+  const scheme = opts.plainHttp ? "http" : "https"
+  const baseUrl = `${scheme}://${parsed.registry}`
+
+  const authHeaders = await getAuthHeaders(
+    baseUrl,
+    `repository:${parsed.repository}:pull`,
+    toCredentials(opts.username, opts.password),
+  )
+
+  const { manifest, mediaType, manifestData } = await fetchManifest(
+    baseUrl,
+    parsed.repository,
+    parsed.tag,
+    authHeaders,
+  )
+
+  const blobs = new Map<string, Buffer>()
+  const allDescriptors = [manifest.config, ...manifest.layers]
+  for (const desc of allDescriptors) {
+    const blobData = await fetchBlob(baseUrl, parsed.repository, desc.digest, authHeaders)
+    const computed = `sha256:${createHash("sha256").update(blobData).digest("hex")}`
+    if (computed !== desc.digest) {
+      throw new Error(`Blob digest mismatch: expected ${desc.digest}, got ${computed}`)
+    }
+    blobs.set(desc.digest, blobData)
+    console.log(`Downloaded ${desc.digest} (${desc.size} bytes)`)
+  }
+
+  const manifestDigest = `sha256:${createHash("sha256").update(manifestData).digest("hex")}`
+
+  return {
+    manifestDescriptor: {
+      mediaType,
+      digest: manifestDigest,
+      size: Buffer.byteLength(manifestData),
+    },
+    manifest,
+    manifestBuffer: Buffer.from(manifestData),
+    refName: ref,
+    blobs,
+  }
+}
 
 export async function fetchManifest(
   baseUrl: string,
@@ -15,7 +73,7 @@ export async function fetchManifest(
     method: "GET",
     headers: {
       ...headers,
-      Accept: "application/vnd.oci.image.manifest.v1+json",
+      Accept: MANIFEST_MEDIA_TYPE,
     },
   })
   if (!resp.ok) {
@@ -23,7 +81,7 @@ export async function fetchManifest(
     throw new Error(`Failed to fetch manifest: ${resp.status} ${body}`)
   }
 
-  const mediaType = resp.headers.get("content-type") ?? "application/vnd.oci.image.manifest.v1+json"
+  const mediaType = resp.headers.get("content-type") ?? MANIFEST_MEDIA_TYPE
   const manifestData = await resp.text()
   const manifest = JSON.parse(manifestData) as OCIManifest
   return { manifest, mediaType, manifestData }
@@ -47,110 +105,49 @@ export async function fetchBlob(
   return Buffer.from(arrayBuffer)
 }
 
-export async function saveLayout(
-  outputDir: string,
-  manifest: OCIManifest,
-  manifestData: string,
-  manifestDigest: string,
-  blobs: Map<string, Buffer>,
-  ref: string,
-): Promise<void> {
-  const blobsDir = join(outputDir, "blobs", "sha256")
-  await mkdir(blobsDir, { recursive: true })
-
-  await writeFile(join(outputDir, "oci-layout"), JSON.stringify({ imageLayoutVersion: "1.0.0" }))
-
-  const index = {
-    schemaVersion: 2,
-    mediaType: "application/vnd.oci.image.index.v1+json",
-    manifests: [
-      {
-        mediaType: manifest.mediaType,
-        digest: manifestDigest,
-        size: Buffer.byteLength(manifestData),
-        annotations: { "org.opencontainers.image.ref.name": ref },
-      },
-    ],
-  }
-  await writeFile(join(outputDir, "index.json"), JSON.stringify(index, null, 2))
-
-  for (const [digest, data] of blobs) {
-    const hex = digest.slice("sha256:".length)
-    await writeFile(join(blobsDir, hex), data)
-  }
-
-  const manifestHex = manifestDigest.slice("sha256:".length)
-  await writeFile(join(blobsDir, manifestHex), manifestData)
-}
-
 export interface PullOptions {
   ref: string
   output: string
   plainHttp: boolean
   username: string | undefined
   password: string | undefined
-  passwordStdin: boolean
 }
 
-const PULL_STR_OPTS: Record<string, "output" | "username" | "password"> = {
+const PULL_STR_OPTS: Record<string, string> = {
   "--output": "output",
   "-o": "output",
   "--username": "username",
   "--password": "password",
 }
 
-const PULL_BOOL_FLAGS: Record<string, "plainHttp" | "passwordStdin"> = {
+const PULL_BOOL_FLAGS: Record<string, string> = {
   "--plain-http": "plainHttp",
   "--password-stdin": "passwordStdin",
 }
 
-export function parsePullArgs(args: string[]): {
+export interface ParsedPullArgs {
   ref: string | undefined
   output: string | undefined
   username: string | undefined
   password: string | undefined
   plainHttp: boolean
   passwordStdin: boolean
-} {
-  const result = {
-    ref: undefined as string | undefined,
-    output: undefined as string | undefined,
-    username: undefined as string | undefined,
-    password: undefined as string | undefined,
-    plainHttp: false,
-    passwordStdin: false,
+}
+
+export function parsePullArgs(args: string[]): ParsedPullArgs {
+  const parsed = parseCliArgs(args, { values: PULL_STR_OPTS, flags: PULL_BOOL_FLAGS })
+  return {
+    ref: parsed.positionals[0],
+    output: singleValue(parsed.values["output"]),
+    username: singleValue(parsed.values["username"]),
+    password: singleValue(parsed.values["password"]),
+    plainHttp: parsed.flags["plainHttp"] === true,
+    passwordStdin: parsed.flags["passwordStdin"] === true,
   }
+}
 
-  let i = 0
-  while (i < args.length) {
-    const arg = args[i]
-    if (arg === undefined) {
-      i++
-      continue
-    }
-
-    const strKey = PULL_STR_OPTS[arg]
-    if (strKey !== undefined) {
-      const v = args[++i]
-      if (v !== undefined) result[strKey] = v
-      i++
-      continue
-    }
-
-    const boolKey = PULL_BOOL_FLAGS[arg]
-    if (boolKey !== undefined) {
-      result[boolKey] = true
-      i++
-      continue
-    }
-
-    if (!arg.startsWith("-")) {
-      result.ref = arg
-    }
-    i++
-  }
-
-  return result
+function singleValue(value: string | string[] | undefined): string | undefined {
+  return typeof value === "string" ? value : undefined
 }
 
 export const PULL_USAGE = `Usage: openmmcli pull <registry>/<repo>:<tag> [options]
@@ -171,56 +168,22 @@ Options:
 export async function runPull(options: PullOptions): Promise<void> {
   const outputDir = options.output || "./oci-layout"
 
-  if (existsSync(outputDir)) {
-    const entries = await readdir(outputDir)
-    if (entries.length > 0) {
-      throw new Error(`--output '${outputDir}' already exists and is not empty`)
-    }
-  }
+  await ensureOutputDirEmpty(outputDir)
 
-  const parsed = parseRef(options.ref)
-  const scheme = options.plainHttp ? "http" : "https"
-  const baseUrl = `${scheme}://${parsed.registry}`
+  const image = await fetchImage(options.ref, {
+    plainHttp: options.plainHttp,
+    username: options.username,
+    password: options.password,
+  })
 
-  let authHeaders: Record<string, string> = {}
-  const credentials =
-    options.username && options.password
-      ? { username: options.username, password: options.password }
-      : undefined
-
-  const probeResp = await fetch(`${baseUrl}/v2/`, { method: "GET", headers: authHeaders })
-  if (probeResp.status === 401) {
-    const wwwAuth = probeResp.headers.get("www-authenticate")
-    if (wwwAuth) {
-      const scope = `repository:${parsed.repository}:pull`
-      const correctedAuth = overrideScope(wwwAuth, scope)
-      authHeaders = await resolveAuth(correctedAuth, credentials)
-    }
-  }
-
-  const { manifest, manifestData } = await fetchManifest(
-    baseUrl,
-    parsed.repository,
-    parsed.tag,
-    authHeaders,
+  await saveLayout(
+    outputDir,
+    image.manifest,
+    image.manifestBuffer.toString("utf8"),
+    image.manifestDescriptor.digest,
+    image.blobs,
+    options.ref,
   )
-
-  const blobs = new Map<string, Buffer>()
-  const allDescriptors = [manifest.config, ...manifest.layers]
-  for (const desc of allDescriptors) {
-    const blobData = await fetchBlob(baseUrl, parsed.repository, desc.digest, authHeaders)
-    const computed = `sha256:${createHash("sha256").update(blobData).digest("hex")}`
-    if (computed !== desc.digest) {
-      throw new Error(`Blob digest mismatch: expected ${desc.digest}, got ${computed}`)
-    }
-    blobs.set(desc.digest, blobData)
-    console.log(`Downloaded ${desc.digest} (${desc.size} bytes)`)
-  }
-
-  const manifestHash = createHash("sha256").update(manifestData).digest("hex")
-  const manifestDigest = `sha256:${manifestHash}`
-
-  await saveLayout(outputDir, manifest, manifestData, manifestDigest, blobs, options.ref)
   console.log(`Pulled ${options.ref} → ${outputDir}`)
 }
 
@@ -231,23 +194,11 @@ export async function runPullFromArgs(args: string[]): Promise<void> {
     throw new Error("pull requires a <registry>/<repo>:<tag> argument")
   }
 
-  let password = parsed.password
-  if (parsed.passwordStdin) {
-    const chunks: Buffer[] = []
-    await new Promise<void>((resolve) => {
-      process.stdin.on("data", (chunk) => chunks.push(chunk))
-      process.stdin.on("end", () => resolve())
-      process.stdin.on("error", () => resolve())
-    })
-    password = Buffer.concat(chunks).toString("utf8").trim() || undefined
-  }
-
   await runPull({
     ref: parsed.ref,
     output: parsed.output ?? "./oci-layout",
     plainHttp: parsed.plainHttp,
     username: parsed.username,
-    password,
-    passwordStdin: parsed.passwordStdin,
+    password: await resolvePassword(parsed.password, parsed.passwordStdin),
   })
 }
