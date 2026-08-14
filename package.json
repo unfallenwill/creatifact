@@ -1,8 +1,8 @@
 {
   "name": "openmmcli",
   "version": "0.0.0",
-  "description": "Boilerplate for building CLI packages in TypeScript",
-  "author": "yangshun",
+  "description": "CLI tool for building, pushing, and pulling OCI image layouts",
+  "author": "unfallenwill",
   "license": "MIT",
   "type": "module",
   "bin": "dist/index.mjs",
