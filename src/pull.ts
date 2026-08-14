@@ -3,7 +3,7 @@ import { existsSync } from "node:fs"
 import { mkdir, readdir, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import type { OCIManifest } from "./pack"
-import { parseRef, resolveAuth } from "./push"
+import { overrideScope, parseRef, resolveAuth } from "./push"
 
 export async function fetchManifest(
   baseUrl: string,
@@ -186,7 +186,9 @@ export async function runPull(options: PullOptions): Promise<void> {
   if (probeResp.status === 401) {
     const wwwAuth = probeResp.headers.get("www-authenticate")
     if (wwwAuth) {
-      authHeaders = await resolveAuth(wwwAuth, credentials)
+      const scope = `repository:${parsed.repository}:pull`
+      const correctedAuth = overrideScope(wwwAuth, scope)
+      authHeaders = await resolveAuth(correctedAuth, credentials)
     }
   }
 

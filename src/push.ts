@@ -175,6 +175,18 @@ export function parseAuthHeader(header: string): ParsedAuthHeader {
   return { scheme, params }
 }
 
+export function overrideScope(wwwAuthenticate: string, scope: string): string {
+  const parsed = parseAuthHeader(wwwAuthenticate)
+  if (parsed.scheme !== "Bearer") return wwwAuthenticate
+
+  const parts = [`${parsed.scheme} realm="${parsed.params["realm"] ?? ""}"`]
+  if (parsed.params["service"]) {
+    parts.push(`service="${parsed.params["service"]}"`)
+  }
+  parts.push(`scope="${scope}"`)
+  return parts.join(",")
+}
+
 export interface Credentials {
   username: string
   password: string
@@ -351,7 +363,6 @@ export async function runPush(options: PushOptions): Promise<void> {
       ? { username: options.username, password: options.password }
       : undefined
 
-  // Probe for auth requirement
   const probeResp = await fetch(`${baseUrl}/v2/`, {
     method: "GET",
     headers: authHeaders,
@@ -359,7 +370,9 @@ export async function runPush(options: PushOptions): Promise<void> {
   if (probeResp.status === 401) {
     const wwwAuth = probeResp.headers.get("www-authenticate")
     if (wwwAuth) {
-      authHeaders = await resolveAuth(wwwAuth, credentials)
+      const scope = `repository:${parsed.repository}:push,pull`
+      const correctedAuth = overrideScope(wwwAuth, scope)
+      authHeaders = await resolveAuth(correctedAuth, credentials)
     }
   }
 
