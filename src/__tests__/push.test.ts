@@ -424,7 +424,6 @@ test("runPush uploads blobs and manifest to registry", async () => {
       plainHttp: true,
       username: undefined,
       password: undefined,
-      passwordStdin: false,
     })
 
     // Should have made 8 requests (probe + 2 HEAD + 4 upload + manifest)
@@ -466,7 +465,6 @@ test("runPush skips existing blobs", async () => {
       plainHttp: true,
       username: undefined,
       password: undefined,
-      passwordStdin: false,
     })
     expect(fetchMock).toHaveBeenCalledTimes(4)
   } finally {
@@ -495,7 +493,6 @@ test("runPush uses ref from index.json when ref not specified", async () => {
       plainHttp: true,
       username: undefined,
       password: undefined,
-      passwordStdin: false,
     })
     // Manifest URL should use ref from index.json: localhost:5000/test:1.0
     const manifestCall = fetchMock.mock.calls[3]
@@ -514,7 +511,6 @@ test("runPush throws when layout directory missing", async () => {
       plainHttp: true,
       username: undefined,
       password: undefined,
-      passwordStdin: false,
     }),
   ).rejects.toThrow()
 })

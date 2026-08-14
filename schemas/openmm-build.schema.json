@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/unfallenwill/openmmcli/main/schemas/openmm-build.schema.json",
+  "title": "openmmcli build manifest",
+  "description": "Describes an OCI image: annotations, base images to inherit, paths to copy, and a local assets directory.",
+  "type": "object",
+  "properties": {
+    "annotations": {
+      "description": "Manifest annotations (image metadata).",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "from": {
+      "description": "Registry reference(s) or local OCI layout path(s) whose layers are inherited in order.",
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        }
+      ]
+    },
+    "copy": {
+      "description": "Extract specific paths from a source image and add them as a new layer.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from", "paths"],
+        "properties": {
+          "from": {
+            "type": "string",
+            "minLength": 1
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
+          }
+        }
+      },
+      "minItems": 1
+    },
+    "assets": {
+      "description": "Local directory packed as the top layer (relative to this file).",
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": true
+}

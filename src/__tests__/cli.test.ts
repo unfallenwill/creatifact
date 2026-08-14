@@ -73,6 +73,7 @@ describe("cli build — integration", () => {
     expect(stdout).toContain("Usage: openmmcli build")
     expect(stdout).toContain("--tag")
     expect(stdout).toContain("--annotation")
+    expect(stdout).toContain("--plain-http")
   })
 
   it("build -h prints usage and exits 0", () => {
@@ -82,9 +83,22 @@ describe("cli build — integration", () => {
   })
 
   it("build fails when dir does not exist", () => {
-    const { stderr, code } = run(["build", "--dir", "/nonexistent/path/xyz", "-t", "test:1.0"])
-    expect(code).toBe(1)
-    expect(stderr).toContain("does not exist")
+    const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
+    try {
+      const { stderr, code } = run([
+        "build",
+        "--dir",
+        "/nonexistent/path/xyz",
+        "-t",
+        "test:1.0",
+        "-o",
+        path.join(tmp, "out"),
+      ])
+      expect(code).toBe(1)
+      expect(stderr).toContain("does not exist")
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
   })
 
   it("build fails when tag is missing", () => {
@@ -102,7 +116,7 @@ describe("cli build — integration", () => {
     }
   })
 
-  it("build with description file", () => {
+  it("build with manifest assets and CLI tag", () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
     const fixtureDir = path.join(tmp, "fixture")
     const outputDir = path.join(tmp, "output")
@@ -112,14 +126,21 @@ describe("cli build — integration", () => {
     writeFileSync(
       descPath,
       JSON.stringify({
-        tag: "desc/test:2.0.0",
-        dir: fixtureDir,
+        assets: fixtureDir,
         annotations: { "test.key": "test-value" },
       }),
     )
 
     try {
-      const { stdout, code } = run(["build", "-f", descPath, "-o", outputDir])
+      const { stdout, code } = run([
+        "build",
+        "-f",
+        descPath,
+        "-t",
+        "desc/test:2.0.0",
+        "-o",
+        outputDir,
+      ])
 
       expect(code).toBe(0)
       expect(stdout).toContain("desc/test:2.0.0")
@@ -128,6 +149,77 @@ describe("cli build — integration", () => {
       expect(index.manifests[0].annotations["org.opencontainers.image.ref.name"]).toBe(
         "desc/test:2.0.0",
       )
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it("build --dir overrides manifest assets", () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
+    const manifestAssets = path.join(tmp, "manifest-assets")
+    const cliAssets = path.join(tmp, "cli-assets")
+    const outputDir = path.join(tmp, "output")
+    mkdirSync(manifestAssets, { recursive: true })
+    mkdirSync(cliAssets, { recursive: true })
+    writeFileSync(path.join(manifestAssets, "manifest.txt"), "manifest content")
+    writeFileSync(path.join(cliAssets, "cli.txt"), "cli content")
+    const descPath = path.join(tmp, "openmm-build.json")
+    writeFileSync(descPath, JSON.stringify({ assets: manifestAssets }))
+
+    try {
+      const { code } = run([
+        "build",
+        "-f",
+        descPath,
+        "-t",
+        "test:1.0",
+        "--dir",
+        cliAssets,
+        "-o",
+        outputDir,
+      ])
+      expect(code).toBe(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it("build inherits from a local OCI layout", () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
+    const sourceDir = path.join(tmp, "source")
+    const outputDir = path.join(tmp, "output")
+
+    try {
+      const first = run(["build", "-t", "org/source:1.0.0", "--dir", sourceDir, "-o", sourceDir])
+      expect(first.code).toBe(0)
+
+      const descPath = path.join(tmp, "openmm-build.json")
+      writeFileSync(descPath, JSON.stringify({ from: sourceDir }))
+      const { code } = run(["build", "-f", descPath, "-t", "org/combined:1.0.0", "-o", outputDir])
+      expect(code).toBe(0)
+
+      const index = JSON.parse(readFileSync(path.join(outputDir, "index.json"), "utf8"))
+      const manifest = JSON.parse(
+        readFileSync(
+          path.join(outputDir, "blobs", "sha256", index.manifests[0].digest.slice(7)),
+          "utf8",
+        ),
+      )
+      expect(manifest.layers).toHaveLength(1)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it("build warns about legacy manifest fields and still needs -t", () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
+    const descPath = path.join(tmp, "openmm-build.json")
+    writeFileSync(descPath, JSON.stringify({ tag: "old/test:1.0", dir: "./x" }))
+
+    try {
+      const { stderr, code } = run(["build", "-f", descPath])
+      expect(code).toBe(1)
+      expect(stderr).toContain("--tag is required")
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }

@@ -1,80 +1,8 @@
-import { readFile } from "node:fs/promises"
-import { join } from "node:path"
-import type { OCIDescriptor, OCIManifest } from "./build"
+import { parseRef, readOciLayout } from "./oci"
 
-export interface ParsedRef {
-  registry: string
-  repository: string
-  tag: string
-}
+export { parseRef, readOciLayout }
 
-export interface OciLayoutData {
-  manifestDescriptor: OCIDescriptor
-  manifest: OCIManifest
-  manifestBuffer: Buffer
-  refName: string | undefined
-  blobs: Map<string, Buffer>
-}
-
-export function parseRef(ref: string): ParsedRef {
-  let registry = "docker.io"
-  let rest = ref
-
-  const slashIdx = ref.indexOf("/")
-  if (slashIdx > 0) {
-    const firstPart = ref.slice(0, slashIdx)
-    if (firstPart.includes(".") || firstPart.includes(":") || firstPart === "localhost") {
-      registry = firstPart
-      rest = ref.slice(slashIdx + 1)
-    }
-  }
-
-  const colonIdx = rest.lastIndexOf(":")
-  let tag = "latest"
-  let repository = rest
-  if (colonIdx > 0) {
-    tag = rest.slice(colonIdx + 1)
-    repository = rest.slice(0, colonIdx)
-  }
-
-  return { registry, repository, tag }
-}
-
-export async function readOciLayout(layoutDir: string): Promise<OciLayoutData> {
-  const indexRaw = await readFile(join(layoutDir, "index.json"), "utf8")
-  const index = JSON.parse(indexRaw) as {
-    manifests: Array<OCIDescriptor & { annotations?: Record<string, string> }>
-  }
-  const manifestEntry = index.manifests[0]
-  if (!manifestEntry) {
-    throw new Error("No manifest found in index.json")
-  }
-
-  const manifestDigest = manifestEntry.digest
-  const hex = manifestDigest.slice("sha256:".length)
-  const manifestBuffer = await readFile(join(layoutDir, "blobs", "sha256", hex))
-  const manifest = JSON.parse(manifestBuffer.toString("utf8")) as OCIManifest
-
-  const blobs = new Map<string, Buffer>()
-  const allDescriptors = [manifest.config, ...manifest.layers]
-  for (const desc of allDescriptors) {
-    const blobHex = desc.digest.slice("sha256:".length)
-    const blobData = await readFile(join(layoutDir, "blobs", "sha256", blobHex))
-    blobs.set(desc.digest, blobData)
-  }
-
-  return {
-    manifestDescriptor: {
-      mediaType: manifestEntry.mediaType,
-      digest: manifestEntry.digest,
-      size: manifestEntry.size,
-    },
-    manifest,
-    manifestBuffer,
-    refName: manifestEntry.annotations?.["org.opencontainers.image.ref.name"],
-    blobs,
-  }
-}
+import { parseCliArgs, resolvePassword } from "./util"
 
 export async function checkBlobExists(
   baseUrl: string,
@@ -192,6 +120,13 @@ export interface Credentials {
   password: string
 }
 
+export function toCredentials(
+  username: string | undefined,
+  password: string | undefined,
+): Credentials | undefined {
+  return username && password ? { username, password } : undefined
+}
+
 function encodeBasicAuth(creds: Credentials): string {
   const encoded = Buffer.from(`${creds.username}:${creds.password}`).toString("base64")
   return `Basic ${encoded}`
@@ -251,80 +186,64 @@ export async function resolveAuth(
   return {}
 }
 
+export async function getAuthHeaders(
+  baseUrl: string,
+  scope: string,
+  credentials: Credentials | undefined,
+): Promise<Record<string, string>> {
+  let authHeaders: Record<string, string> = {}
+  const probeResp = await fetch(`${baseUrl}/v2/`, { method: "GET", headers: authHeaders })
+  if (probeResp.status === 401) {
+    const wwwAuth = probeResp.headers.get("www-authenticate")
+    if (wwwAuth) {
+      authHeaders = await resolveAuth(overrideScope(wwwAuth, scope), credentials)
+    }
+  }
+  return authHeaders
+}
+
 export interface PushOptions {
   ref: string | undefined
   layout: string
   plainHttp: boolean
   username: string | undefined
   password: string | undefined
-  passwordStdin: boolean
 }
 
-const VALUE_OPTS: Record<string, "layout" | "username" | "password"> = {
+const VALUE_OPTS: Record<string, string> = {
   "--layout": "layout",
   "--username": "username",
   "--password": "password",
 }
 
-const BOOL_FLAGS: Record<string, "passwordStdin" | "plainHttp"> = {
+const BOOL_FLAGS: Record<string, string> = {
   "--password-stdin": "passwordStdin",
   "--plain-http": "plainHttp",
 }
 
-export function parsePushArgs(args: string[]): {
+export interface ParsedPushArgs {
   ref: string | undefined
   layout: string | undefined
   username: string | undefined
   password: string | undefined
   passwordStdin: boolean
   plainHttp: boolean
-} {
-  const result: {
-    ref: string | undefined
-    layout: string | undefined
-    username: string | undefined
-    password: string | undefined
-    passwordStdin: boolean
-    plainHttp: boolean
-  } = {
-    ref: undefined,
-    layout: undefined,
-    username: undefined,
-    password: undefined,
-    passwordStdin: false,
-    plainHttp: false,
+}
+
+export function parsePushArgs(args: string[]): ParsedPushArgs {
+  const parsed = parseCliArgs(args, { values: VALUE_OPTS, flags: BOOL_FLAGS })
+  return {
+    ref: parsed.positionals[0],
+    layout: singleValue(parsed.values["layout"]),
+    username: singleValue(parsed.values["username"]),
+    password: singleValue(parsed.values["password"]),
+    passwordStdin: parsed.flags["passwordStdin"] === true,
+    plainHttp: parsed.flags["plainHttp"] === true,
   }
+}
 
-  let i = 0
-  while (i < args.length) {
-    const arg = args[i]
-    if (arg === undefined) {
-      i++
-      continue
-    }
-
-    const valueKey = VALUE_OPTS[arg]
-    if (valueKey !== undefined) {
-      const v = args[++i]
-      if (v !== undefined) result[valueKey] = v
-      i++
-      continue
-    }
-
-    const boolKey = BOOL_FLAGS[arg]
-    if (boolKey !== undefined) {
-      result[boolKey] = true
-      i++
-      continue
-    }
-
-    if (!arg.startsWith("-")) {
-      result.ref = arg
-    }
-    i++
-  }
-
-  return result
+function singleValue(value: string | string[] | undefined): string | undefined {
+  return typeof value === "string" ? value : undefined
 }
 
 export const PUSH_USAGE = `Usage: openmmcli push <registry>/<repo>:<tag> [options]
@@ -357,26 +276,12 @@ export async function runPush(options: PushOptions): Promise<void> {
   const scheme = options.plainHttp ? "http" : "https"
   const baseUrl = `${scheme}://${parsed.registry}`
 
-  let authHeaders: Record<string, string> = {}
-  const credentials =
-    options.username && options.password
-      ? { username: options.username, password: options.password }
-      : undefined
+  const authHeaders = await getAuthHeaders(
+    baseUrl,
+    `repository:${parsed.repository}:push,pull`,
+    toCredentials(options.username, options.password),
+  )
 
-  const probeResp = await fetch(`${baseUrl}/v2/`, {
-    method: "GET",
-    headers: authHeaders,
-  })
-  if (probeResp.status === 401) {
-    const wwwAuth = probeResp.headers.get("www-authenticate")
-    if (wwwAuth) {
-      const scope = `repository:${parsed.repository}:push,pull`
-      const correctedAuth = overrideScope(wwwAuth, scope)
-      authHeaders = await resolveAuth(correctedAuth, credentials)
-    }
-  }
-
-  // Upload blobs (config + layers)
   const allDescriptors = [layout.manifest.config, ...layout.manifest.layers]
   for (const desc of allDescriptors) {
     const exists = await checkBlobExists(baseUrl, parsed.repository, desc.digest, authHeaders)
@@ -390,7 +295,6 @@ export async function runPush(options: PushOptions): Promise<void> {
     }
   }
 
-  // Push manifest
   await pushManifest(
     baseUrl,
     parsed.repository,
@@ -405,23 +309,11 @@ export async function runPush(options: PushOptions): Promise<void> {
 export async function runPushFromArgs(args: string[]): Promise<void> {
   const parsed = parsePushArgs(args)
 
-  let password = parsed.password
-  if (parsed.passwordStdin) {
-    const chunks: Buffer[] = []
-    await new Promise<void>((resolve) => {
-      process.stdin.on("data", (chunk) => chunks.push(chunk))
-      process.stdin.on("end", () => resolve())
-      process.stdin.on("error", () => resolve())
-    })
-    password = Buffer.concat(chunks).toString("utf8").trim() || undefined
-  }
-
   await runPush({
     ref: parsed.ref,
     layout: parsed.layout ?? "./oci-layout",
     plainHttp: parsed.plainHttp,
     username: parsed.username,
-    password,
-    passwordStdin: parsed.passwordStdin,
+    password: await resolvePassword(parsed.password, parsed.passwordStdin),
   })
 }
