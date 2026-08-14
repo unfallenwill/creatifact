@@ -54,9 +54,9 @@ test("buildManifest supports multiple layers and omits empty annotations", () =>
 test("parseBuildArgs parses all flags", () => {
   const result = parseBuildArgs([
     "--dir",
-    "./plugins",
+    "./assets",
     "-t",
-    "org/plugins:1.0.0",
+    "org/myapp:1.0.0",
     "-o",
     "./out",
     "-f",
@@ -73,8 +73,8 @@ test("parseBuildArgs parses all flags", () => {
     "--plain-http",
   ])
 
-  expect(result.dir).toBe("./plugins")
-  expect(result.tag).toBe("org/plugins:1.0.0")
+  expect(result.dir).toBe("./assets")
+  expect(result.tag).toBe("org/myapp:1.0.0")
   expect(result.output).toBe("./out")
   expect(result.file).toBe("./openmm-build.json")
   expect(result.annotations).toEqual({ a: "1", b: "2" })
@@ -250,7 +250,7 @@ test("runBuild packs assets as the top layer", async () => {
   const assetsDir = join(tmp, "assets")
   const outputDir = join(tmp, "out")
   await mkdir(assetsDir, { recursive: true })
-  await writeFile(join(assetsDir, "plugin.txt"), "plugin data")
+  await writeFile(join(assetsDir, "asset.txt"), "asset data")
 
   await runBuild({
     tag: "org/pkg:1.0.0",

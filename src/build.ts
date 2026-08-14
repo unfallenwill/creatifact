@@ -24,7 +24,7 @@ export const BUILD_USAGE = `Usage: openmmcli build [options]
 Build an OCI image layout from a build manifest (default: ./openmm-build.json).
 
 Options:
-  -t, --tag <repo:tag>   Image reference, e.g. org/plugins:1.0.0 (required)
+  -t, --tag <repo:tag>   Image reference, e.g. org/myapp:1.0.0 (required)
       --dir <path>       Local directory to pack as the top layer
                          (overrides "assets" in the manifest)
   -f, --file <path>      Build manifest path (default: ./openmm-build.json)
