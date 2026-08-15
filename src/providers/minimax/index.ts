@@ -22,7 +22,18 @@ export interface MiniMaxVideoOptions {
   [key: string]: unknown
 }
 
+// 图片生成参数(snake_case 透传,与 API 文档一致):
+// https://platform.minimaxi.com/docs/api-reference/image-generation-t2i
 export interface MiniMaxImageOptions {
+  aspect_ratio?: string
+  width?: number
+  height?: number
+  response_format?: "url" | "base64"
+  seed?: number
+  n?: number
+  prompt_optimizer?: boolean
+  aigc_watermark?: boolean
+  style?: Record<string, unknown>
   [key: string]: unknown
 }
 
@@ -163,8 +174,14 @@ export function createMiniMaxProvider(
         prompt: req.prompt,
         ...(req.image
           ? {
+              // JPG/JPEG/PNG data URL 或公网 URL;mime 按扩展名推断,base64 兜底 png
               subject_reference: [
-                { type: "character", image_file: (await toUrlRef(req.image, "image/png")).url },
+                {
+                  type: "character",
+                  image_file: (
+                    await toUrlRef(req.image, "base64" in req.image ? "image/png" : undefined)
+                  ).url,
+                },
               ],
             }
           : {}),

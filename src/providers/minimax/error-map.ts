@@ -17,8 +17,9 @@ function fromStatusCode(code: number): ErrorCategory | undefined {
   if (code === 1004 || code === 2049) return "auth"
   if (code === 1002) return "rate"
   if (code === 1008) return "quota"
-  // 1026 输入涉敏 / 1027 输出涉敏
+  // 1026 输入涉敏 / 1027 输出涉敏 / 2013 传入参数异常(调用方错误,不应重试)
   if (code === 1026 || code === 1027) return "moderation"
+  if (code === 2013) return "invalid"
   return undefined
 }
 
