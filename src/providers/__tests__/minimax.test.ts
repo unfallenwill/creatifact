@@ -242,3 +242,17 @@ test("minimax submit rejects duration outside 4-15", async () => {
     }),
   ).rejects.toMatchObject({ category: "invalid", message: expect.stringContaining("4-15") })
 })
+
+test("classifyMinimaxError prefers trailing embedded code over regex (TokenPlan case)", () => {
+  // 真实线上返回:HTTP 400 + OpenAI 风格体,码内嵌在消息尾部。
+  // 旧逻辑把消息里的 "TokenPlan" 误匹配 /token/ → auth;新逻辑取 (2013) → invalid
+  expect(
+    classifyMinimaxError(400, {
+      type: "error",
+      error: {
+        type: "bad_request_error",
+        message: "invalid params, TokenPlan 或 Credit 暂不支持 MiniMax-H3 系列模型 (2013)",
+      },
+    }),
+  ).toBe("invalid")
+})
