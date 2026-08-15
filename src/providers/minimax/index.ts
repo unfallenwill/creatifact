@@ -14,11 +14,15 @@ import { MINIMAX_MODELS } from "./models"
 
 const DEFAULT_BASE_URL = "https://api.minimaxi.com"
 
-// V2 resolution/duration 必填:https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create
+// V2 create: https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create
+// resolution ∈ {768P, 2K}; duration ∈ [4,15]; t2v 时 ratio 必填且不能为 adaptive
 export interface MiniMaxVideoOptions {
-  resolution: string
+  resolution: "768P" | "2K"
   duration: number
   ratio?: string
+  prompt_optimizer?: boolean
+  aigc_watermark?: boolean
+  callback_url?: string
   [key: string]: unknown
 }
 
@@ -54,6 +58,7 @@ interface MiniMaxTaskResponse {
     status?: string
     error?: { code?: number | string; message?: string }
     content?: { url?: string }
+    usage?: Record<string, unknown>
   }
 }
 
@@ -124,6 +129,9 @@ export function createMiniMaxProvider(
           "MiniMax v2 requires options.resolution and options.duration",
         )
       }
+      if (req.options.duration < 4 || req.options.duration > 15) {
+        throw new ProviderError("invalid", "MiniMax v2 duration must be 4-15 seconds")
+      }
       const { resolution, duration, ratio, ...rest } = req.options
       const content = await buildV2Content(
         req.prompt,
@@ -144,6 +152,18 @@ export function createMiniMaxProvider(
       return { providerId: "minimax", id: body.task_id }
     },
 
+    // DELETE /v2/video_generation/{task_id}: 取消排队中任务或删除已完成记录
+    // https://platform.minimaxi.com/docs/api-reference/video-generation-v2-delete
+    async cancel(handle: JobHandle): Promise<void> {
+      if (handle.providerId !== "minimax") {
+        throw new ProviderError(
+          "invalid",
+          `handle belongs to '${handle.providerId}', not 'minimax'`,
+        )
+      }
+      await client.del(`/v2/video_generation/${handle.id}`)
+    },
+
     async poll(handle: JobHandle): Promise<JobStatus> {
       if (handle.providerId !== "minimax") {
         throw new ProviderError(
@@ -162,6 +182,7 @@ export function createMiniMaxProvider(
           return {
             state: "done",
             artifacts: [{ url: task.content?.url, mimeType: "video/mp4" }],
+            usage: task.usage ? { native: task.usage } : undefined,
           }
         case "failed":
         case "cancelled":

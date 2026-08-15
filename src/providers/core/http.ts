@@ -127,6 +127,7 @@ export interface JsonClient {
     body?: unknown,
     opts?: Omit<RequestJsonOptions, "method" | "body">,
   ): Promise<T>
+  del<T>(path: string, opts?: Omit<RequestJsonOptions, "method">): Promise<T>
 }
 
 /**
@@ -160,6 +161,9 @@ export function createJsonClient(config: JsonClientConfig): JsonClient {
       opts?: Omit<RequestJsonOptions, "method" | "body">,
     ): Promise<T> {
       return requestJson<T>(`${config.baseUrl}${path}`, merge({ ...opts, body, method: "POST" }))
+    },
+    del<T>(path: string, opts?: Omit<RequestJsonOptions, "method">): Promise<T> {
+      return requestJson<T>(`${config.baseUrl}${path}`, merge({ ...opts, method: "DELETE" }))
     },
   }
 }
