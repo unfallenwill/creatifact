@@ -1,7 +1,7 @@
-import { loadCredentials, type ProviderCredentials } from "../core/config"
 import { toUrlRef } from "../core/fileref"
-import { requestJson } from "../core/http"
+import { createJsonClient, type JsonClient } from "../core/http"
 import {
+  type Env,
   type ImageGenerateApi,
   type JobHandle,
   type JobStatus,
@@ -31,6 +31,12 @@ export interface MiniMaxProviderConfig {
   baseUrl?: string
 }
 
+/** The concrete shape createMiniMaxProvider returns. */
+export type MiniMaxProvider = Provider & {
+  videoGenerate: VideoGenerateApi<MiniMaxVideoOptions>
+  imageGenerate: ImageGenerateApi<MiniMaxImageOptions>
+}
+
 interface MiniMaxTaskResponse {
   task_id?: string
   task?: {
@@ -56,29 +62,26 @@ function checkBaseResp(body: { base_resp?: { status_code?: number; status_msg?: 
 
 export function createMiniMaxProvider(
   config: MiniMaxProviderConfig = {},
-  credentials: ProviderCredentials = loadCredentials(),
-): Provider<["video.generate", "image.generate"]> {
-  const apiKey = config.apiKey ?? credentials.minimaxApiKey
+  env: Env = process.env,
+): MiniMaxProvider {
+  const apiKey = config.apiKey ?? env["MINIMAX_API_KEY"]
   if (!apiKey) {
     throw new ProviderError(
       "auth",
       "missing MiniMax API key: set MINIMAX_API_KEY or providers.minimax.apiKey in config",
     )
   }
-  const baseUrl = config.baseUrl ?? DEFAULT_BASE_URL
-  const headers = { authorization: `Bearer ${apiKey}` }
-  const request = <T>(path: string, opts: Parameters<typeof requestJson>[1] = {}) =>
-    requestJson<T>(`${baseUrl}${path}`, {
-      ...opts,
-      headers: { ...headers, ...opts.headers },
-      classifyError: opts.classifyError ?? classifyMinimaxError,
-    })
+  const client: JsonClient = createJsonClient({
+    baseUrl: config.baseUrl ?? DEFAULT_BASE_URL,
+    headers: { authorization: `Bearer ${apiKey}` },
+    classifyError: classifyMinimaxError,
+  })
 
-  function buildV2Content(
+  async function buildV2Content(
     prompt: string,
     firstFrameUrl: string | undefined,
     lastFrameUrl: string | undefined,
-  ): Array<Record<string, unknown>> {
+  ): Promise<Array<Record<string, unknown>>> {
     const content: Array<Record<string, unknown>> = [{ type: "text", text: prompt }]
     if (firstFrameUrl) {
       content.push({ type: "image_url", image_url: { url: firstFrameUrl }, role: "first_frame" })
@@ -93,25 +96,23 @@ export function createMiniMaxProvider(
     async submit(req) {
       if (!req.options?.resolution || req.options?.duration === undefined) {
         throw new ProviderError(
-          "internal",
+          "invalid",
           "MiniMax v2 requires options.resolution and options.duration",
         )
       }
       const { resolution, duration, ratio, ...rest } = req.options
-      const body = await request<MiniMaxTaskResponse>("/v2/video_generation", {
-        method: "POST",
-        body: {
-          model: req.model,
-          content: buildV2Content(
-            req.prompt,
-            req.firstFrame ? toUrlRef(req.firstFrame).url : undefined,
-            req.lastFrame ? toUrlRef(req.lastFrame).url : undefined,
-          ),
-          resolution,
-          duration,
-          ...(ratio ? { ratio } : {}),
-          ...rest,
-        },
+      const content = await buildV2Content(
+        req.prompt,
+        req.firstFrame ? (await toUrlRef(req.firstFrame, "image/png")).url : undefined,
+        req.lastFrame ? (await toUrlRef(req.lastFrame, "image/png")).url : undefined,
+      )
+      const body = await client.post<MiniMaxTaskResponse>("/v2/video_generation", {
+        model: req.model,
+        content,
+        resolution,
+        duration,
+        ...(ratio ? { ratio } : {}),
+        ...rest,
       })
       if (!body.task_id) {
         throw new ProviderError("internal", "MiniMax did not return task_id", body)
@@ -120,7 +121,13 @@ export function createMiniMaxProvider(
     },
 
     async poll(handle: JobHandle): Promise<JobStatus> {
-      const body = await request<MiniMaxTaskResponse>(`/v2/query/video_generation/${handle.id}`)
+      if (handle.providerId !== "minimax") {
+        throw new ProviderError(
+          "invalid",
+          `handle belongs to '${handle.providerId}', not 'minimax'`,
+        )
+      }
+      const body = await client.get<MiniMaxTaskResponse>(`/v2/query/video_generation/${handle.id}`)
       const task = body.task
       switch (task?.status) {
         case "queued":
@@ -151,16 +158,17 @@ export function createMiniMaxProvider(
 
   const imageGenerate: ImageGenerateApi<MiniMaxImageOptions> = {
     async create(req) {
-      const body = await request<MiniMaxImageResponse>("/v1/image_generation", {
-        method: "POST",
-        body: {
-          model: req.model,
-          prompt: req.prompt,
-          ...(req.image
-            ? { subject_reference: [{ type: "character", image_file: toUrlRef(req.image).url }] }
-            : {}),
-          ...(req.options ?? {}),
-        },
+      const body = await client.post<MiniMaxImageResponse>("/v1/image_generation", {
+        model: req.model,
+        prompt: req.prompt,
+        ...(req.image
+          ? {
+              subject_reference: [
+                { type: "character", image_file: (await toUrlRef(req.image, "image/png")).url },
+              ],
+            }
+          : {}),
+        ...(req.options ?? {}),
       })
       checkBaseResp(body)
       return {
@@ -175,7 +183,6 @@ export function createMiniMaxProvider(
 
   return {
     id: "minimax",
-    capabilities: ["video.generate", "image.generate"],
     models: MINIMAX_MODELS,
     videoGenerate,
     imageGenerate,

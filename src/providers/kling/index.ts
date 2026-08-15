@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto"
-import { readFileSync } from "node:fs"
-import { loadCredentials, type ProviderCredentials } from "../core/config"
-import { requestJson } from "../core/http"
+import { readFile, stat } from "node:fs/promises"
+import { createJsonClient, type JsonClient } from "../core/http"
+import { JobTimeoutError, pollUntil } from "../core/job"
 import {
+  type Env,
   type FileRef,
   type ImageGenerateApi,
   type JobHandle,
@@ -16,7 +17,7 @@ import { signKlingJwt } from "./jwt"
 import { KLING_MODELS } from "./models"
 
 const DEFAULT_BASE_URL = "https://api-beijing.klingai.com"
-const RESULT_TTL_MS = 30 * 24 * 60 * 60 * 1000
+const IMAGE_POLL_TIMEOUT_MS = 300_000
 
 export interface KlingVideoOptions {
   duration?: number
@@ -37,6 +38,12 @@ export interface KlingProviderConfig {
   secretKey?: string
   baseUrl?: string
   pollIntervalMs?: number
+}
+
+/** The concrete shape createKlingProvider returns. */
+export type KlingProvider = Provider & {
+  videoGenerate: VideoGenerateApi<KlingVideoOptions>
+  imageGenerate: ImageGenerateApi<KlingImageOptions>
 }
 
 interface KlingEnvelope<T> {
@@ -73,18 +80,27 @@ interface KlingImageTask {
 }
 
 // Kling 的 url 字段接受 http(s) URL 或裸 base64,不接受 data URI
-function toKlingFileUrl(ref: FileRef): string {
+async function toKlingFileUrl(ref: FileRef): Promise<string> {
   if ("url" in ref) return ref.url
   if ("base64" in ref) return ref.base64
-  return readFileSync(ref.localPath).toString("base64")
+  const { size } = await stat(ref.localPath)
+  const limit = 50 * 1024 * 1024
+  if (size > limit) {
+    throw new ProviderError(
+      "invalid",
+      `file too large to inline (${size} bytes): ${ref.localPath}. Pass a { url } FileRef instead`,
+    )
+  }
+  const data = await readFile(ref.localPath)
+  return data.toString("base64")
 }
 
-function authHeaders(config: KlingProviderConfig, creds: ProviderCredentials) {
-  const apiKey = config.apiKey ?? creds.klingApiKey
+function authHeaders(config: KlingProviderConfig, env: Env) {
+  const apiKey = config.apiKey ?? env["KLING_API_KEY"]
   if (apiKey) return { authorization: `Bearer ${apiKey}` }
 
-  const accessKey = config.accessKey ?? creds.klingAccessKey
-  const secretKey = config.secretKey ?? creds.klingSecretKey
+  const accessKey = config.accessKey ?? env["KLING_ACCESS_KEY"]
+  const secretKey = config.secretKey ?? env["KLING_SECRET_KEY"]
   if (accessKey && secretKey) {
     return {
       authorization: `Bearer ${signKlingJwt(accessKey, secretKey, Math.floor(Date.now() / 1000))}`,
@@ -121,7 +137,6 @@ function videoStatusOf(task: KlingNewTask): JobStatus {
             url: o.url,
             watermark: o.watermark_url ? true : undefined,
             mimeType: "video/mp4",
-            expiresAt: new Date(Date.now() + RESULT_TTL_MS).toISOString(),
           })),
       }
     default:
@@ -129,23 +144,51 @@ function videoStatusOf(task: KlingNewTask): JobStatus {
   }
 }
 
+function imageTaskToStatus(task: KlingImageTask): JobStatus {
+  const status = task.task_status ?? task.status
+  if (status === "failed") {
+    const message = task.task_status_msg ?? task.message ?? ""
+    return {
+      state: "failed",
+      error: {
+        category: classifyKlingError(200, { error: { message } }) ?? "internal",
+        raw: message,
+      },
+    }
+  }
+  if (status === "succeed" || status === "succeeded") {
+    const legacyImages = (task.task_result?.images ?? []).map((img) => ({
+      url: img.url,
+      watermark: img.watermark_url ? true : undefined,
+    }))
+    const newImages = (task.outputs ?? [])
+      .filter((o) => (o.type ?? "image") === "image")
+      .map((o) => ({ url: o.url, watermark: o.watermark_url ? true : undefined }))
+    const urls = legacyImages.length > 0 ? legacyImages : newImages
+    return {
+      state: "done",
+      artifacts: urls.map((img) => ({
+        url: img.url,
+        watermark: img.watermark,
+        mimeType: "image/png",
+      })),
+    }
+  }
+  return { state: "pending" }
+}
+
 export function createKlingProvider(
   config: KlingProviderConfig = {},
-  credentials: ProviderCredentials = loadCredentials(),
-): Provider<["video.generate", "image.generate"]> {
-  authHeaders(config, credentials)
-  const baseUrl = config.baseUrl ?? DEFAULT_BASE_URL
-
-  const request = <T>(path: string, opts: Parameters<typeof requestJson>[1] = {}) => {
-    const headers = authHeaders(config, credentials)
-    return requestJson<KlingEnvelope<T>>(`${baseUrl}${path}`, {
-      ...opts,
-      headers: { ...headers, ...opts.headers },
-      classifyError: opts.classifyError ?? classifyKlingError,
-      // Kling 查询接口有自身限流,重试留给 pollUntil 的间隔控制
-      retries: 1,
-    })
-  }
+  env: Env = process.env,
+): KlingProvider {
+  authHeaders(config, env)
+  const client: JsonClient = createJsonClient({
+    baseUrl: config.baseUrl ?? DEFAULT_BASE_URL,
+    headers: () => authHeaders(config, env),
+    classifyError: classifyKlingError,
+    // Kling 查询接口有自身限流,统一 1 次重试;提交幂等性由 external_task_id 保证
+    retries: 1,
+  })
 
   function unwrap<T>(envelope: KlingEnvelope<T>): T {
     if (typeof envelope.code === "number" && envelope.code !== 0) {
@@ -174,114 +217,87 @@ export function createKlingProvider(
     async submit(req) {
       if (req.lastFrame) {
         throw new ProviderError(
-          "internal",
+          "invalid",
           "Kling new API has no last frame input; 3.0 Turbo supports first frame only",
         )
       }
       const externalId = randomUUID()
       const contents: Array<Record<string, unknown>> = [{ type: "prompt", text: req.prompt }]
       if (req.firstFrame) {
-        contents.push({ type: "first_frame", url: toKlingFileUrl(req.firstFrame) })
+        contents.push({ type: "first_frame", url: await toKlingFileUrl(req.firstFrame) })
       }
 
       const path = req.firstFrame ? `/image-to-video/${req.model}` : `/text-to-video/${req.model}`
-      const envelope = await request<KlingNewTask>(path, {
-        method: "POST",
-        body: buildVideoBody(req.options, contents, externalId),
-      })
+      const envelope = await client.post<KlingEnvelope<KlingNewTask>>(
+        path,
+        buildVideoBody(req.options, contents, externalId),
+      )
       unwrap(envelope)
       return { providerId: "kling", id: externalId }
     },
 
     async poll(handle: JobHandle): Promise<JobStatus> {
-      const envelope = await request<KlingNewTask[]>(`/tasks?external_task_ids=${handle.id}`)
-      const data = unwrap<KlingNewTask[]>(envelope)
-      const task = data?.[0]
+      if (handle.providerId !== "kling") {
+        throw new ProviderError("invalid", `handle belongs to '${handle.providerId}', not 'kling'`)
+      }
+      const envelope = await client.get<KlingEnvelope<KlingNewTask[]>>(
+        `/tasks?external_task_ids=${handle.id}`,
+      )
+      const task = unwrap<KlingNewTask[]>(envelope)?.[0]
       if (!task) return { state: "pending" }
       return videoStatusOf(task)
     },
   }
 
-  function imageStatusOf(task: KlingImageTask): {
-    done: boolean
-    failed: boolean
-    message: string
-    urls: Array<{ url: string | undefined; watermark: boolean | undefined }>
-  } {
-    const status = task.task_status ?? task.status
-    const failed = status === "failed"
-    const done = status === "succeed" || status === "succeeded"
-    const legacyImages = (task.task_result?.images ?? []).map((img) => ({
-      url: img.url,
-      watermark: img.watermark_url ? true : undefined,
-    }))
-    const newImages = (task.outputs ?? [])
-      .filter((o) => (o.type ?? "image") === "image")
-      .map((o) => ({ url: o.url, watermark: o.watermark_url ? true : undefined }))
-    return {
-      done,
-      failed,
-      message: task.task_status_msg ?? task.message ?? "",
-      urls: legacyImages.length > 0 ? legacyImages : newImages,
-    }
-  }
-
-  function buildImageBody(
-    req: Parameters<ImageGenerateApi<KlingImageOptions>["create"]>[0],
-    externalId: string,
-  ): Record<string, unknown> {
-    const { watermark, ...rest } = req.options ?? {}
-    const body: Record<string, unknown> = {
-      model_name: req.model,
-      prompt: req.prompt,
-      external_task_id: externalId,
-      ...rest,
-    }
-    if (req.image) {
-      body["image"] = toKlingFileUrl(req.image)
-    }
-    if (watermark !== undefined) {
-      body["watermark_info"] = { enabled: watermark }
-    }
-    return body
-  }
-
   const imageGenerate: ImageGenerateApi<KlingImageOptions> = {
     async create(req) {
       const externalId = randomUUID()
-      // Kling 图片生成端点是旧版任务制,sync 接口内部轮询收口
-      const deadline = Date.now() + 300_000
-      await request<KlingImageTask>("/v1/images/generations", {
-        method: "POST",
-        body: buildImageBody(req, externalId),
-      })
-      for (;;) {
-        const envelope = await request<KlingImageTask>(`/v1/images/generations/${externalId}`)
-        const task = unwrap<KlingImageTask>(envelope)
-        const status = imageStatusOf(task)
-        if (status.done) {
-          return {
-            artifacts: status.urls.map((img) => ({ url: img.url, mimeType: "image/png" })),
-          }
-        }
-        if (status.failed) {
-          const category = classifyKlingError(200, { error: { message: status.message } })
-          throw new ProviderError(
-            category ?? "internal",
-            status.message || "image generation failed",
+      const { watermark, ...rest } = req.options ?? {}
+      const body: Record<string, unknown> = {
+        model_name: req.model,
+        prompt: req.prompt,
+        external_task_id: externalId,
+        ...rest,
+      }
+      if (req.image) {
+        body["image"] = await toKlingFileUrl(req.image)
+      }
+      if (watermark !== undefined) {
+        body["watermark_info"] = { enabled: watermark }
+      }
+      // Kling 图片生成端点是旧版任务制,sync 接口内部轮询收口(复用 pollUntil)
+      await client.post<KlingEnvelope<KlingImageTask>>("/v1/images/generations", body)
+
+      const final = await pollUntil(
+        async () => {
+          const envelope = await client.get<KlingEnvelope<KlingImageTask>>(
+            `/v1/images/generations/${externalId}`,
           )
-        }
-        if (Date.now() >= deadline) {
+          return imageTaskToStatus(unwrap(envelope))
+        },
+        { providerId: "kling", id: externalId },
+        {
+          intervalMs: config.pollIntervalMs ?? 5000,
+          timeoutMs: IMAGE_POLL_TIMEOUT_MS,
+        },
+      ).catch((e: unknown) => {
+        if (e instanceof JobTimeoutError) {
           throw new ProviderError("internal", `image generation timed out (task ${externalId})`)
         }
-        await new Promise((resolve) => setTimeout(resolve, config.pollIntervalMs ?? 5000))
-      }
+        throw e
+      })
+
+      if (final.state === "done") return { artifacts: final.artifacts }
+      // pollUntil only resolves on done/failed
+      throw new ProviderError(
+        final.error.category,
+        (final.error.raw as string) || "image generation failed",
+      )
     },
   }
 
   return {
     id: "kling",
-    capabilities: ["video.generate", "image.generate"],
     models: KLING_MODELS,
     videoGenerate,
     imageGenerate,

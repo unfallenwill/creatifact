@@ -1,15 +1,16 @@
 import { type ErrorCategory, ProviderError } from "./types"
 
+export type ClassifyError = (status: number, body: unknown) => ErrorCategory | undefined
+
 export interface RequestJsonOptions {
   method?: string
   headers?: Record<string, string>
   body?: unknown
   timeoutMs?: number
+  /** Explicit retry count. Omit for the method-aware safe default. */
   retries?: number
-  classifyError?: (status: number, body: unknown) => ErrorCategory | undefined
+  classifyError?: ClassifyError
 }
-
-const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504])
 
 export function defaultClassifyError(status: number, body: unknown): ErrorCategory {
   if (status === 401 || status === 403) return "auth"
@@ -18,6 +19,17 @@ export function defaultClassifyError(status: number, body: unknown): ErrorCatego
   const text = JSON.stringify(body) ?? ""
   if (/content_policy|moderation|sensitive|审核|违规/i.test(text)) return "moderation"
   return "internal"
+}
+
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504])
+
+/**
+ * Safe retry defaults: idempotent GETs retry twice; non-idempotent requests
+ * (POST task submissions are billable!) do not retry unless the caller
+ * explicitly opts in — e.g. Kling submits carry an idempotent external id.
+ */
+function defaultRetries(method: string | undefined): number {
+  return method === undefined || method === "GET" ? 2 : 0
 }
 
 function messageFromBody(status: number, body: unknown): string {
@@ -79,7 +91,7 @@ async function attemptOnce<T>(url: string, opts: RequestJsonOptions): Promise<At
 }
 
 export async function requestJson<T>(url: string, opts: RequestJsonOptions = {}): Promise<T> {
-  const retries = opts.retries ?? 2
+  const retries = opts.retries ?? defaultRetries(opts.method)
   let lastError: ProviderError | undefined
 
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -97,4 +109,57 @@ export async function requestJson<T>(url: string, opts: RequestJsonOptions = {})
   }
 
   throw lastError ?? new ProviderError("internal", "request failed")
+}
+
+export interface JsonClientConfig {
+  baseUrl: string
+  /** Static headers, or a function for per-request credentials (e.g. signed JWT). */
+  headers?: Record<string, string> | (() => Record<string, string>)
+  classifyError?: ClassifyError
+  /** Default retry count for every call (overrides the method-aware default). */
+  retries?: number
+}
+
+export interface JsonClient {
+  get<T>(path: string, opts?: Omit<RequestJsonOptions, "method">): Promise<T>
+  post<T>(
+    path: string,
+    body?: unknown,
+    opts?: Omit<RequestJsonOptions, "method" | "body">,
+  ): Promise<T>
+}
+
+/**
+ * Shared HTTP client factory so each provider stops hand-rolling the same
+ * baseUrl/headers/classifyError merge. One instance per provider.
+ */
+export function createJsonClient(config: JsonClientConfig): JsonClient {
+  const baseHeaders = config.headers ?? {}
+  const merge = (opts: RequestJsonOptions | undefined): RequestJsonOptions => {
+    const merged: RequestJsonOptions = {
+      ...opts,
+      headers: {
+        ...(typeof baseHeaders === "function" ? baseHeaders() : baseHeaders),
+        ...opts?.headers,
+      },
+    }
+    const classify = opts?.classifyError ?? config.classifyError
+    if (classify !== undefined) merged.classifyError = classify
+    const retries = opts?.retries ?? config.retries
+    if (retries !== undefined) merged.retries = retries
+    return merged
+  }
+
+  return {
+    get<T>(path: string, opts?: Omit<RequestJsonOptions, "method">): Promise<T> {
+      return requestJson<T>(`${config.baseUrl}${path}`, merge(opts))
+    },
+    post<T>(
+      path: string,
+      body?: unknown,
+      opts?: Omit<RequestJsonOptions, "method" | "body">,
+    ): Promise<T> {
+      return requestJson<T>(`${config.baseUrl}${path}`, merge({ ...opts, body, method: "POST" }))
+    },
+  }
 }
