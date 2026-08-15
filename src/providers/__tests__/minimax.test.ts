@@ -191,3 +191,54 @@ test("classifyMinimaxError maps 2013 (bad input params) to invalid", () => {
     classifyMinimaxError(200, { base_resp: { status_code: 2013, status_msg: "invalid params" } }),
   ).toBe("invalid")
 })
+
+test("minimax poll maps usage on succeeded tasks", async () => {
+  const mock = mockFetch([
+    () =>
+      jsonResponse(200, {
+        task: {
+          status: "succeeded",
+          content: { url: "https://cdn.test/v.mp4" },
+          usage: { total_seconds: 5, output_seconds: 5 },
+        },
+      }),
+  ])
+  const minimax = createMiniMaxProvider(settings)
+
+  const status = await minimax.videoGenerate.poll({ providerId: "minimax", id: "t" })
+  expect(status).toMatchObject({
+    state: "done",
+    usage: { native: { total_seconds: 5, output_seconds: 5 } },
+  })
+  mock.restore()
+})
+
+test("minimax cancel issues DELETE to v2 task endpoint", async () => {
+  const mock = mockFetch([() => jsonResponse(200, { action: "deleted", status: "deleted" })])
+  const minimax = createMiniMaxProvider(settings)
+
+  await minimax.videoGenerate.cancel?.({ providerId: "minimax", id: "t-42" })
+
+  const rec = at(mock.recorded, 0)
+  expect(rec.url).toBe("https://api.minimaxi.com/v2/video_generation/t-42")
+  expect(rec.init?.method).toBe("DELETE")
+  mock.restore()
+})
+
+test("minimax cancel rejects foreign provider handles", async () => {
+  const minimax = createMiniMaxProvider(settings)
+  await expect(
+    minimax.videoGenerate.cancel?.({ providerId: "ark", id: "t" }),
+  ).rejects.toMatchObject({ category: "invalid" })
+})
+
+test("minimax submit rejects duration outside 4-15", async () => {
+  const minimax = createMiniMaxProvider(settings)
+  await expect(
+    minimax.videoGenerate.submit({
+      model: "MiniMax-H3",
+      prompt: "x",
+      options: { resolution: "2K", duration: 30 },
+    }),
+  ).rejects.toMatchObject({ category: "invalid", message: expect.stringContaining("4-15") })
+})

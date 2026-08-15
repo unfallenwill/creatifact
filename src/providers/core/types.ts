@@ -58,6 +58,8 @@ export type JobStatus =
 export interface VideoGenerateApi<Opts> {
   submit(req: VideoGenerateRequest<Opts>): Promise<JobHandle>
   poll(handle: JobHandle): Promise<JobStatus>
+  /** Cancel a queued task / delete a finished one, when the provider supports it. */
+  cancel?(handle: JobHandle): Promise<void>
 }
 
 export interface VideoGenerateRequest<Opts> {
