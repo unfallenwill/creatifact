@@ -2,27 +2,42 @@ import { toUrlRef } from "../core/fileref"
 import { createJsonClient, type JsonClient } from "../core/http"
 import {
   type Env,
+  type FileRef,
   type ImageGenerateApi,
   type JobHandle,
   type JobStatus,
   type Provider,
   ProviderError,
   type VideoGenerateApi,
+  type VideoGenerateRequest,
 } from "../core/types"
 import { classifyMinimaxError } from "./error-map"
-import { MINIMAX_MODELS } from "./models"
+import { MINIMAX_MODELS, MINIMAX_VIDEO_MODEL_MODES, type MiniMaxVideoMode } from "./models"
 
 const DEFAULT_BASE_URL = "https://api.minimaxi.com"
 
 // V2 create: https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create
-// resolution ∈ {768P, 2K}; duration ∈ [4,15]; t2v 时 ratio 必填且不能为 adaptive
+// V1 create pages (all POST /v1/video_generation):
+//   https://platform.minimaxi.com/docs/api-reference/video-generation-t2v
+//   https://platform.minimaxi.com/docs/api-reference/video-generation-i2v
+//   https://platform.minimaxi.com/docs/api-reference/video-generation-fl2v
+//   https://platform.minimaxi.com/docs/api-reference/video-generation-s2v
+// V1 query: https://platform.minimaxi.com/docs/api-reference/video-generation-query
+// V1 download: https://platform.minimaxi.com/docs/api-reference/video-generation-download
+export interface MiniMaxSubjectReference {
+  type: "character"
+  image: string[]
+}
+
 export interface MiniMaxVideoOptions {
-  resolution: "768P" | "2K"
-  duration: number
+  resolution?: "512P" | "720P" | "768P" | "1080P" | "2K"
+  duration?: number
   ratio?: string
   prompt_optimizer?: boolean
+  fast_pretreatment?: boolean
   aigc_watermark?: boolean
   callback_url?: string
+  subject_reference?: MiniMaxSubjectReference[]
   [key: string]: unknown
 }
 
@@ -52,7 +67,12 @@ export type MiniMaxProvider = Provider & {
   imageGenerate: ImageGenerateApi<MiniMaxImageOptions>
 }
 
-interface MiniMaxTaskResponse {
+interface MiniMaxBaseResp {
+  status_code?: number
+  status_msg?: string
+}
+
+interface MiniMaxV2TaskResponse {
   task_id?: string
   task?: {
     status?: string
@@ -62,13 +82,30 @@ interface MiniMaxTaskResponse {
   }
 }
 
+interface MiniMaxV1CreateResponse {
+  task_id?: string
+  base_resp?: MiniMaxBaseResp
+}
+
+interface MiniMaxV1QueryResponse {
+  task_id?: string
+  status?: string
+  file_id?: string
+  base_resp?: MiniMaxBaseResp
+}
+
+interface MiniMaxV1FileResponse {
+  file?: { download_url?: string }
+  base_resp?: MiniMaxBaseResp
+}
+
 interface MiniMaxImageResponse {
   data?: { image_urls?: string[]; image_base64?: string[] }
   metadata?: Record<string, unknown>
-  base_resp?: { status_code?: number; status_msg?: string }
+  base_resp?: MiniMaxBaseResp
 }
 
-function checkBaseResp(body: { base_resp?: { status_code?: number; status_msg?: string } }): void {
+function checkBaseResp(body: { base_resp?: MiniMaxBaseResp }): void {
   const code = body.base_resp?.status_code
   if (typeof code === "number" && code !== 0) {
     const category = classifyMinimaxError(200, body) ?? "internal"
@@ -89,6 +126,11 @@ function mimeOfUrl(url: string | undefined): string | undefined {
   return ext ? EXT_MIME[ext] : undefined
 }
 
+/** V1 image fields accept a URL or data URI; bare base64 gets an image/png hint. */
+async function toV1ImageUrl(ref: FileRef): Promise<string> {
+  return (await toUrlRef(ref, "base64" in ref ? "image/png" : undefined)).url
+}
+
 export function createMiniMaxProvider(
   config: MiniMaxProviderConfig = {},
   env: Env = process.env,
@@ -106,6 +148,38 @@ export function createMiniMaxProvider(
     classifyError: classifyMinimaxError,
   })
 
+  // V1 handles carry apiVersion, but keep this in-memory set too so same-process
+  // callers that strip extra JobHandle fields still poll the right endpoint.
+  const v1TaskIds = new Set<string>()
+
+  function isV1Handle(handle: JobHandle): boolean {
+    return handle.apiVersion === "v1" || v1TaskIds.has(handle.id)
+  }
+
+  function modeForRequest(req: VideoGenerateRequest<MiniMaxVideoOptions>): MiniMaxVideoMode {
+    const modes = MINIMAX_VIDEO_MODEL_MODES[req.model]
+    // Unknown ids keep the historical MiniMax default (V2) rather than being guessed into V1.
+    if (!modes) return "v2"
+    if (modes.includes("v2")) return "v2"
+    if (modes.includes("s2v")) return "s2v"
+
+    const mode: MiniMaxVideoMode = req.lastFrame ? "fl2v" : req.firstFrame ? "i2v" : "t2v"
+    if (modes && !modes.includes(mode)) {
+      const label: Record<MiniMaxVideoMode, string> = {
+        v2: "v2",
+        t2v: "text-to-video",
+        i2v: "image-to-video",
+        fl2v: "first/last-frame-to-video",
+        s2v: "subject-to-video",
+      }
+      throw new ProviderError(
+        "invalid",
+        `MiniMax model '${req.model}' does not support ${label[mode]} generation`,
+      )
+    }
+    return mode
+  }
+
   async function buildV2Content(
     prompt: string,
     firstFrameUrl: string | undefined,
@@ -121,38 +195,195 @@ export function createMiniMaxProvider(
     return content
   }
 
+  /** V1 create params common to t2v/i2v/fl2v (V2-only keys are dropped). */
+  function v1BodyOptions(
+    options: MiniMaxVideoOptions | undefined,
+    mode: MiniMaxVideoMode,
+  ): Record<string, unknown> {
+    if (!options) return {}
+    const body: Record<string, unknown> = { ...options }
+    delete body["ratio"]
+    delete body["subject_reference"]
+    if (mode === "s2v") {
+      delete body["duration"]
+      delete body["resolution"]
+      delete body["fast_pretreatment"]
+    }
+    for (const [key, value] of Object.entries(body)) {
+      if (value === undefined) delete body[key]
+    }
+    return body
+  }
+
+  async function buildV1SubjectReference(
+    req: VideoGenerateRequest<MiniMaxVideoOptions>,
+  ): Promise<MiniMaxSubjectReference[]> {
+    if (req.lastFrame) {
+      throw new ProviderError("invalid", "MiniMax S2V-01 does not accept lastFrame")
+    }
+    const provided = req.options?.subject_reference
+    if (provided && provided.length > 0) return provided
+    if (!req.firstFrame) {
+      throw new ProviderError(
+        "invalid",
+        "MiniMax S2V-01 requires options.subject_reference or firstFrame",
+      )
+    }
+    return [
+      {
+        type: "character",
+        image: [await toV1ImageUrl(req.firstFrame)],
+      },
+    ]
+  }
+
+  async function submitV1(
+    req: VideoGenerateRequest<MiniMaxVideoOptions>,
+    mode: MiniMaxVideoMode,
+  ): Promise<JobHandle> {
+    const body: Record<string, unknown> = {
+      model: req.model,
+      prompt: req.prompt,
+      ...v1BodyOptions(req.options, mode),
+    }
+
+    if (mode === "s2v") {
+      body["subject_reference"] = await buildV1SubjectReference(req)
+    } else if (mode === "fl2v") {
+      body["last_frame_image"] = await toV1ImageUrl(
+        req.lastFrame as NonNullable<typeof req.lastFrame>,
+      )
+      if (req.firstFrame) {
+        body["first_frame_image"] = await toV1ImageUrl(req.firstFrame)
+      }
+    } else if (mode === "i2v") {
+      body["first_frame_image"] = await toV1ImageUrl(
+        req.firstFrame as NonNullable<typeof req.firstFrame>,
+      )
+    }
+
+    const resp = await client.post<MiniMaxV1CreateResponse>("/v1/video_generation", body)
+    checkBaseResp(resp)
+    if (!resp.task_id) {
+      throw new ProviderError("internal", "MiniMax did not return task_id", resp)
+    }
+    v1TaskIds.add(resp.task_id)
+    return { providerId: "minimax", id: resp.task_id }
+  }
+
+  async function pollV1(handle: JobHandle): Promise<JobStatus> {
+    const query = await client.get<MiniMaxV1QueryResponse>(
+      `/v1/query/video_generation?task_id=${encodeURIComponent(handle.id)}`,
+    )
+    checkBaseResp(query)
+
+    switch (query.status?.toLowerCase()) {
+      case "preparing":
+      case "queueing":
+        return { state: "pending" }
+      case "processing":
+        return { state: "running" }
+      case "success": {
+        if (!query.file_id) {
+          throw new ProviderError("internal", "MiniMax query returned no file_id", query)
+        }
+        const file = await client.get<MiniMaxV1FileResponse>(
+          `/v1/files/retrieve?file_id=${encodeURIComponent(query.file_id)}`,
+        )
+        checkBaseResp(file)
+        const url = file.file?.download_url
+        if (!url) {
+          throw new ProviderError(
+            "internal",
+            "MiniMax file retrieve returned no download_url",
+            file,
+          )
+        }
+        return {
+          state: "done",
+          artifacts: [{ url, mimeType: "video/mp4" }],
+        }
+      }
+      case "fail":
+        return {
+          state: "failed",
+          error: {
+            category: classifyMinimaxError(200, query) ?? "internal",
+            raw: query,
+          },
+        }
+      default:
+        return { state: "pending" }
+    }
+  }
+
+  async function pollV2(handle: JobHandle): Promise<JobStatus> {
+    const body = await client.get<MiniMaxV2TaskResponse>(`/v2/query/video_generation/${handle.id}`)
+    const task = body.task
+    switch (task?.status) {
+      case "queued":
+        return { state: "pending" }
+      case "running":
+        return { state: "running" }
+      case "succeeded":
+        return {
+          state: "done",
+          artifacts: [{ url: task.content?.url, mimeType: "video/mp4" }],
+          usage: task.usage ? { native: task.usage } : undefined,
+        }
+      case "failed":
+      case "cancelled":
+        return {
+          state: "failed",
+          error: {
+            category:
+              classifyMinimaxError(200, { error: { message: task.error?.message ?? "" } }) ??
+              "internal",
+            raw: task.error,
+          },
+        }
+      default:
+        return { state: "pending" }
+    }
+  }
+
+  async function submitV2(req: VideoGenerateRequest<MiniMaxVideoOptions>): Promise<JobHandle> {
+    if (!req.options?.resolution || req.options?.duration === undefined) {
+      throw new ProviderError(
+        "invalid",
+        "MiniMax v2 requires options.resolution and options.duration",
+      )
+    }
+    if (req.options.duration < 4 || req.options.duration > 15) {
+      throw new ProviderError("invalid", "MiniMax v2 duration must be 4-15 seconds")
+    }
+    const { resolution, duration, ratio, ...rest } = req.options
+    const content = await buildV2Content(
+      req.prompt,
+      req.firstFrame ? (await toUrlRef(req.firstFrame, "image/png")).url : undefined,
+      req.lastFrame ? (await toUrlRef(req.lastFrame, "image/png")).url : undefined,
+    )
+    const body = await client.post<MiniMaxV2TaskResponse>("/v2/video_generation", {
+      model: req.model,
+      content,
+      resolution,
+      duration,
+      ...(ratio ? { ratio } : {}),
+      ...rest,
+    })
+    if (!body.task_id) {
+      throw new ProviderError("internal", "MiniMax did not return task_id", body)
+    }
+    return { providerId: "minimax", id: body.task_id }
+  }
+
   const videoGenerate: VideoGenerateApi<MiniMaxVideoOptions> = {
     async submit(req) {
-      if (!req.options?.resolution || req.options?.duration === undefined) {
-        throw new ProviderError(
-          "invalid",
-          "MiniMax v2 requires options.resolution and options.duration",
-        )
-      }
-      if (req.options.duration < 4 || req.options.duration > 15) {
-        throw new ProviderError("invalid", "MiniMax v2 duration must be 4-15 seconds")
-      }
-      const { resolution, duration, ratio, ...rest } = req.options
-      const content = await buildV2Content(
-        req.prompt,
-        req.firstFrame ? (await toUrlRef(req.firstFrame, "image/png")).url : undefined,
-        req.lastFrame ? (await toUrlRef(req.lastFrame, "image/png")).url : undefined,
-      )
-      const body = await client.post<MiniMaxTaskResponse>("/v2/video_generation", {
-        model: req.model,
-        content,
-        resolution,
-        duration,
-        ...(ratio ? { ratio } : {}),
-        ...rest,
-      })
-      if (!body.task_id) {
-        throw new ProviderError("internal", "MiniMax did not return task_id", body)
-      }
-      return { providerId: "minimax", id: body.task_id }
+      const mode = modeForRequest(req)
+      return mode === "v2" ? submitV2(req) : submitV1(req, mode)
     },
 
-    // DELETE /v2/video_generation/{task_id}: 取消排队中任务或删除已完成记录
+    // V2: DELETE /v2/video_generation/{task_id} (V1 has no cancel endpoint)
     // https://platform.minimaxi.com/docs/api-reference/video-generation-v2-delete
     async cancel(handle: JobHandle): Promise<void> {
       if (handle.providerId !== "minimax") {
@@ -160,6 +391,9 @@ export function createMiniMaxProvider(
           "invalid",
           `handle belongs to '${handle.providerId}', not 'minimax'`,
         )
+      }
+      if (isV1Handle(handle)) {
+        throw new ProviderError("invalid", "MiniMax v1 video generation has no cancel endpoint")
       }
       await client.del(`/v2/video_generation/${handle.id}`)
     },
@@ -171,33 +405,7 @@ export function createMiniMaxProvider(
           `handle belongs to '${handle.providerId}', not 'minimax'`,
         )
       }
-      const body = await client.get<MiniMaxTaskResponse>(`/v2/query/video_generation/${handle.id}`)
-      const task = body.task
-      switch (task?.status) {
-        case "queued":
-          return { state: "pending" }
-        case "running":
-          return { state: "running" }
-        case "succeeded":
-          return {
-            state: "done",
-            artifacts: [{ url: task.content?.url, mimeType: "video/mp4" }],
-            usage: task.usage ? { native: task.usage } : undefined,
-          }
-        case "failed":
-        case "cancelled":
-          return {
-            state: "failed",
-            error: {
-              category:
-                classifyMinimaxError(200, { error: { message: task.error?.message ?? "" } }) ??
-                "internal",
-              raw: task.error,
-            },
-          }
-        default:
-          return { state: "pending" }
-      }
+      return isV1Handle(handle) ? pollV1(handle) : pollV2(handle)
     },
   }
 

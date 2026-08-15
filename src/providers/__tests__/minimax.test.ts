@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { test } from "vitest"
 import { createMiniMaxProvider } from "../minimax"
 import { classifyMinimaxError } from "../minimax/error-map"
+import { MINIMAX_MODELS, MINIMAX_VIDEO_MODEL_MODES } from "../minimax/models"
 import { at, bodyOf, headersOf, jsonResponse, mockFetch } from "./helpers"
 
 const settings = { apiKey: "mm-key" }
@@ -255,4 +256,198 @@ test("classifyMinimaxError prefers trailing embedded code over regex (TokenPlan 
       },
     }),
   ).toBe("invalid")
+})
+
+test("minimax v1 t2v submit posts /v1/video_generation", async () => {
+  const mock = mockFetch([
+    () => jsonResponse(200, { task_id: "v1-t2v", base_resp: { status_code: 0 } }),
+  ])
+  const minimax = createMiniMaxProvider(settings)
+
+  const handle = await minimax.videoGenerate.submit({
+    model: "MiniMax-Hailuo-2.3",
+    prompt: "a cat walks",
+    options: { duration: 10, resolution: "768P", prompt_optimizer: false },
+  })
+
+  expect(handle).toEqual({ providerId: "minimax", id: "v1-t2v" })
+  const rec = at(mock.recorded, 0)
+  expect(rec.url).toBe("https://api.minimaxi.com/v1/video_generation")
+  expect(bodyOf(rec)).toEqual({
+    model: "MiniMax-Hailuo-2.3",
+    prompt: "a cat walks",
+    duration: 10,
+    resolution: "768P",
+    prompt_optimizer: false,
+  })
+  mock.restore()
+})
+
+test("minimax v1 i2v submit sends first_frame_image", async () => {
+  const mock = mockFetch([
+    () => jsonResponse(200, { task_id: "v1-i2v", base_resp: { status_code: 0 } }),
+  ])
+  const minimax = createMiniMaxProvider(settings)
+
+  const handle = await minimax.videoGenerate.submit({
+    model: "MiniMax-Hailuo-2.3-Fast",
+    prompt: "make it move",
+    firstFrame: { url: "https://x.test/first.png" },
+    options: { duration: 6, resolution: "1080P" },
+  })
+
+  expect(handle).toEqual({ providerId: "minimax", id: "v1-i2v" })
+  expect(bodyOf(at(mock.recorded, 0))).toEqual({
+    model: "MiniMax-Hailuo-2.3-Fast",
+    prompt: "make it move",
+    first_frame_image: "https://x.test/first.png",
+    duration: 6,
+    resolution: "1080P",
+  })
+  mock.restore()
+})
+
+test("minimax v1 fl2v submit sends first and last frame images", async () => {
+  const mock = mockFetch([
+    () => jsonResponse(200, { task_id: "v1-fl2v", base_resp: { status_code: 0 } }),
+  ])
+  const minimax = createMiniMaxProvider(settings)
+
+  await minimax.videoGenerate.submit({
+    model: "MiniMax-Hailuo-02",
+    prompt: "grow up",
+    firstFrame: { url: "https://x.test/first.png" },
+    lastFrame: { url: "https://x.test/last.png" },
+  })
+
+  expect(bodyOf(at(mock.recorded, 0))).toEqual({
+    model: "MiniMax-Hailuo-02",
+    prompt: "grow up",
+    first_frame_image: "https://x.test/first.png",
+    last_frame_image: "https://x.test/last.png",
+  })
+  mock.restore()
+})
+
+test("minimax v1 s2v submit sends subject_reference", async () => {
+  const mock = mockFetch([
+    () => jsonResponse(200, { task_id: "v1-s2v", base_resp: { status_code: 0 } }),
+  ])
+  const minimax = createMiniMaxProvider(settings)
+
+  await minimax.videoGenerate.submit({
+    model: "S2V-01",
+    prompt: "a girl waves",
+    options: {
+      subject_reference: [{ type: "character", image: ["https://x.test/subject.png"] }],
+    },
+  })
+
+  expect(bodyOf(at(mock.recorded, 0))).toEqual({
+    model: "S2V-01",
+    prompt: "a girl waves",
+    subject_reference: [{ type: "character", image: ["https://x.test/subject.png"] }],
+  })
+  mock.restore()
+})
+
+test("minimax v1 poll resolves file_id through files/retrieve", async () => {
+  const mock = mockFetch([
+    () => jsonResponse(200, { task_id: "t", status: "Queueing", base_resp: { status_code: 0 } }),
+    () => jsonResponse(200, { task_id: "t", status: "Processing", base_resp: { status_code: 0 } }),
+    () =>
+      jsonResponse(200, {
+        task_id: "t",
+        status: "Success",
+        file_id: "file-9",
+        base_resp: { status_code: 0 },
+      }),
+    () =>
+      jsonResponse(200, {
+        file: { download_url: "https://cdn.test/v1.mp4" },
+        base_resp: { status_code: 0 },
+      }),
+  ])
+  const minimax = createMiniMaxProvider(settings)
+  const handle = { providerId: "minimax", id: "t", apiVersion: "v1" } as const
+
+  expect(await minimax.videoGenerate.poll(handle)).toEqual({ state: "pending" })
+  expect(await minimax.videoGenerate.poll(handle)).toEqual({ state: "running" })
+  expect(await minimax.videoGenerate.poll(handle)).toEqual({
+    state: "done",
+    artifacts: [{ url: "https://cdn.test/v1.mp4", mimeType: "video/mp4" }],
+  })
+  expect(at(mock.recorded, 0).url).toBe(
+    "https://api.minimaxi.com/v1/query/video_generation?task_id=t",
+  )
+  expect(at(mock.recorded, 3).url).toBe("https://api.minimaxi.com/v1/files/retrieve?file_id=file-9")
+  mock.restore()
+})
+
+test("minimax v1 submit rejects incompatible model/mode combinations", async () => {
+  const minimax = createMiniMaxProvider(settings)
+  await expect(
+    minimax.videoGenerate.submit({ model: "T2V-01", prompt: "x", firstFrame: { url: "u" } }),
+  ).rejects.toMatchObject({ category: "invalid", message: /image-to-video/ })
+  await expect(
+    minimax.videoGenerate.submit({ model: "I2V-01", prompt: "x" }),
+  ).rejects.toMatchObject({ category: "invalid", message: /text-to-video/ })
+  await expect(
+    minimax.videoGenerate.submit({ model: "S2V-01", prompt: "x" }),
+  ).rejects.toMatchObject({ category: "invalid", message: /subject_reference/ })
+})
+
+test("minimax v1 create base_resp error is classified", async () => {
+  const mock = mockFetch([
+    () => jsonResponse(200, { base_resp: { status_code: 1004, status_msg: "bad key" } }),
+  ])
+  const minimax = createMiniMaxProvider(settings)
+  await expect(
+    minimax.videoGenerate.submit({ model: "T2V-01", prompt: "x" }),
+  ).rejects.toMatchObject({ category: "auth" })
+  mock.restore()
+})
+
+test("minimax v1 cancel is unsupported and v1 tasks poll v1 after handle strip", async () => {
+  const submitMock = mockFetch([
+    () => jsonResponse(200, { task_id: "t-stripped", base_resp: { status_code: 0 } }),
+    () =>
+      jsonResponse(200, {
+        task_id: "t-stripped",
+        status: "Queueing",
+        base_resp: { status_code: 0 },
+      }),
+  ])
+  const minimax = createMiniMaxProvider(settings)
+
+  const handle = await minimax.videoGenerate.submit({ model: "T2V-01", prompt: "x" })
+  await expect(
+    minimax.videoGenerate.cancel?.({ providerId: "minimax", id: handle.id }),
+  ).rejects.toMatchObject({ category: "invalid", message: /no cancel endpoint/ })
+
+  const stripped = { providerId: "minimax", id: handle.id }
+  expect(await minimax.videoGenerate.poll(stripped)).toEqual({ state: "pending" })
+  expect(at(submitMock.recorded, 1).url).toBe(
+    "https://api.minimaxi.com/v1/query/video_generation?task_id=t-stripped",
+  )
+  submitMock.restore()
+})
+
+test("minimax models list includes the six documented v1 endpoint families", () => {
+  const ids = new Set(MINIMAX_MODELS.map((model) => model.id))
+  for (const id of [
+    "MiniMax-Hailuo-2.3",
+    "MiniMax-Hailuo-2.3-Fast",
+    "MiniMax-Hailuo-02",
+    "T2V-01-Director",
+    "T2V-01",
+    "I2V-01-Director",
+    "I2V-01-live",
+    "I2V-01",
+    "S2V-01",
+  ]) {
+    expect(ids.has(id)).toBe(true)
+  }
+  expect(MINIMAX_VIDEO_MODEL_MODES["MiniMax-Hailuo-02"]).toEqual(["t2v", "i2v", "fl2v"])
+  expect(MINIMAX_VIDEO_MODEL_MODES["S2V-01"]).toEqual(["s2v"])
 })
