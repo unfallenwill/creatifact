@@ -1,3 +1,9 @@
+import {
+  loadConfig,
+  type OpenmmCliConfig,
+  resolvePlainHttp,
+  resolveRegistryCredentials,
+} from "./config"
 import { parseRef, readOciLayout } from "./oci"
 
 export { parseRef, readOciLayout }
@@ -208,6 +214,7 @@ export interface PushOptions {
   plainHttp: boolean
   username: string | undefined
   password: string | undefined
+  config?: OpenmmCliConfig
 }
 
 const VALUE_OPTS: Record<string, string> = {
@@ -256,10 +263,10 @@ Arguments:
 
 Options:
   --layout <dir>        OCI layout directory (default: ./oci-layout)
-  --username <user>     Registry username
+  --username <user>     Registry username (falls back to config, see: openmmcli login)
   --password <pw>       Registry password (prefer --password-stdin)
   --password-stdin      Read password from stdin
-  --plain-http          Use HTTP instead of HTTPS (for local registries)
+  --plain-http          Use HTTP instead of HTTPS (or set insecure via config)
   -h, --help            Show this help message`
 
 export async function runPush(options: PushOptions): Promise<void> {
@@ -273,13 +280,20 @@ export async function runPush(options: PushOptions): Promise<void> {
   }
 
   const parsed = parseRef(effectiveRef)
-  const scheme = options.plainHttp ? "http" : "https"
+  const config = options.config ?? {}
+  const credentials = resolveRegistryCredentials(
+    parsed.registry,
+    options.username,
+    options.password,
+    config,
+  )
+  const scheme = resolvePlainHttp(parsed.registry, options.plainHttp, config) ? "http" : "https"
   const baseUrl = `${scheme}://${parsed.registry}`
 
   const authHeaders = await getAuthHeaders(
     baseUrl,
     `repository:${parsed.repository}:push,pull`,
-    toCredentials(options.username, options.password),
+    credentials ? toCredentials(credentials.username, credentials.password) : undefined,
   )
 
   const allDescriptors = [layout.manifest.config, ...layout.manifest.layers]
@@ -306,7 +320,10 @@ export async function runPush(options: PushOptions): Promise<void> {
   console.log(`Pushed ${effectiveRef}`)
 }
 
-export async function runPushFromArgs(args: string[]): Promise<void> {
+export async function runPushFromArgs(
+  args: string[],
+  opts?: { configPath?: string },
+): Promise<void> {
   const parsed = parsePushArgs(args)
 
   await runPush({
@@ -315,5 +332,6 @@ export async function runPushFromArgs(args: string[]): Promise<void> {
     plainHttp: parsed.plainHttp,
     username: parsed.username,
     password: await resolvePassword(parsed.password, parsed.passwordStdin),
+    config: loadConfig(opts?.configPath),
   })
 }
