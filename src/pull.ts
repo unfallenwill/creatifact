@@ -9,6 +9,12 @@ import {
 
 export { saveLayout }
 
+import {
+  loadConfig,
+  type OpenmmCliConfig,
+  resolvePlainHttp,
+  resolveRegistryCredentials,
+} from "./config"
 import { getAuthHeaders, toCredentials } from "./push"
 import { ensureOutputDirEmpty, parseCliArgs, resolvePassword } from "./util"
 
@@ -16,17 +22,26 @@ export interface ImageFetchOptions {
   plainHttp: boolean
   username: string | undefined
   password: string | undefined
+  /** Loaded config for credential/insecure fallback; omit to disable. */
+  config?: OpenmmCliConfig
 }
 
 export async function fetchImage(ref: string, opts: ImageFetchOptions): Promise<LoadedImage> {
   const parsed = parseRef(ref)
-  const scheme = opts.plainHttp ? "http" : "https"
+  const config = opts.config ?? {}
+  const credentials = resolveRegistryCredentials(
+    parsed.registry,
+    opts.username,
+    opts.password,
+    config,
+  )
+  const scheme = resolvePlainHttp(parsed.registry, opts.plainHttp, config) ? "http" : "https"
   const baseUrl = `${scheme}://${parsed.registry}`
 
   const authHeaders = await getAuthHeaders(
     baseUrl,
     `repository:${parsed.repository}:pull`,
-    toCredentials(opts.username, opts.password),
+    credentials ? toCredentials(credentials.username, credentials.password) : undefined,
   )
 
   const { manifest, mediaType, manifestData } = await fetchManifest(
@@ -111,6 +126,7 @@ export interface PullOptions {
   plainHttp: boolean
   username: string | undefined
   password: string | undefined
+  config?: OpenmmCliConfig
 }
 
 const PULL_STR_OPTS: Record<string, string> = {
@@ -159,10 +175,10 @@ Arguments:
 
 Options:
   -o, --output <dir>     Output OCI layout directory (default: ./oci-layout)
-  --username <user>      Registry username
+  --username <user>      Registry username (falls back to config, see: openmmcli login)
   --password <pw>        Registry password (prefer --password-stdin)
   --password-stdin       Read password from stdin
-  --plain-http           Use HTTP instead of HTTPS (for local registries)
+  --plain-http           Use HTTP instead of HTTPS (or set insecure via config)
   -h, --help             Show this help message`
 
 export async function runPull(options: PullOptions): Promise<void> {
@@ -174,6 +190,7 @@ export async function runPull(options: PullOptions): Promise<void> {
     plainHttp: options.plainHttp,
     username: options.username,
     password: options.password,
+    ...(options.config === undefined ? {} : { config: options.config }),
   })
 
   await saveLayout(
@@ -187,7 +204,10 @@ export async function runPull(options: PullOptions): Promise<void> {
   console.log(`Pulled ${options.ref} → ${outputDir}`)
 }
 
-export async function runPullFromArgs(args: string[]): Promise<void> {
+export async function runPullFromArgs(
+  args: string[],
+  opts?: { configPath?: string },
+): Promise<void> {
   const parsed = parsePullArgs(args)
 
   if (!parsed.ref) {
@@ -200,5 +220,6 @@ export async function runPullFromArgs(args: string[]): Promise<void> {
     plainHttp: parsed.plainHttp,
     username: parsed.username,
     password: await resolvePassword(parsed.password, parsed.passwordStdin),
+    config: loadConfig(opts?.configPath),
   })
 }

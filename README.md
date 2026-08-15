@@ -20,11 +20,14 @@ npx openmmcli --version
 # 1. Build an OCI image layout from a build manifest
 openmmcli build -t org/myapp:1.0.0
 
-# 2. Push to a registry
-openmmcli push localhost:5000/org/myapp:1.0.0 --plain-http
+# 2. Log in to a registry once (credentials are saved to the config file)
+openmmcli login localhost:5000
 
-# 3. Pull from a registry
-openmmcli pull localhost:5000/org/myapp:1.0.0 -o ./pulled-layout --plain-http
+# 3. Push to a registry (no more --username/--password on every call)
+openmmcli push localhost:5000/org/myapp:1.0.0
+
+# 4. Pull from a registry
+openmmcli pull localhost:5000/org/myapp:1.0.0 -o ./pulled-layout
 ```
 
 ## Commands
@@ -138,6 +141,70 @@ Options:
   --plain-http           Use HTTP instead of HTTPS (for local registries)
   -h, --help             Show this help message
 ```
+
+### `login` / `logout`
+
+Save and remove registry credentials. Credentials are stored base64-encoded in
+`auths` inside the config file (the same format as `~/.docker/config.json`),
+never in shell history.
+
+```
+Usage: openmmcli login <registry> [options]
+
+Arguments:
+  <registry>             Registry host[:port] (e.g. localhost:5000, registry.example.com)
+
+Options:
+  -u, --username <user>  Registry username (prompted if omitted and interactive)
+  -p, --password <pw>    Registry password (prefer --password-stdin)
+      --password-stdin   Read password from stdin
+  -h, --help             Show this help message
+```
+
+`push`, `pull`, and `build` fall back to the saved credentials automatically
+when `--username`/`--password` are not passed. A complete CLI credential pair
+always wins over the config file.
+
+### `config`
+
+```
+Usage: openmmcli config <action> [args]
+
+Actions:
+  path                  Print the config file path
+  list                  Print the config with secret values masked
+  get <key>             Print a value (dotted key, e.g. auths.localhost:5000.username)
+  set <key> <value>     Set a value (value parsed as JSON if valid, else string)
+  reset                 Delete the config file
+```
+
+## Configuration
+
+The config file lives at `~/.openmmcli/config.json` (override with the
+`OPENMMCLI_CONFIG_DIR` environment variable). It is shared by all commands and
+by other openmmcli modules (e.g. provider API keys under `providers`).
+
+```json
+{
+  "auths": {
+    "localhost:5000": {
+      "auth": "dXNlcjpwYXNz",
+      "insecure": true
+    }
+  },
+  "providers": {
+    "ark": { "apiKey": "..." }
+  }
+}
+```
+
+- `auths.<registry>.auth` — base64(`user:password`), docker-config-compatible; managed by `openmmcli login`/`logout`.
+- `auths.<registry>.insecure` — talk plain HTTP to this registry without `--plain-http` (per registry, not global).
+- `providers.*` — passthrough section for other openmmcli modules; preserved by every write.
+
+Credential resolution order: **CLI flags (complete pair) → config file → anonymous**.
+If the config file is corrupt, commands fail loudly with the file path and a
+`openmmcli config reset` hint instead of silently ignoring your settings.
 
 ## Development
 

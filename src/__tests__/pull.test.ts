@@ -379,3 +379,120 @@ test("runPull throws when blob digest mismatch", async () => {
     await rm(tmp, { recursive: true })
   }
 })
+
+import { encodeAuth, type OpenmmCliConfig } from "../config"
+
+function fetchImageFixtureConfig() {
+  const configData = "{}"
+  const configDigest = `sha256:${createHash("sha256").update(configData).digest("hex")}`
+  const manifestObj = {
+    schemaVersion: 2 as const,
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    config: { mediaType: "application/vnd.oci.empty.v1+json", digest: configDigest, size: 2 },
+    layers: [],
+  }
+  const manifestData = JSON.stringify(manifestObj)
+  return { configData, manifestData }
+}
+
+test("fetchImage resolves credentials and insecure from config", async () => {
+  const config: OpenmmCliConfig = {
+    auths: { "localhost:5000": { auth: encodeAuth("cfguser", "cfgpw"), insecure: true } },
+  }
+
+  const { configData, manifestData } = fetchImageFixtureConfig()
+
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValueOnce({
+      // probe → Basic challenge
+      ok: false,
+      status: 401,
+      headers: { get: () => 'Basic realm="x"' },
+    })
+    .mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/vnd.oci.image.manifest.v1+json" },
+      text: () => Promise.resolve(manifestData),
+    })
+    .mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      arrayBuffer: () => Promise.resolve(Buffer.from(configData)),
+    })
+
+  vi.stubGlobal("fetch", fetchMock)
+
+  try {
+    const image = await fetchImage("localhost:5000/test:1.0", {
+      plainHttp: false, // config insecure should flip this to http
+      username: undefined,
+      password: undefined,
+      config,
+    })
+
+    expect(image.manifest.schemaVersion).toBe(2)
+
+    // probe went to http:// because config marks the registry insecure
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://localhost:5000/v2/")
+
+    // manifest request carries Basic credentials from config
+    const manifestCall = fetchMock.mock.calls[1]
+    expect(manifestCall?.[0]).toBe("http://localhost:5000/v2/test/manifests/1.0")
+    expect((manifestCall?.[1] as RequestInit | undefined)?.headers).toEqual(
+      expect.objectContaining({
+        Authorization: `Basic ${encodeAuth("cfguser", "cfgpw")}`,
+      }),
+    )
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})
+
+test("fetchImage prefers complete CLI credentials over config", async () => {
+  const config: OpenmmCliConfig = {
+    auths: { "localhost:5000": { auth: encodeAuth("cfguser", "cfgpw") } },
+  }
+
+  const { configData, manifestData } = fetchImageFixtureConfig()
+
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      headers: { get: () => 'Basic realm="x"' },
+    })
+    .mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/vnd.oci.image.manifest.v1+json" },
+      text: () => Promise.resolve(manifestData),
+    })
+    .mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      arrayBuffer: () => Promise.resolve(Buffer.from(configData)),
+    })
+
+  vi.stubGlobal("fetch", fetchMock)
+
+  try {
+    await fetchImage("localhost:5000/test:1.0", {
+      plainHttp: true,
+      username: "cliuser",
+      password: "clipw",
+      config,
+    })
+
+    const manifestCall = fetchMock.mock.calls[1]
+    expect((manifestCall?.[1] as RequestInit | undefined)?.headers).toEqual(
+      expect.objectContaining({
+        Authorization: `Basic ${encodeAuth("cliuser", "clipw")}`,
+      }),
+    )
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})

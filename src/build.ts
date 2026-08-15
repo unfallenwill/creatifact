@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs"
 import { mkdir, readdir, stat } from "node:fs/promises"
 import { isAbsolute, join } from "node:path"
+import { loadConfig, type OpenmmCliConfig } from "./config"
 import { createLayerFromView, createLayerTarball, mergeImageLayers, selectPaths } from "./layers"
 import { type BuildManifestFile, type CopyEntry, loadBuildManifest } from "./manifest"
 import {
@@ -46,6 +47,7 @@ export interface BuildOptions {
   plainHttp: boolean
   username: string | undefined
   password: string | undefined
+  config?: OpenmmCliConfig
 }
 
 export interface ParsedArgs {
@@ -239,6 +241,7 @@ export async function runBuild(options: BuildOptions): Promise<void> {
     plainHttp: options.plainHttp,
     username: options.username,
     password: options.password,
+    ...(options.config === undefined ? {} : { config: options.config }),
   }
 
   const inherited = await Promise.all(
@@ -265,7 +268,10 @@ export async function runBuild(options: BuildOptions): Promise<void> {
   console.log(`Built ${options.tag} → ${options.output}`)
 }
 
-export async function runBuildFromArgs(args: string[]): Promise<void> {
+export async function runBuildFromArgs(
+  args: string[],
+  opts?: { configPath?: string },
+): Promise<void> {
   const cliOpts = parseBuildArgs(args)
 
   const manifestPath = cliOpts.file ?? "./openmm-build.json"
@@ -276,6 +282,7 @@ export async function runBuildFromArgs(args: string[]): Promise<void> {
     { ...cliOpts, ...(password === undefined ? {} : { password }) },
     loaded.file,
   )
+  options.config = loadConfig(opts?.configPath)
   options.assetsDir = resolveLocalDir(options.assetsDir, loaded.baseDir)
   options.from = options.from.map((spec) => resolveLocalSpec(spec, loaded.baseDir))
   options.copy = options.copy.map((entry) => ({

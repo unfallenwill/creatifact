@@ -514,3 +514,65 @@ test("runPush throws when layout directory missing", async () => {
     }),
   ).rejects.toThrow()
 })
+
+import { mkdtempSync, writeFileSync } from "node:fs"
+import { encodeAuth } from "../config"
+import { runPushFromArgs } from "../push"
+
+test("runPushFromArgs falls back to config credentials", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "push-test-"))
+  await setupTestLayout(tmp)
+
+  const configDir = mkdtempSync(join(tmpdir(), "openmmcli-cfg-"))
+  const configPath = join(configDir, "config.json")
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      auths: { "localhost:5000": { auth: encodeAuth("cfguser", "cfgpw"), insecure: true } },
+    }),
+  )
+
+  const fetchMock = vi.fn()
+  fetchMock
+    .mockResolvedValueOnce({
+      // probe → Basic challenge
+      ok: false,
+      status: 401,
+      headers: { get: () => 'Basic realm="x"' },
+    })
+    .mockResolvedValueOnce({ ok: false, status: 404 }) // HEAD config → not exists
+    .mockResolvedValueOnce({
+      ok: true,
+      status: 202,
+      headers: { get: () => "http://localhost:5000/v2/test/blobs/uploads/uuid-1" },
+    })
+    .mockResolvedValueOnce({ ok: true, status: 201 }) // PUT config upload
+    .mockResolvedValueOnce({ ok: false, status: 404 }) // HEAD layer → not exists
+    .mockResolvedValueOnce({
+      ok: true,
+      status: 202,
+      headers: { get: () => "http://localhost:5000/v2/test/blobs/uploads/uuid-2" },
+    })
+    .mockResolvedValueOnce({ ok: true, status: 201 }) // PUT layer upload
+    .mockResolvedValueOnce({ ok: true, status: 201 }) // PUT manifest
+
+  vi.stubGlobal("fetch", fetchMock)
+
+  try {
+    await runPushFromArgs(["localhost:5000/test:1.0", "--layout", tmp], { configPath })
+
+    // insecure from config → http scheme without --plain-http
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://localhost:5000/v2/")
+
+    const manifestCall = fetchMock.mock.calls[7]
+    expect(manifestCall?.[0]).toBe("http://localhost:5000/v2/test/manifests/1.0")
+    expect((manifestCall?.[1] as RequestInit | undefined)?.headers).toEqual(
+      expect.objectContaining({
+        Authorization: `Basic ${encodeAuth("cfguser", "cfgpw")}`,
+      }),
+    )
+  } finally {
+    vi.unstubAllGlobals()
+    await rm(tmp, { recursive: true })
+  }
+})
