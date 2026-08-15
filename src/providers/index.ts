@@ -46,7 +46,12 @@ export {
 } from "./core/types"
 export type { KlingImageOptions, KlingProviderConfig, KlingVideoOptions } from "./kling"
 export { createKlingProvider } from "./kling"
-export type { MiniMaxImageOptions, MiniMaxProviderConfig, MiniMaxVideoOptions } from "./minimax"
+export type {
+  MiniMaxImageOptions,
+  MiniMaxProviderConfig,
+  MiniMaxSubjectReference,
+  MiniMaxVideoOptions,
+} from "./minimax"
 export { createMiniMaxProvider } from "./minimax"
 
 type ProviderFactory = (settings: Record<string, unknown>, env: Env) => Provider

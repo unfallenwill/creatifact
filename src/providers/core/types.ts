@@ -47,6 +47,8 @@ export interface Usage {
 export interface JobHandle {
   readonly providerId: string
   readonly id: string
+  /** Optional discriminator for providers that expose more than one task API generation. */
+  readonly apiVersion?: "v1" | "v2"
 }
 
 export type JobStatus =
