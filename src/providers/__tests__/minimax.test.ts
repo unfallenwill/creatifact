@@ -95,7 +95,7 @@ test("minimax image maps image_urls and image_base64", async () => {
   const mock = mockFetch([
     () =>
       jsonResponse(200, {
-        data: { image_urls: ["https://cdn.test/i.png"] },
+        data: { image_urls: ["https://cdn.test/i.jpeg"] },
         metadata: { success_count: 1 },
         base_resp: { status_code: 0 },
       }),
@@ -108,7 +108,7 @@ test("minimax image maps image_urls and image_base64", async () => {
   const minimax = createMiniMaxProvider(settings)
 
   const url = await minimax.imageGenerate.create({ model: "image-01", prompt: "a cat" })
-  expect(url.artifacts).toEqual([{ url: "https://cdn.test/i.png", mimeType: "image/png" }])
+  expect(url.artifacts).toEqual([{ url: "https://cdn.test/i.jpeg", mimeType: "image/jpeg" }])
   expect(url.usage).toEqual({ native: { success_count: 1 } })
 
   const b64 = await minimax.imageGenerate.create({

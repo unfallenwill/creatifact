@@ -71,6 +71,19 @@ function checkBaseResp(body: { base_resp?: { status_code?: number; status_msg?: 
   }
 }
 
+const EXT_MIME: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+}
+
+/** Artifact mime from the URL extension; API responses carry no content-type. */
+function mimeOfUrl(url: string | undefined): string | undefined {
+  const ext = url?.split("?")[0]?.split(".").pop()?.toLowerCase()
+  return ext ? EXT_MIME[ext] : undefined
+}
+
 export function createMiniMaxProvider(
   config: MiniMaxProviderConfig = {},
   env: Env = process.env,
@@ -190,7 +203,10 @@ export function createMiniMaxProvider(
       checkBaseResp(body)
       return {
         artifacts: [
-          ...(body.data?.image_urls ?? []).map((url) => ({ url, mimeType: "image/png" })),
+          ...(body.data?.image_urls ?? []).map((url) => ({
+            url,
+            mimeType: mimeOfUrl(url) ?? "image/png",
+          })),
           ...(body.data?.image_base64 ?? []).map((base64) => ({ base64, mimeType: "image/png" })),
         ],
         usage: body.metadata ? { native: body.metadata } : undefined,
