@@ -23,12 +23,19 @@ function fromStatusCode(code: number): ErrorCategory | undefined {
   return undefined
 }
 
-export function classifyMinimaxError(status: number, body: unknown): ErrorCategory | undefined {
+// OpenAI 风格错误会把业务码内嵌在消息尾部,如 "... (2013)"
+const TRAILING_CODE_RE = /\((\d{4})\)\s*$/
+
+function fromHttpStatus(status: number): ErrorCategory | undefined {
   if (status === 401 || status === 403) return "auth"
   if (status === 429) return "rate"
   if (status === 402) return "quota"
   if (status >= 500) return "internal"
+  return undefined
+}
 
+/** base_resp.status_code → 内嵌尾部码 → 消息正则,逐级兜底。 */
+function fromBody(body: unknown): ErrorCategory | undefined {
   const parsed = (body ?? {}) as MiniMaxErrorBody
   const code = parsed.base_resp?.status_code
   if (typeof code === "number") {
@@ -37,8 +44,20 @@ export function classifyMinimaxError(status: number, body: unknown): ErrorCatego
   }
 
   const text = parsed.base_resp?.status_msg ?? parsed.error?.message ?? ""
+
+  // 内嵌业务码优先于正则,避免如 "TokenPlan" 里的 "token" 触发 auth 误判
+  const embedded = TRAILING_CODE_RE.exec(text)
+  if (embedded) {
+    const byCode = fromStatusCode(Number(embedded[1]))
+    if (byCode) return byCode
+  }
+
   for (const [pattern, category] of STATUS_MAP) {
     if (text && pattern.test(text)) return category
   }
   return undefined
+}
+
+export function classifyMinimaxError(status: number, body: unknown): ErrorCategory | undefined {
+  return fromHttpStatus(status) ?? fromBody(body)
 }
