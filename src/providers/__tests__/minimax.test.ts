@@ -3,11 +3,11 @@ import { createMiniMaxProvider } from "../minimax"
 import { classifyMinimaxError } from "../minimax/error-map"
 import { at, bodyOf, headersOf, jsonResponse, mockFetch } from "./helpers"
 
-const creds = { minimaxApiKey: "mm-key" }
+const settings = { apiKey: "mm-key" }
 
 test("minimax v2 submit builds content array with required fields", async () => {
   const mock = mockFetch([() => jsonResponse(200, { task_id: "t-1" })])
-  const minimax = createMiniMaxProvider({}, creds)
+  const minimax = createMiniMaxProvider(settings)
 
   const handle = await minimax.videoGenerate.submit({
     model: "MiniMax-H3",
@@ -36,10 +36,10 @@ test("minimax v2 submit builds content array with required fields", async () => 
 })
 
 test("minimax submit rejects missing required resolution/duration", async () => {
-  const minimax = createMiniMaxProvider({}, creds)
+  const minimax = createMiniMaxProvider(settings)
   await expect(
     minimax.videoGenerate.submit({ model: "MiniMax-H3", prompt: "x" }),
-  ).rejects.toMatchObject({ category: "internal", message: expect.stringContaining("resolution") })
+  ).rejects.toMatchObject({ category: "invalid", message: expect.stringContaining("resolution") })
 })
 
 test("minimax poll uses v2 path param and task.content.url", async () => {
@@ -56,7 +56,7 @@ test("minimax poll uses v2 path param and task.content.url", async () => {
       }),
     () => jsonResponse(200, { task: { status: "cancelled" } }),
   ])
-  const minimax = createMiniMaxProvider({}, creds)
+  const minimax = createMiniMaxProvider(settings)
   const handle = { providerId: "minimax", id: "t-9" }
 
   expect(await minimax.videoGenerate.poll(handle)).toEqual({ state: "pending" })
@@ -77,7 +77,7 @@ test("minimax v2 http errors surface openai-style body", async () => {
   const mock = mockFetch([
     () => jsonResponse(429, { type: "error", error: { message: "rate limited" } }),
   ])
-  const minimax = createMiniMaxProvider({}, creds)
+  const minimax = createMiniMaxProvider(settings)
   await expect(
     minimax.videoGenerate.submit({
       model: "MiniMax-H3",
@@ -102,7 +102,7 @@ test("minimax image maps image_urls and image_base64", async () => {
         base_resp: { status_code: 0 },
       }),
   ])
-  const minimax = createMiniMaxProvider({}, creds)
+  const minimax = createMiniMaxProvider(settings)
 
   const url = await minimax.imageGenerate.create({ model: "image-01", prompt: "a cat" })
   expect(url.artifacts).toEqual([{ url: "https://cdn.test/i.png", mimeType: "image/png" }])
@@ -124,7 +124,7 @@ test("minimax base_resp error throws classified error", async () => {
   const mock = mockFetch([
     () => jsonResponse(200, { base_resp: { status_code: 1004, status_msg: "invalid api key" } }),
   ])
-  const minimax = createMiniMaxProvider({}, creds)
+  const minimax = createMiniMaxProvider(settings)
   await expect(
     minimax.imageGenerate.create({ model: "image-01", prompt: "x" }),
   ).rejects.toMatchObject({ category: "auth" })
@@ -145,4 +145,11 @@ test("classifyMinimaxError maps official status codes", () => {
   expect(classifyMinimaxError(429, { error: { message: "x" } })).toBe("rate")
   expect(classifyMinimaxError(500, undefined)).toBe("internal")
   expect(classifyMinimaxError(400, { base_resp: { status_msg: "unknown" } })).toBeUndefined()
+})
+
+test("minimax poll rejects a foreign provider handle", async () => {
+  const minimax = createMiniMaxProvider(settings)
+  await expect(minimax.videoGenerate.poll({ providerId: "ark", id: "t" })).rejects.toMatchObject({
+    category: "invalid",
+  })
 })

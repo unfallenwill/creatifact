@@ -3,11 +3,11 @@ import { createArkProvider } from "../ark"
 import { classifyArkError } from "../ark/error-map"
 import { at, bodyOf, headersOf, jsonResponse, mockFetch } from "./helpers"
 
-const creds = { arkApiKey: "test-key" }
+const settings = { apiKey: "test-key" }
 
 test("ark video submit builds content array with frame roles and returns handle", async () => {
   const mock = mockFetch([() => jsonResponse(200, { id: "task-1" })])
-  const ark = createArkProvider({}, creds)
+  const ark = createArkProvider(settings)
 
   const handle = await ark.videoGenerate.submit({
     model: "doubao-seedance-2.0",
@@ -29,7 +29,7 @@ test("ark video submit builds content array with frame roles and returns handle"
       { type: "image_url", image_url: { url: "https://x.test/first.png" }, role: "first_frame" },
       {
         type: "image_url",
-        image_url: { url: "data:application/octet-stream;base64,AAA=" },
+        image_url: { url: "data:image/png;base64,AAA=" },
         role: "last_frame",
       },
     ],
@@ -51,7 +51,7 @@ test("ark video poll maps task states", async () => {
     { status: "expired" },
   ]
   const mock = mockFetch(states.map((s) => () => jsonResponse(200, s)))
-  const ark = createArkProvider({}, creds)
+  const ark = createArkProvider(settings)
   const handle = { providerId: "ark", id: "t" }
 
   expect(await ark.videoGenerate.poll(handle)).toEqual({ state: "pending" })
@@ -74,7 +74,7 @@ test("ark image generate is synchronous", async () => {
   const mock = mockFetch([
     () => jsonResponse(200, { data: [{ url: "https://cdn.test/i.png" }], usage: { g: 1 } }),
   ])
-  const ark = createArkProvider({}, creds)
+  const ark = createArkProvider(settings)
 
   const result = await ark.imageGenerate.create({
     model: "doubao-seedream-4.0-250828",
@@ -96,7 +96,7 @@ test("ark understand maps files to image_url vs video_url", async () => {
     () => jsonResponse(200, { choices: [{ message: { content: "a cat" } }] }),
     () => jsonResponse(200, { choices: [{ message: { content: "a clip" } }] }),
   ])
-  const ark = createArkProvider({}, creds)
+  const ark = createArkProvider(settings)
 
   await ark.imageUnderstand.create({
     model: "doubao-1.5-vision-pro",
@@ -132,7 +132,7 @@ test("ark embed returns vectors and dimensions", async () => {
   const mock = mockFetch([
     () => jsonResponse(200, { data: [{ embedding: [0.1, 0.2] }], usage: { tokens: 3 } }),
   ])
-  const ark = createArkProvider({}, creds)
+  const ark = createArkProvider(settings)
 
   const result = await ark.embed.create({ model: "doubao-embedding", inputs: ["hello"] })
   expect(result).toEqual({
@@ -152,4 +152,26 @@ test("classifyArkError maps codes", () => {
   expect(classifyArkError(400, { error: { code: "SensitiveContentDetected" } })).toBe("moderation")
   expect(classifyArkError(400, { error: { code: "Arrears" } })).toBe("quota")
   expect(classifyArkError(400, { error: { code: "WhateverElse" } })).toBeUndefined()
+})
+
+test("ark poll rejects a foreign provider handle", async () => {
+  const ark = createArkProvider(settings)
+  await expect(ark.videoGenerate.poll({ providerId: "kling", id: "t" })).rejects.toMatchObject({
+    category: "invalid",
+  })
+})
+
+test("ark video submit is not retried on 5xx (billable POST)", async () => {
+  const mock = mockFetch([
+    () => jsonResponse(500, { error: { message: "boom" } }),
+    () => jsonResponse(500, { error: { message: "boom" } }),
+  ])
+  const ark = createArkProvider(settings)
+
+  await expect(
+    ark.videoGenerate.submit({ model: "doubao-seedance-2.0", prompt: "x" }),
+  ).rejects.toMatchObject({ category: "internal" })
+  expect(mock.recorded.length).toBe(1)
+
+  mock.restore()
 })

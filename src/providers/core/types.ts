@@ -7,7 +7,15 @@ export type Capability =
 
 export type FileRef = { localPath: string } | { url: string } | { base64: string }
 
-export type ErrorCategory = "moderation" | "quota" | "rate" | "auth" | "internal"
+/** Environment variable lookup (injectable for tests). */
+export type Env = Record<string, string | undefined>
+
+/**
+ * - "invalid": the caller's request is malformed/unsupported (bad options,
+ *   unsupported frame input) — not the provider's fault, do not retry.
+ * - everything else: provider-side failure categories.
+ */
+export type ErrorCategory = "invalid" | "moderation" | "quota" | "rate" | "auth" | "internal"
 
 export class ProviderError extends Error {
   readonly category: ErrorCategory
@@ -125,29 +133,37 @@ export interface VerifiedModel {
   note?: string
 }
 
-type CapabilitiesToApis<Caps extends readonly Capability[]> = ("video.generate" extends Caps[number]
-  ? { videoGenerate: VideoGenerateApi<unknown> }
-  : unknown) &
-  ("video.understand" extends Caps[number]
-    ? { videoUnderstand: UnderstandApi<unknown> }
-    : unknown) &
-  ("image.generate" extends Caps[number] ? { imageGenerate: ImageGenerateApi<unknown> } : unknown) &
-  ("image.understand" extends Caps[number]
-    ? { imageUnderstand: UnderstandApi<unknown> }
-    : unknown) &
-  ("embed" extends Caps[number] ? { embed: EmbedApi<unknown> } : unknown)
-
-export type Provider<Caps extends readonly Capability[] = readonly Capability[]> = {
+/**
+ * A provider is identified by its id and exposes capability APIs as optional
+ * methods: if `videoGenerate` is present, the provider supports video
+ * generation. Capabilities are derived (see capabilitiesOf) instead of being
+ * declared twice.
+ */
+export interface Provider {
   readonly id: string
-  readonly capabilities: Caps
   readonly models: VerifiedModel[]
-} & CapabilitiesToApis<Caps>
+  videoGenerate?: VideoGenerateApi<unknown>
+  videoUnderstand?: UnderstandApi<unknown>
+  imageGenerate?: ImageGenerateApi<unknown>
+  imageUnderstand?: UnderstandApi<unknown>
+  embed?: EmbedApi<unknown>
+}
 
-export type AnyProvider = Pick<Provider, "id" | "capabilities" | "models">
+const METHOD_CAPABILITIES: ReadonlyArray<readonly [keyof Provider, Capability]> = [
+  ["videoGenerate", "video.generate"],
+  ["videoUnderstand", "video.understand"],
+  ["imageGenerate", "image.generate"],
+  ["imageUnderstand", "image.understand"],
+  ["embed", "embed"],
+]
 
-export function hasCapability<C extends Capability>(
-  provider: AnyProvider,
-  capability: C,
-): provider is AnyProvider & CapabilitiesToApis<readonly [C]> {
-  return provider.capabilities.includes(capability)
+/** Derive a provider's capabilities from which API methods it implements. */
+export function capabilitiesOf(provider: Provider): Capability[] {
+  const caps: Capability[] = []
+  for (const [method, capability] of METHOD_CAPABILITIES) {
+    if (provider[method] !== undefined) {
+      caps.push(capability)
+    }
+  }
+  return caps
 }

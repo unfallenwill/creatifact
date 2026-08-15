@@ -42,7 +42,7 @@ test("kling jwt uses provided ttl", () => {
 
 test("kling text-to-video submit builds contents/settings/options shape", async () => {
   const mock = mockFetch([() => jsonResponse(200, { code: 0, data: { id: "internal-1" } })])
-  const kling = createKlingProvider({}, { klingApiKey: "new-key" })
+  const kling = createKlingProvider({ apiKey: "new-key" })
 
   const handle = await kling.videoGenerate.submit({
     model: "kling-3.0-turbo",
@@ -66,7 +66,7 @@ test("kling text-to-video submit builds contents/settings/options shape", async 
 
 test("kling image-to-video uses contents first_frame with raw base64", async () => {
   const mock = mockFetch([() => jsonResponse(200, { code: 0, data: {} })])
-  const kling = createKlingProvider({}, { klingApiKey: "k" })
+  const kling = createKlingProvider({ apiKey: "k" })
 
   await kling.videoGenerate.submit({
     model: "kling-3.0-turbo",
@@ -84,14 +84,14 @@ test("kling image-to-video uses contents first_frame with raw base64", async () 
 })
 
 test("kling rejects last frame: new API has no tail input", async () => {
-  const kling = createKlingProvider({}, { klingApiKey: "k" })
+  const kling = createKlingProvider({ apiKey: "k" })
   await expect(
     kling.videoGenerate.submit({
       model: "kling-3.0-turbo",
       prompt: "x",
       lastFrame: { url: "https://x.test/b.png" },
     }),
-  ).rejects.toMatchObject({ category: "internal" })
+  ).rejects.toMatchObject({ category: "invalid" })
 })
 
 test("kling poll reads task array and maps outputs", async () => {
@@ -110,7 +110,7 @@ test("kling poll reads task array and maps outputs", async () => {
         ],
       }),
   ])
-  const kling = createKlingProvider({}, { klingApiKey: "k" })
+  const kling = createKlingProvider({ apiKey: "k" })
   const handle = { providerId: "kling", id: "ext-1" }
 
   expect(await kling.videoGenerate.poll(handle)).toEqual({ state: "running" })
@@ -131,7 +131,7 @@ test("kling envelope error code throws with raw", async () => {
   const mock = mockFetch([
     () => jsonResponse(200, { code: 1205, message: "content moderation failed" }),
   ])
-  const kling = createKlingProvider({}, { klingApiKey: "k" })
+  const kling = createKlingProvider({ apiKey: "k" })
 
   await expect(
     kling.videoGenerate.submit({ model: "kling-3.0-turbo", prompt: "x" }),
@@ -153,7 +153,7 @@ test("kling image create submits to legacy endpoint and polls by id", async () =
         },
       }),
   ])
-  const kling = createKlingProvider({ pollIntervalMs: 1 }, { klingApiKey: "k" })
+  const kling = createKlingProvider({ apiKey: "k", pollIntervalMs: 1 })
 
   const result = await kling.imageGenerate.create({ model: "kolors", prompt: "a cat" })
 
@@ -166,13 +166,7 @@ test("kling image create submits to legacy endpoint and polls by id", async () =
 
 test("kling jwt auth used when no api key", async () => {
   const mock = mockFetch([() => jsonResponse(200, { code: 0, data: {} })])
-  const kling = createKlingProvider(
-    {},
-    {
-      klingAccessKey: "ak",
-      klingSecretKey: "sk",
-    },
-  )
+  const kling = createKlingProvider({ accessKey: "ak", secretKey: "sk" })
 
   await kling.videoGenerate.submit({ model: "kling-3.0-turbo", prompt: "x" })
   const auth = headersOf(at(mock.recorded, 0))["authorization"]
@@ -195,4 +189,11 @@ test("classifyKlingError maps messages", () => {
   )
   expect(classifyKlingError(400, { message: "rate limit exceeded" })).toBe("rate")
   expect(classifyKlingError(400, { message: "unknown thing" })).toBeUndefined()
+})
+
+test("kling poll rejects a foreign provider handle", async () => {
+  const kling = createKlingProvider({ apiKey: "k" })
+  await expect(kling.videoGenerate.poll({ providerId: "ark", id: "t" })).rejects.toMatchObject({
+    category: "invalid",
+  })
 })

@@ -1,8 +1,8 @@
-import { loadCredentials, type ProviderCredentials } from "../core/config"
 import { toUrlRef } from "../core/fileref"
-import { requestJson } from "../core/http"
+import { createJsonClient, type JsonClient } from "../core/http"
 import {
   type EmbedApi,
+  type Env,
   type ErrorCategory,
   type FileRef,
   type ImageGenerateApi,
@@ -50,6 +50,15 @@ export interface ArkProviderConfig {
   baseUrl?: string
 }
 
+/** The concrete shape createArkProvider returns — every capability is present. */
+export type ArkProvider = Provider & {
+  videoGenerate: VideoGenerateApi<ArkVideoOptions>
+  videoUnderstand: UnderstandApi<ArkChatOptions>
+  imageGenerate: ImageGenerateApi<ArkImageOptions>
+  imageUnderstand: UnderstandApi<ArkChatOptions>
+  embed: EmbedApi<ArkEmbedOptions>
+}
+
 interface ArkTaskResponse {
   id: string
   status?: string
@@ -88,41 +97,38 @@ function toUsage(native: Record<string, unknown> | undefined): Usage | undefined
 
 export function createArkProvider(
   config: ArkProviderConfig = {},
-  credentials: ProviderCredentials = loadCredentials(),
-): Provider<["video.generate", "video.understand", "image.generate", "image.understand", "embed"]> {
-  const apiKey = config.apiKey ?? credentials.arkApiKey
+  env: Env = process.env,
+): ArkProvider {
+  const apiKey = config.apiKey ?? env["ARK_API_KEY"]
   if (!apiKey) {
     throw new ProviderError(
       "auth",
       "missing Ark API key: set ARK_API_KEY or providers.ark.apiKey in config",
     )
   }
-  const baseUrl = config.baseUrl ?? DEFAULT_BASE_URL
-  const headers = { authorization: `Bearer ${apiKey}` }
-  const request = <T>(path: string, opts: Parameters<typeof requestJson>[1] = {}) =>
-    requestJson<T>(`${baseUrl}${path}`, {
-      ...opts,
-      headers: { ...headers, ...opts.headers },
-      classifyError: opts.classifyError ?? classifyArkError,
-    })
+  const client: JsonClient = createJsonClient({
+    baseUrl: config.baseUrl ?? DEFAULT_BASE_URL,
+    headers: { authorization: `Bearer ${apiKey}` },
+    classifyError: classifyArkError,
+  })
 
-  function buildVideoContent(
+  async function buildVideoContent(
     prompt: string,
     firstFrame: FileRef | undefined,
     lastFrame: FileRef | undefined,
-  ): Array<Record<string, unknown>> {
+  ): Promise<Array<Record<string, unknown>>> {
     const content: Array<Record<string, unknown>> = [{ type: "text", text: prompt }]
     if (firstFrame) {
       content.push({
         type: "image_url",
-        image_url: { url: toUrlRef(firstFrame).url },
+        image_url: { url: (await toUrlRef(firstFrame, "image/png")).url },
         role: "first_frame",
       })
     }
     if (lastFrame) {
       content.push({
         type: "image_url",
-        image_url: { url: toUrlRef(lastFrame).url },
+        image_url: { url: (await toUrlRef(lastFrame, "image/png")).url },
         role: "last_frame",
       })
     }
@@ -141,20 +147,20 @@ export function createArkProvider(
 
   const videoGenerate: VideoGenerateApi<ArkVideoOptions> = {
     async submit(req) {
-      const content = buildVideoContent(req.prompt, req.firstFrame, req.lastFrame)
+      const content = await buildVideoContent(req.prompt, req.firstFrame, req.lastFrame)
       const body: Record<string, unknown> = { model: req.model, content }
       if (req.options) {
         applyVideoOptions(body, req.options)
       }
-      const resp = await request<ArkTaskResponse>("/contents/generations/tasks", {
-        method: "POST",
-        body,
-      })
+      const resp = await client.post<ArkTaskResponse>("/contents/generations/tasks", body)
       return { providerId: "ark", id: resp.id }
     },
 
     async poll(handle: JobHandle): Promise<JobStatus> {
-      const task = await request<ArkTaskResponse>(`/contents/generations/tasks/${handle.id}`)
+      if (handle.providerId !== "ark") {
+        throw new ProviderError("invalid", `handle belongs to '${handle.providerId}', not 'ark'`)
+      }
+      const task = await client.get<ArkTaskResponse>(`/contents/generations/tasks/${handle.id}`)
       if (task.status === "queued") return { state: "pending" }
       if (task.status === "running") return { state: "running" }
       if (task.status === "failed" || task.status === "cancelled" || task.status === "expired") {
@@ -173,7 +179,6 @@ export function createArkProvider(
             {
               url: task.content?.video_url,
               mimeType: "video/mp4",
-              expiresAt: undefined,
             },
           ],
           usage: toUsage(task.usage),
@@ -190,17 +195,14 @@ export function createArkProvider(
         prompt: req.prompt,
         response_format: req.options?.responseFormat ?? "url",
       }
-      if (req.image) body["image"] = toUrlRef(req.image).url
+      if (req.image) body["image"] = (await toUrlRef(req.image, "image/png")).url
       if (req.options) {
         const { size, watermark, responseFormat, ...rest } = req.options
         if (size) body["size"] = size
         if (watermark !== undefined) body["watermark"] = watermark
         Object.assign(body, rest)
       }
-      const resp = await request<ArkImageResponse>("/images/generations", {
-        method: "POST",
-        body,
-      })
+      const resp = await client.post<ArkImageResponse>("/images/generations", body)
       return {
         artifacts: (resp.data ?? []).map((item) => ({
           url: item.url,
@@ -212,33 +214,39 @@ export function createArkProvider(
     },
   }
 
-  function toChatMessages(
+  async function toChatMessages(
     messages: Parameters<UnderstandApi<ArkChatOptions>["create"]>[0]["messages"],
     fileKind: "image_url" | "video_url",
   ) {
-    return messages.map((msg) => ({
-      role: msg.role,
-      content:
-        typeof msg.content === "string"
-          ? msg.content
-          : msg.content.map((part) =>
-              typeof part === "string"
-                ? { type: "text", text: part }
-                : { type: fileKind, [fileKind]: { url: toUrlRef(part.file).url } },
-            ),
-    }))
+    const out = []
+    for (const msg of messages) {
+      out.push({
+        role: msg.role,
+        content:
+          typeof msg.content === "string"
+            ? msg.content
+            : await Promise.all(
+                msg.content.map(async (part) =>
+                  typeof part === "string"
+                    ? { type: "text", text: part }
+                    : {
+                        type: fileKind,
+                        [fileKind]: { url: (await toUrlRef(part.file, "image/png")).url },
+                      },
+                ),
+              ),
+      })
+    }
+    return out
   }
 
   function understandApi(fileKind: "image_url" | "video_url"): UnderstandApi<ArkChatOptions> {
     return {
       async create(req) {
-        const resp = await request<ArkChatResponse>("/chat/completions", {
-          method: "POST",
-          body: {
-            model: req.model,
-            messages: toChatMessages(req.messages, fileKind),
-            ...(req.options ?? {}),
-          },
+        const resp = await client.post<ArkChatResponse>("/chat/completions", {
+          model: req.model,
+          messages: await toChatMessages(req.messages, fileKind),
+          ...(req.options ?? {}),
         })
         return {
           text: resp.choices?.[0]?.message?.content ?? "",
@@ -251,9 +259,10 @@ export function createArkProvider(
   const embed: EmbedApi<ArkEmbedOptions> = {
     async create(req) {
       // 文本 embeddings 无 dimensions 参数(仅 multimodal 端点有),options 透传兜底
-      const resp = await request<ArkEmbedResponse>("/embeddings", {
-        method: "POST",
-        body: { model: req.model, input: req.inputs, ...(req.options ?? {}) },
+      const resp = await client.post<ArkEmbedResponse>("/embeddings", {
+        model: req.model,
+        input: req.inputs,
+        ...(req.options ?? {}),
       })
       const vectors = (resp.data ?? []).map((item) => item.embedding ?? [])
       return {
@@ -266,13 +275,6 @@ export function createArkProvider(
 
   return {
     id: "ark",
-    capabilities: [
-      "video.generate",
-      "video.understand",
-      "image.generate",
-      "image.understand",
-      "embed",
-    ],
     models: ARK_MODELS,
     videoGenerate,
     videoUnderstand: understandApi("video_url"),
