@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { test } from "vitest"
 import { createMiniMaxProvider } from "../minimax"
 import { classifyMinimaxError } from "../minimax/error-map"
@@ -152,4 +155,39 @@ test("minimax poll rejects a foreign provider handle", async () => {
   await expect(minimax.videoGenerate.poll({ providerId: "ark", id: "t" })).rejects.toMatchObject({
     category: "invalid",
   })
+})
+
+test("minimax subject_reference infers mime from local file extension", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "mm-subject-"))
+  try {
+    const jpg = join(tmp, "photo.jpg")
+    await writeFile(jpg, Buffer.from("jpeg-data"))
+    const mock = mockFetch([
+      () =>
+        jsonResponse(200, {
+          data: { image_urls: ["https://cdn.test/x.png"] },
+          base_resp: { status_code: 0 },
+        }),
+    ])
+    const minimax = createMiniMaxProvider(settings)
+
+    await minimax.imageGenerate.create({
+      model: "image-01",
+      prompt: "x",
+      image: { localPath: jpg },
+    })
+
+    const body = bodyOf(at(mock.recorded, 0))
+    const refs = body["subject_reference"] as Array<{ image_file: string }>
+    expect(refs[0]?.image_file).toMatch(/^data:image\/jpeg;base64,/)
+    mock.restore()
+  } finally {
+    await rm(tmp, { recursive: true })
+  }
+})
+
+test("classifyMinimaxError maps 2013 (bad input params) to invalid", () => {
+  expect(
+    classifyMinimaxError(200, { base_resp: { status_code: 2013, status_msg: "invalid params" } }),
+  ).toBe("invalid")
 })
