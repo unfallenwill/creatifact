@@ -57,8 +57,10 @@ test("createProvider wires config file section, settings override, and env fallb
 })
 
 test("createProvider rejects unknown ids and lists available", () => {
-  expect(listProviderIds().sort()).toEqual(["ark", "kling", "minimax"])
-  expect(() => createProvider("nope")).toThrow(/unknown provider 'nope'.*ark, kling, minimax/)
+  expect(listProviderIds().sort()).toEqual(["ark", "kling", "minimax", "zhipu"])
+  expect(() => createProvider("nope")).toThrow(
+    /unknown provider 'nope'.*ark, kling, minimax, zhipu/,
+  )
 })
 
 test("createProvider surfaces corrupt config loudly", async () => {

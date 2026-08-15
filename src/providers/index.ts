@@ -3,6 +3,7 @@ import { type ArkProviderConfig, createArkProvider } from "./ark"
 import type { Env, Provider } from "./core/types"
 import { createKlingProvider, type KlingProviderConfig } from "./kling"
 import { createMiniMaxProvider, type MiniMaxProviderConfig } from "./minimax"
+import { createZhipuProvider, type ZhipuProviderConfig } from "./zhipu"
 
 export type {
   ArkChatOptions,
@@ -53,6 +54,8 @@ export type {
   MiniMaxVideoOptions,
 } from "./minimax"
 export { createMiniMaxProvider } from "./minimax"
+export type { ZhipuImageOptions, ZhipuProviderConfig, ZhipuVideoOptions } from "./zhipu"
+export { createZhipuProvider } from "./zhipu"
 
 type ProviderFactory = (settings: Record<string, unknown>, env: Env) => Provider
 
@@ -62,6 +65,7 @@ const FACTORIES: Record<string, ProviderFactory> = {
   ark: (s, env) => createArkProvider(s as ArkProviderConfig, env),
   kling: (s, env) => createKlingProvider(s as KlingProviderConfig, env),
   minimax: (s, env) => createMiniMaxProvider(s as MiniMaxProviderConfig, env),
+  zhipu: (s, env) => createZhipuProvider(s as ZhipuProviderConfig, env),
 }
 
 export interface CreateProviderOptions {
