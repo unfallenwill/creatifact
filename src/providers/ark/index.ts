@@ -1,5 +1,5 @@
 import { toUrlRef } from "../core/fileref"
-import { createJsonClient, type JsonClient } from "../core/http"
+import { createJsonClient, type JsonClient, SLOW_POST_TIMEOUT_MS } from "../core/http"
 import {
   type EmbedApi,
   type Env,
@@ -21,7 +21,6 @@ import { ARK_MODELS } from "./models"
 
 const DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 /** 带内联帧(data URI 可达 50MB+)的提交与同步图像生成,30s 默认超时偏紧。 */
-const SLOW_POST_TIMEOUT_MS = 120_000
 
 export interface ArkVideoOptions {
   resolution?: "720p" | "1080p"
@@ -87,12 +86,7 @@ interface ArkEmbedResponse {
 }
 
 function classifyJobFailure(code: string | undefined): ErrorCategory {
-  if (!code) return "internal"
-  if (/SensitiveContent|ContentFilter|审核|违规/i.test(code)) return "moderation"
-  if (/QuotaExceeded|Arrears|AccountOverdue|Balance/i.test(code)) return "quota"
-  if (/RateLimit|Throttling|ServerOverloaded/i.test(code)) return "rate"
-  if (/Authentication|AccessDenied|AccessKey/i.test(code)) return "auth"
-  return "internal"
+  return classifyArkError(200, code ? { error: { code } } : undefined) ?? "internal"
 }
 
 function toUsage(native: Record<string, unknown> | undefined): Usage | undefined {

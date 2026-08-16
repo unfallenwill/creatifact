@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { readFile, stat } from "node:fs/promises"
 import { MAX_INLINE_BYTES } from "../core/fileref"
-import { createJsonClient, type JsonClient } from "../core/http"
+import { createJsonClient, type JsonClient, SLOW_POST_TIMEOUT_MS } from "../core/http"
 import { JobTimeoutError, pollUntil } from "../core/job"
 import {
   type Env,
@@ -23,7 +23,6 @@ import { KLING_MODELS } from "./models"
 const DEFAULT_BASE_URL = "https://api-beijing.klingai.com"
 const IMAGE_POLL_TIMEOUT_MS = 300_000
 /** Submits carry inline base64 frames (up to 50MB) — the 30s default is too tight. */
-const SUBMIT_TIMEOUT_MS = 120_000
 
 export interface KlingVideoOptions {
   duration?: number
@@ -243,7 +242,7 @@ export function createKlingProvider(
       const envelope = await client.post<KlingEnvelope<KlingNewTask>>(
         path,
         buildVideoBody(req.options, contents, externalId),
-        { timeoutMs: SUBMIT_TIMEOUT_MS },
+        { timeoutMs: SLOW_POST_TIMEOUT_MS },
       )
       unwrap(envelope)
       return { providerId: "kling", id: externalId }
@@ -280,7 +279,7 @@ export function createKlingProvider(
       const submitted = await client.post<KlingEnvelope<KlingImageTask>>(
         "/v1/images/generations",
         body,
-        { timeoutMs: SUBMIT_TIMEOUT_MS },
+        { timeoutMs: SLOW_POST_TIMEOUT_MS },
       )
       // 信封里的业务错误(余额不足/参数非法等)在这里立即抛出,
       // 否则会去轮询一个不存在的任务直到 300s 超时

@@ -1,5 +1,5 @@
-import { toUrlRef } from "../core/fileref"
-import { createJsonClient, type JsonClient } from "../core/http"
+import { mimeOfUrl, toUrlRef } from "../core/fileref"
+import { createJsonClient, type JsonClient, SLOW_POST_TIMEOUT_MS } from "../core/http"
 import {
   type Env,
   type FileRef,
@@ -14,11 +14,15 @@ import {
 } from "../core/types"
 import { guardFrameSupport } from "../core/validate"
 import { classifyMinimaxError } from "./error-map"
-import { MINIMAX_MODELS, MINIMAX_VIDEO_MODEL_MODES, type MiniMaxVideoMode } from "./models"
+import {
+  MINIMAX_MODELS,
+  MINIMAX_VIDEO_MODEL_MODES,
+  type MiniMaxModelId,
+  type MiniMaxVideoMode,
+} from "./models"
 
 const DEFAULT_BASE_URL = "https://api.minimaxi.com"
 /** 帧内联上传与同步图像生成,30s 默认超时偏紧。 */
-const SLOW_POST_TIMEOUT_MS = 120_000
 
 // V2 create: https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create
 // V1 create pages (all POST /v1/video_generation):
@@ -117,19 +121,6 @@ function checkBaseResp(body: { base_resp?: MiniMaxBaseResp }): void {
   }
 }
 
-const EXT_MIME: Record<string, string> = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  webp: "image/webp",
-}
-
-/** Artifact mime from the URL extension; API responses carry no content-type. */
-function mimeOfUrl(url: string | undefined): string | undefined {
-  const ext = url?.split("?")[0]?.split(".").pop()?.toLowerCase()
-  return ext ? EXT_MIME[ext] : undefined
-}
-
 /** V1 image fields accept a URL or data URI; bare base64 gets an image/png hint. */
 async function toV1ImageUrl(ref: FileRef): Promise<string> {
   return (await toUrlRef(ref, "base64" in ref ? "image/png" : undefined)).url
@@ -152,17 +143,13 @@ export function createMiniMaxProvider(
     classifyError: classifyMinimaxError,
   })
 
-  // V1 handles carry apiVersion, but keep this in-memory set too so same-process
-  // callers that strip extra JobHandle fields still poll the right endpoint.
-  const v1TaskIds = new Set<string>()
-
   function isV1Handle(handle: JobHandle): boolean {
-    return handle.apiVersion === "v1" || v1TaskIds.has(handle.id)
+    return handle.apiVersion === "v1"
   }
 
   function modeForRequest(req: VideoGenerateRequest<MiniMaxVideoOptions>): MiniMaxVideoMode {
-    const modes = MINIMAX_VIDEO_MODEL_MODES[req.model]
-    // Unknown ids keep the historical MiniMax default (V2) rather than being guessed into V1.
+    // 运行时模型 id 来自用户输入,不在 MiniMaxModelId 联合内;未知 id 保持历史默认(V2)。
+    const modes = MINIMAX_VIDEO_MODEL_MODES[req.model as MiniMaxModelId]
     if (!modes) return "v2"
     if (modes.includes("v2")) return "v2"
     if (modes.includes("s2v")) return "s2v"
@@ -254,11 +241,16 @@ export function createMiniMaxProvider(
     if (mode === "s2v") {
       body["subject_reference"] = await buildV1SubjectReference(req)
     } else if (mode === "fl2v") {
-      body["last_frame_image"] = await toV1ImageUrl(
-        req.lastFrame as NonNullable<typeof req.lastFrame>,
-      )
+      const last = req.lastFrame as NonNullable<typeof req.lastFrame>
       if (req.firstFrame) {
-        body["first_frame_image"] = await toV1ImageUrl(req.firstFrame)
+        const [firstUrl, lastUrl] = await Promise.all([
+          toV1ImageUrl(req.firstFrame),
+          toV1ImageUrl(last),
+        ])
+        body["first_frame_image"] = firstUrl
+        body["last_frame_image"] = lastUrl
+      } else {
+        body["last_frame_image"] = await toV1ImageUrl(last)
       }
     } else if (mode === "i2v") {
       body["first_frame_image"] = await toV1ImageUrl(
@@ -273,8 +265,7 @@ export function createMiniMaxProvider(
     if (!resp.task_id) {
       throw new ProviderError("internal", "MiniMax did not return task_id", resp)
     }
-    v1TaskIds.add(resp.task_id)
-    return { providerId: "minimax", id: resp.task_id }
+    return { providerId: "minimax", id: resp.task_id, apiVersion: "v1" }
   }
 
   async function pollV1(handle: JobHandle): Promise<JobStatus> {

@@ -2,6 +2,9 @@ import { type ErrorCategory, ProviderError } from "./types"
 
 export type ClassifyError = (status: number, body: unknown) => ErrorCategory | undefined
 
+/** 帧内联上传与同步生成类请求的宽松超时;默认 30s 对它们偏紧。 */
+export const SLOW_POST_TIMEOUT_MS = 120_000
+
 export interface RequestJsonOptions {
   method?: string
   headers?: Record<string, string>
