@@ -20,7 +20,7 @@ import { guardFrameSupport } from "../core/validate"
 import { classifyZhipuError } from "./error-map"
 import { ZHIPU_MODELS, ZHIPU_VIDEO_MODEL_MODES, type ZhipuVideoMode } from "./models"
 
-const DEFAULT_BASE_URL = "https://open.bigmodel.cn/api"
+const DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 /** 帧内联上传与同步图像生成,30s 默认超时偏紧。 */
 const SLOW_POST_TIMEOUT_MS = 120_000
 

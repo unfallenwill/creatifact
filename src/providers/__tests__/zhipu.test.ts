@@ -20,7 +20,7 @@ test("zhipu text-to-video posts to /videos/generations with passthrough options"
 
   expect(handle).toEqual({ providerId: "zhipu", id: "t-1" })
   const first = at(mock.recorded, 0)
-  expect(first.url).toBe("https://open.bigmodel.cn/api/videos/generations")
+  expect(first.url).toBe("https://open.bigmodel.cn/api/paas/v4/videos/generations")
   expect(headersOf(first)["authorization"]).toBe("Bearer test-key")
   expect(bodyOf(first)).toEqual({
     model: "cogvideox-3",
@@ -193,7 +193,7 @@ test("zhipu video poll maps async-result states", async () => {
     state: "done",
     artifacts: [{ url: "https://cdn.test/v.mp4", mimeType: "video/mp4" }],
   })
-  expect(at(mock.recorded, 0).url).toBe("https://open.bigmodel.cn/api/async-result/t-1")
+  expect(at(mock.recorded, 0).url).toBe("https://open.bigmodel.cn/api/paas/v4/async-result/t-1")
   mock.restore()
 })
 
@@ -241,7 +241,7 @@ test("zhipu sync image create posts to /images/generations and maps urls", async
     options: { size: "1024x1024", quality: "standard" },
   })
 
-  expect(at(mock.recorded, 0).url).toBe("https://open.bigmodel.cn/api/images/generations")
+  expect(at(mock.recorded, 0).url).toBe("https://open.bigmodel.cn/api/paas/v4/images/generations")
   expect(bodyOf(at(mock.recorded, 0))).toEqual({
     model: "cogview-4",
     prompt: "a cat",
@@ -272,13 +272,17 @@ test("zhipu async image create submits, polls async-result, and unwraps image_re
     options: { useAsync: true, size: "1280x1280" },
   })
 
-  expect(at(mock.recorded, 0).url).toBe("https://open.bigmodel.cn/api/async/images/generations")
+  expect(at(mock.recorded, 0).url).toBe(
+    "https://open.bigmodel.cn/api/paas/v4/async/images/generations",
+  )
   expect(bodyOf(at(mock.recorded, 0))).toEqual({
     model: "glm-image",
     prompt: "a cat",
     size: "1280x1280",
   })
-  expect(at(mock.recorded, 1).url).toBe("https://open.bigmodel.cn/api/async-result/img-task")
+  expect(at(mock.recorded, 1).url).toBe(
+    "https://open.bigmodel.cn/api/paas/v4/async-result/img-task",
+  )
   expect(result.artifacts).toEqual([{ url: "https://cdn.test/glm.png", mimeType: "image/png" }])
   mock.restore()
 })
