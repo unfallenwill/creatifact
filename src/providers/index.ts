@@ -1,8 +1,14 @@
-import { loadConfig } from "../config"
+import { loadConfig, type OpenmmCliConfig } from "../config"
 import { type ArkProviderConfig, createArkProvider } from "./ark"
 import type { Env, Provider } from "./core/types"
 import { createKlingProvider, type KlingProviderConfig } from "./kling"
 import { createMiniMaxProvider, type MiniMaxProviderConfig } from "./minimax"
+import {
+  assertPluginProvider,
+  loadProviderFactory,
+  PluginError,
+  type ProviderFactory,
+} from "./plugins"
 import { createZhipuProvider, type ZhipuProviderConfig } from "./zhipu"
 
 export type {
@@ -57,13 +63,15 @@ export type {
   MiniMaxVideoOptions,
 } from "./minimax"
 export { createMiniMaxProvider } from "./minimax"
+export type { PluginError, ProviderFactory, ProviderPluginModule } from "./plugins"
+export { assertPluginProvider, loadProviderFactory } from "./plugins"
 export type { ZhipuImageOptions, ZhipuProviderConfig, ZhipuVideoOptions } from "./zhipu"
 export { createZhipuProvider } from "./zhipu"
 
-type ProviderFactory = (settings: Record<string, unknown>, env: Env) => Provider
-
 // Adding a new provider = one directory + one line here. Nothing in core
-// knows provider ids, env names, or credential shapes.
+// knows provider ids, env names, or credential shapes. Third-party providers
+// never touch this table — they are declared via providers.<id>.module in the
+// config and loaded at runtime by ./plugins.
 const FACTORIES: Record<string, ProviderFactory> = {
   ark: (s, env) => createArkProvider(s as ArkProviderConfig, env),
   kling: (s, env) => createKlingProvider(s as KlingProviderConfig, env),
@@ -76,29 +84,70 @@ export interface CreateProviderOptions {
   configPath?: string
   /** Explicit settings that override the config file's providers.<id> section. */
   settings?: Record<string, unknown>
+  /** Base directory for relative plugin module paths (default: process.cwd()). */
+  cwd?: string
 }
 
 export function listProviderIds(): string[] {
   return Object.keys(FACTORIES)
 }
 
+function configuredPluginIds(config: OpenmmCliConfig): string[] {
+  return Object.entries(config.providers ?? {})
+    .filter(([, section]) => typeof section?.["module"] === "string" && section["module"] !== "")
+    .map(([id]) => id)
+}
+
+/** Built-in ids plus every config section that declares a plugin module. */
+export function listConfiguredProviderIds(opts: { configPath?: string } = {}): string[] {
+  return [
+    ...new Set([...Object.keys(FACTORIES), ...configuredPluginIds(loadConfig(opts.configPath))]),
+  ]
+}
+
 /**
  * Instantiate a provider by id. Reads the config file once and merges:
  *   providers.<id> section ← config file
  *   settings argument      ← explicit override
- * Credential env vars (e.g. ARK_API_KEY) are consulted inside each provider.
+ * A non-empty `module` string in the merged settings routes to a third-party
+ * plugin (dynamic import); the `module` key itself is stripped before the
+ * factory is called. Credential env vars (e.g. ARK_API_KEY) are consulted
+ * inside each provider.
  */
-export function createProvider(
+export async function createProvider(
   id: string,
   opts: CreateProviderOptions = {},
   env: Env = process.env,
-): Provider {
-  const factory = FACTORIES[id]
-  if (!factory) {
-    throw new Error(`unknown provider '${id}' (available: ${listProviderIds().join(", ")})`)
-  }
+): Promise<Provider> {
   const config = loadConfig(opts.configPath)
-  const section = config.providers?.[id]
-  const settings = { ...(section ?? {}), ...opts.settings }
-  return factory(settings, env)
+  const merged: Record<string, unknown> = { ...(config.providers?.[id] ?? {}), ...opts.settings }
+  const module =
+    typeof merged["module"] === "string" && merged["module"] !== "" ? merged["module"] : undefined
+  const builtin = FACTORIES[id]
+  if (module) {
+    if (builtin) {
+      throw new PluginError(
+        id,
+        `'${id}' is a built-in provider; remove providers.${id}.module or pick another id`,
+      )
+    }
+    const settings = { ...merged }
+    delete settings["module"]
+    const factory = await loadProviderFactory(id, module, opts.cwd ?? process.cwd())
+    const provider = factory(settings, env)
+    assertPluginProvider(id, provider)
+    return provider
+  }
+  if (!builtin) {
+    const available = [...new Set([...Object.keys(FACTORIES), ...configuredPluginIds(config)])]
+    throw new Error(`unknown provider '${id}' (available: ${available.join(", ")})`)
+  }
+  return builtin(merged, env)
+}
+
+/** Identity helper for plugin authors: typed settings + compile-time contract checking. */
+export function defineProvider<C extends Record<string, unknown>>(
+  factory: (settings: C, env: Env) => Provider,
+): ProviderFactory {
+  return factory as unknown as ProviderFactory
 }
