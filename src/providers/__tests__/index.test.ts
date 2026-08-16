@@ -22,14 +22,14 @@ test("createProvider wires config file section, settings override, and env fallb
 
   try {
     // 1. config file section
-    const fromFile = createProvider("ark", { configPath }, {})
+    const fromFile = await createProvider("ark", { configPath }, {})
     const mock = mockFetch([() => jsonResponse(200, { id: "t-1" })])
     await fromFile.videoGenerate?.submit({ model: "m", prompt: "x" })
     expect(headersOf(at(mock.recorded, 0))["authorization"]).toBe("Bearer file-key")
     mock.restore()
 
     // 2. explicit settings beat the config file
-    const overridden = createProvider(
+    const overridden = await createProvider(
       "ark",
       { configPath, settings: { apiKey: "explicit-key" } },
       {},
@@ -40,7 +40,7 @@ test("createProvider wires config file section, settings override, and env fallb
     mock2.restore()
 
     // 3. env fallback when neither config nor settings provide the key
-    const fromEnv = createProvider("minimax", { configPath }, { MINIMAX_API_KEY: "env-key" })
+    const fromEnv = await createProvider("minimax", { configPath }, { MINIMAX_API_KEY: "env-key" })
     const mock3 = mockFetch([() => jsonResponse(200, { task_id: "t-3" })])
     await fromEnv.videoGenerate?.submit({
       model: "m",
@@ -56,9 +56,9 @@ test("createProvider wires config file section, settings override, and env fallb
   }
 })
 
-test("createProvider rejects unknown ids and lists available", () => {
+test("createProvider rejects unknown ids and lists available", async () => {
   expect(listProviderIds().sort()).toEqual(["ark", "kling", "minimax", "zhipu"])
-  expect(() => createProvider("nope")).toThrow(
+  await expect(createProvider("nope")).rejects.toThrow(
     /unknown provider 'nope'.*ark, kling, minimax, zhipu/,
   )
 })
@@ -69,7 +69,7 @@ test("createProvider surfaces corrupt config loudly", async () => {
   await writeFile(configPath, "{ broken")
 
   try {
-    expect(() => createProvider("ark", { configPath }, {})).toThrow(/corrupt/)
+    await expect(createProvider("ark", { configPath }, {})).rejects.toThrow(/corrupt/)
   } finally {
     await rm(configDir, { recursive: true })
   }
