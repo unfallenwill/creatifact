@@ -12,7 +12,9 @@ export type ZhipuVideoMode =
   | "vidu-frames" // viduq1-start-end / vidu2-start-end:[首帧,尾帧]
   | "vidu-reference" // vidu2-reference:1-3 张参考图
 
-export const ZHIPU_VIDEO_MODEL_MODES: Record<string, ZhipuVideoMode> = {
+export type ZhipuModelId = (typeof ZHIPU_MODELS)[number]["id"]
+
+export const ZHIPU_VIDEO_MODEL_MODES: Record<ZhipuModelId, ZhipuVideoMode> = {
   "cogvideox-3": "cogvideox3",
   "cogvideox-2": "cogvideox",
   "cogvideox-flash": "cogvideox",

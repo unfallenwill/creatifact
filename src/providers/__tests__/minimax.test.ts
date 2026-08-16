@@ -270,7 +270,7 @@ test("minimax v1 t2v submit posts /v1/video_generation", async () => {
     options: { duration: 10, resolution: "768P", prompt_optimizer: false },
   })
 
-  expect(handle).toEqual({ providerId: "minimax", id: "v1-t2v" })
+  expect(handle).toEqual({ providerId: "minimax", id: "v1-t2v", apiVersion: "v1" })
   const rec = at(mock.recorded, 0)
   expect(rec.url).toBe("https://api.minimaxi.com/v1/video_generation")
   expect(bodyOf(rec)).toEqual({
@@ -296,7 +296,7 @@ test("minimax v1 i2v submit sends first_frame_image", async () => {
     options: { duration: 6, resolution: "1080P" },
   })
 
-  expect(handle).toEqual({ providerId: "minimax", id: "v1-i2v" })
+  expect(handle).toEqual({ providerId: "minimax", id: "v1-i2v", apiVersion: "v1" })
   expect(bodyOf(at(mock.recorded, 0))).toEqual({
     model: "MiniMax-Hailuo-2.3-Fast",
     prompt: "make it move",
@@ -408,27 +408,26 @@ test("minimax v1 create base_resp error is classified", async () => {
   mock.restore()
 })
 
-test("minimax v1 cancel is unsupported and v1 tasks poll v1 after handle strip", async () => {
+test("minimax v1 cancel is unsupported and stripped handles poll v2", async () => {
   const submitMock = mockFetch([
     () => jsonResponse(200, { task_id: "t-stripped", base_resp: { status_code: 0 } }),
     () =>
       jsonResponse(200, {
-        task_id: "t-stripped",
-        status: "Queueing",
-        base_resp: { status_code: 0 },
+        task: { id: "t-stripped", status: "queued" },
       }),
   ])
   const minimax = createMiniMaxProvider(settings)
 
   const handle = await minimax.videoGenerate.submit({ model: "T2V-01", prompt: "x" })
   await expect(
-    minimax.videoGenerate.cancel?.({ providerId: "minimax", id: handle.id }),
+    minimax.videoGenerate.cancel?.({ providerId: "minimax", id: handle.id, apiVersion: "v1" }),
   ).rejects.toMatchObject({ category: "invalid", message: /no cancel endpoint/ })
 
+  // Callers that strip apiVersion lose v1 routing; handles carry it for exactly this.
   const stripped = { providerId: "minimax", id: handle.id }
   expect(await minimax.videoGenerate.poll(stripped)).toEqual({ state: "pending" })
   expect(at(submitMock.recorded, 1).url).toBe(
-    "https://api.minimaxi.com/v1/query/video_generation?task_id=t-stripped",
+    "https://api.minimaxi.com/v2/query/video_generation/t-stripped",
   )
   submitMock.restore()
 })

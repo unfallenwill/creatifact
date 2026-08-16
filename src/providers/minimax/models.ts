@@ -6,7 +6,9 @@ export type MiniMaxVideoMode = "v2" | "t2v" | "i2v" | "fl2v" | "s2v"
  * Which V1 create payload each model accepts.  All V1 modes share
  * POST /v1/video_generation; the request body determines the mode.
  */
-export const MINIMAX_VIDEO_MODEL_MODES: Record<string, MiniMaxVideoMode[]> = {
+export type MiniMaxModelId = (typeof MINIMAX_MODELS)[number]["id"]
+
+export const MINIMAX_VIDEO_MODEL_MODES: Record<MiniMaxModelId, MiniMaxVideoMode[]> = {
   "MiniMax-H3": ["v2"],
   "MiniMax-Hailuo-2.3": ["t2v", "i2v"],
   "MiniMax-Hailuo-2.3-Fast": ["i2v"],

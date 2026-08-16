@@ -30,6 +30,12 @@ function mimeFromPath(path: string): string {
   return EXT_MIME[ext] ?? "application/octet-stream"
 }
 
+/** Mime type from a URL's extension; undefined when the extension is unknown. */
+export function mimeOfUrl(url: string | undefined): string | undefined {
+  const ext = url?.split("?")[0]?.split(".").pop()?.toLowerCase()
+  return ext ? EXT_MIME[ext] : undefined
+}
+
 function guardSize(bytes: number, source: string): void {
   if (bytes > MAX_INLINE_BYTES) {
     throw new Error(

@@ -1,5 +1,5 @@
-import { toUrlRef } from "../core/fileref"
-import { createJsonClient, type JsonClient } from "../core/http"
+import { mimeOfUrl, toUrlRef } from "../core/fileref"
+import { createJsonClient, type JsonClient, SLOW_POST_TIMEOUT_MS } from "../core/http"
 import { JobTimeoutError, pollUntil } from "../core/job"
 import {
   type CallContext,
@@ -18,11 +18,15 @@ import {
 } from "../core/types"
 import { guardFrameSupport } from "../core/validate"
 import { classifyZhipuError } from "./error-map"
-import { ZHIPU_MODELS, ZHIPU_VIDEO_MODEL_MODES, type ZhipuVideoMode } from "./models"
+import {
+  ZHIPU_MODELS,
+  ZHIPU_VIDEO_MODEL_MODES,
+  type ZhipuModelId,
+  type ZhipuVideoMode,
+} from "./models"
 
 const DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 /** 帧内联上传与同步图像生成,30s 默认超时偏紧。 */
-const SLOW_POST_TIMEOUT_MS = 120_000
 
 // 视频生成(异步): https://docs.bigmodel.cn/api-reference/模型-api/视频生成异步
 // 查询异步结果: https://docs.bigmodel.cn/api-reference/模型-api/查询异步结果
@@ -97,23 +101,6 @@ interface ZhipuImageSyncResponse {
   content_filter?: Array<{ role?: string; level?: number }>
 }
 
-const EXT_MIME: Record<string, string> = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  webp: "image/webp",
-}
-
-function mimeOfUrl(url: string | undefined): string {
-  const ext = url?.split("?")[0]?.split(".").pop()?.toLowerCase()
-  return (ext && EXT_MIME[ext]) || "image/png"
-}
-
-/** FileRef → 智谱 image_url(URL 原样,本地图/base64 转 data URI,兜底 image/png)。 */
-async function toZhipuImageUrl(ref: FileRef): Promise<string> {
-  return (await toUrlRef(ref, "base64" in ref ? "image/png" : undefined)).url
-}
-
 const MODE_LABEL: Record<ZhipuVideoMode, string> = {
   cogvideox3: "CogVideoX-3",
   cogvideox: "CogVideoX",
@@ -121,6 +108,16 @@ const MODE_LABEL: Record<ZhipuVideoMode, string> = {
   "vidu-image": "Vidu image-to-video",
   "vidu-frames": "Vidu first/last-frame-to-video",
   "vidu-reference": "Vidu reference-to-video",
+}
+
+/** FileRef → 智谱 image_url(URL 原样,本地图/base64 转 data URI,兜底 image/png)。 */
+async function toZhipuImageUrl(ref: FileRef): Promise<string> {
+  return (await toUrlRef(ref, "base64" in ref ? "image/png" : undefined)).url
+}
+
+/** 智谱产物 URL 无 content-type;按扩展名推断,未知兜底 image/png。 */
+function artifactMime(url: string | undefined): string {
+  return mimeOfUrl(url) ?? "image/png"
 }
 
 function invalid(model: string, mode: ZhipuVideoMode, reason: string): ProviderError {
@@ -151,7 +148,13 @@ async function buildImageUrl(
   switch (mode) {
     case "cogvideox3":
       // 单图=首帧;[首帧,尾帧] 两图数组=首尾帧
-      if (lastFrame) return [await toZhipuImageUrl(firstFrame), await toZhipuImageUrl(lastFrame)]
+      if (lastFrame) {
+        const [first, last] = await Promise.all([
+          toZhipuImageUrl(firstFrame),
+          toZhipuImageUrl(lastFrame),
+        ])
+        return [first, last]
+      }
       return await toZhipuImageUrl(firstFrame)
     case "cogvideox":
     case "vidu-image":
@@ -161,7 +164,13 @@ async function buildImageUrl(
     case "vidu-text":
       throw invalid(req.model, mode, "does not accept image input")
     case "vidu-frames":
-      if (lastFrame) return [await toZhipuImageUrl(firstFrame), await toZhipuImageUrl(lastFrame)]
+      if (lastFrame) {
+        const [first, last] = await Promise.all([
+          toZhipuImageUrl(firstFrame),
+          toZhipuImageUrl(lastFrame),
+        ])
+        return [first, last]
+      }
       return [await toZhipuImageUrl(firstFrame)]
     case "vidu-reference":
       if (lastFrame)
@@ -199,7 +208,7 @@ export function createZhipuProvider(
             url: v.url,
             mimeType: "video/mp4",
           })),
-          ...(body.image_result ?? []).map((i) => ({ url: i.url, mimeType: mimeOfUrl(i.url) })),
+          ...(body.image_result ?? []).map((i) => ({ url: i.url, mimeType: artifactMime(i.url) })),
         ]
         if (artifacts.length === 0) {
           throw new ProviderError("internal", "Zhipu async result returned no artifacts", body)
@@ -226,7 +235,8 @@ export function createZhipuProvider(
   const videoGenerate: VideoGenerateApi<ZhipuVideoOptions> = {
     async submit(req) {
       guardFrameSupport(ZHIPU_MODELS, req)
-      const mode = ZHIPU_VIDEO_MODEL_MODES[req.model] ?? "cogvideox3"
+      // 运行时模型 id 来自用户输入;未知 id 落到 cogvideox3 分支(历史默认)。
+      const mode = ZHIPU_VIDEO_MODEL_MODES[req.model as ZhipuModelId] ?? "cogvideox3"
       const { image_url: optionImages, ...rest } = req.options ?? {}
       const frames = await buildImageUrl(req, mode)
 
@@ -319,7 +329,7 @@ export function createZhipuProvider(
     if (urls.length === 0) {
       throw new ProviderError("internal", "Zhipu image generation returned no images", resp)
     }
-    return { artifacts: urls.map((url) => ({ url, mimeType: mimeOfUrl(url) })) }
+    return { artifacts: urls.map((url) => ({ url, mimeType: artifactMime(url) })) }
   }
 
   const imageGenerate: ImageGenerateApi<ZhipuImageOptions> = {
