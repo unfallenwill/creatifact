@@ -8,6 +8,16 @@
   "bin": "dist/index.mjs",
   "main": "./dist/index.mjs",
   "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "types": "./dist/index.d.mts"
+    },
+    "./providers": {
+      "import": "./dist/providers/index.mjs",
+      "types": "./dist/providers/index.d.mts"
+    }
+  },
   "files": [
     "dist"
   ],

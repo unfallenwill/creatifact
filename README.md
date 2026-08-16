@@ -206,6 +206,90 @@ Credential resolution order: **CLI flags (complete pair) → config file → ano
 If the config file is corrupt, commands fail loudly with the file path and a
 `openmmcli config reset` hint instead of silently ignoring your settings.
 
+### Provider plugins
+
+Third-party providers are declared in the config under `providers.<id>.module`
+and loaded at runtime via dynamic `import()`. A non-empty `module` string plus
+any settings you need:
+
+```json
+{
+  "providers": {
+    "my-provider": { "module": "openmmcli-my-provider", "apiKey": "..." }
+  }
+}
+```
+
+`module` accepts four specifier forms:
+
+| Form | Example | Resolution |
+|------|---------|------------|
+| Bare package name | `openmmcli-my-provider` | Resolved from openmmcli's own module tree first (same-project or both-global installs), then falls back to the current working directory (global CLI + project-local plugin) |
+| Relative path | `./plugins/my-provider.mjs` | Resolved against the caller's `cwd` |
+| Absolute path | `/opt/plugins/my-provider.mjs` | Used as-is |
+| Home path | `~/plugins/my-provider.mjs` | `~` expanded via the home directory |
+
+A plugin module must default-export a `(settings, env) => Provider` factory.
+`module` itself is stripped before the factory is called, so the factory only
+sees its business settings. The returned provider must:
+
+- declare a non-empty `id` **equal to** the config section key,
+- expose `models` as an array whose entries each have a non-empty `id`,
+- implement at least one capability API (`videoGenerate`, `videoUnderstand`,
+  `imageGenerate`, `imageUnderstand`, `embed`).
+
+ESM (`"type": "module"`) is recommended; CommonJS (`module.exports = factory`)
+is also supported. Minimal plugin:
+
+```ts
+import { createJsonClient, defineProvider, type Provider } from "openmmcli/providers"
+
+interface Settings {
+  apiKey?: string
+}
+
+export default defineProvider((settings: Settings, env) => {
+  const apiKey = settings.apiKey ?? env["MY_PROVIDER_API_KEY"]
+  if (!apiKey) throw new Error("missing API key: set MY_PROVIDER_API_KEY or providers.my-provider.apiKey")
+  const client = createJsonClient({ baseUrl: "https://api.example.com", headers: { authorization: `Bearer ${apiKey}` } })
+  const provider: Provider = {
+    id: "my-provider",
+    models: [{ id: "my-model", capabilities: { "image.generate": "supported" }, lastVerified: "2026-08" }],
+    imageGenerate: {
+      async create(req) {
+        const res = await client.requestJson("/v1/images", { method: "POST", body: req })
+        return { images: [{ url: res["url"] as string }] }
+      },
+    },
+  }
+  return provider
+})
+```
+
+Types and helpers (`Provider`, `defineProvider`, `createJsonClient`,
+`pollUntil`, `ProviderError`, …) are importable from `openmmcli/providers`;
+add `openmmcli` as a devDependency for compile-time types. No runtime
+peerDependency is required.
+
+Load failures (module not found, bad export shape, `id` mismatch, no capability
+APIs) throw a `PluginError` with the provider id — they are configuration or
+programming errors and are never retried. `module` cannot be set on built-in
+provider ids (`ark`, `kling`, `minimax`, `zhipu`).
+
+Programmatic use:
+
+```ts
+import {
+  createProvider,
+  listConfiguredProviderIds,
+  listProviderIds,
+} from "openmmcli/providers"
+
+const provider = await createProvider("my-provider") // async since plugins load via import()
+listProviderIds()            // built-ins only, sync
+listConfiguredProviderIds()  // built-ins + config-declared plugins, sync
+```
+
 ## Development
 
 ```bash
