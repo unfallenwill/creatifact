@@ -3,6 +3,7 @@ import { createJsonClient, type JsonClient } from "../core/http"
 import {
   type Env,
   type FileRef,
+  guardHandle,
   type ImageGenerateApi,
   type JobHandle,
   type JobStatus,
@@ -11,10 +12,13 @@ import {
   type VideoGenerateApi,
   type VideoGenerateRequest,
 } from "../core/types"
+import { guardFrameSupport } from "../core/validate"
 import { classifyMinimaxError } from "./error-map"
 import { MINIMAX_MODELS, MINIMAX_VIDEO_MODEL_MODES, type MiniMaxVideoMode } from "./models"
 
 const DEFAULT_BASE_URL = "https://api.minimaxi.com"
+/** 帧内联上传与同步图像生成,30s 默认超时偏紧。 */
+const SLOW_POST_TIMEOUT_MS = 120_000
 
 // V2 create: https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create
 // V1 create pages (all POST /v1/video_generation):
@@ -262,7 +266,9 @@ export function createMiniMaxProvider(
       )
     }
 
-    const resp = await client.post<MiniMaxV1CreateResponse>("/v1/video_generation", body)
+    const resp = await client.post<MiniMaxV1CreateResponse>("/v1/video_generation", body, {
+      timeoutMs: SLOW_POST_TIMEOUT_MS,
+    })
     checkBaseResp(resp)
     if (!resp.task_id) {
       throw new ProviderError("internal", "MiniMax did not return task_id", resp)
@@ -363,14 +369,18 @@ export function createMiniMaxProvider(
       req.firstFrame ? (await toUrlRef(req.firstFrame, "image/png")).url : undefined,
       req.lastFrame ? (await toUrlRef(req.lastFrame, "image/png")).url : undefined,
     )
-    const body = await client.post<MiniMaxV2TaskResponse>("/v2/video_generation", {
-      model: req.model,
-      content,
-      resolution,
-      duration,
-      ...(ratio ? { ratio } : {}),
-      ...rest,
-    })
+    const body = await client.post<MiniMaxV2TaskResponse>(
+      "/v2/video_generation",
+      {
+        model: req.model,
+        content,
+        resolution,
+        duration,
+        ...(ratio ? { ratio } : {}),
+        ...rest,
+      },
+      { timeoutMs: SLOW_POST_TIMEOUT_MS },
+    )
     if (!body.task_id) {
       throw new ProviderError("internal", "MiniMax did not return task_id", body)
     }
@@ -379,6 +389,7 @@ export function createMiniMaxProvider(
 
   const videoGenerate: VideoGenerateApi<MiniMaxVideoOptions> = {
     async submit(req) {
+      guardFrameSupport(MINIMAX_MODELS, req)
       const mode = modeForRequest(req)
       return mode === "v2" ? submitV2(req) : submitV1(req, mode)
     },
@@ -386,12 +397,7 @@ export function createMiniMaxProvider(
     // V2: DELETE /v2/video_generation/{task_id} (V1 has no cancel endpoint)
     // https://platform.minimaxi.com/docs/api-reference/video-generation-v2-delete
     async cancel(handle: JobHandle): Promise<void> {
-      if (handle.providerId !== "minimax") {
-        throw new ProviderError(
-          "invalid",
-          `handle belongs to '${handle.providerId}', not 'minimax'`,
-        )
-      }
+      guardHandle("minimax", handle)
       if (isV1Handle(handle)) {
         throw new ProviderError("invalid", "MiniMax v1 video generation has no cancel endpoint")
       }
@@ -399,36 +405,35 @@ export function createMiniMaxProvider(
     },
 
     async poll(handle: JobHandle): Promise<JobStatus> {
-      if (handle.providerId !== "minimax") {
-        throw new ProviderError(
-          "invalid",
-          `handle belongs to '${handle.providerId}', not 'minimax'`,
-        )
-      }
+      guardHandle("minimax", handle)
       return isV1Handle(handle) ? pollV1(handle) : pollV2(handle)
     },
   }
 
   const imageGenerate: ImageGenerateApi<MiniMaxImageOptions> = {
     async create(req) {
-      const body = await client.post<MiniMaxImageResponse>("/v1/image_generation", {
-        model: req.model,
-        prompt: req.prompt,
-        ...(req.image
-          ? {
-              // JPG/JPEG/PNG data URL 或公网 URL;mime 按扩展名推断,base64 兜底 png
-              subject_reference: [
-                {
-                  type: "character",
-                  image_file: (
-                    await toUrlRef(req.image, "base64" in req.image ? "image/png" : undefined)
-                  ).url,
-                },
-              ],
-            }
-          : {}),
-        ...(req.options ?? {}),
-      })
+      const body = await client.post<MiniMaxImageResponse>(
+        "/v1/image_generation",
+        {
+          model: req.model,
+          prompt: req.prompt,
+          ...(req.image
+            ? {
+                // JPG/JPEG/PNG data URL 或公网 URL;mime 按扩展名推断,base64 兜底 png
+                subject_reference: [
+                  {
+                    type: "character",
+                    image_file: (
+                      await toUrlRef(req.image, "base64" in req.image ? "image/png" : undefined)
+                    ).url,
+                  },
+                ],
+              }
+            : {}),
+          ...(req.options ?? {}),
+        },
+        { timeoutMs: SLOW_POST_TIMEOUT_MS },
+      )
       checkBaseResp(body)
       return {
         artifacts: [

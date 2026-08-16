@@ -72,8 +72,17 @@ export interface VideoGenerateRequest<Opts> {
   options?: Opts
 }
 
+/**
+ * Per-call context. Purely synchronous implementations may ignore it;
+ * implementations that poll internally (e.g. task-based image endpoints)
+ * use `signal` to stop waiting.
+ */
+export interface CallContext {
+  signal?: AbortSignal
+}
+
 export interface ImageGenerateApi<Opts> {
-  create(req: ImageGenerateRequest<Opts>): Promise<ImageGenerateResult>
+  create(req: ImageGenerateRequest<Opts>, ctx?: CallContext): Promise<ImageGenerateResult>
 }
 
 export interface ImageGenerateRequest<Opts> {
@@ -170,4 +179,14 @@ export function capabilitiesOf(provider: Provider): Capability[] {
     }
   }
   return caps
+}
+
+/** Reject a JobHandle that belongs to another provider before using it. */
+export function guardHandle(providerId: string, handle: JobHandle): void {
+  if (handle.providerId !== providerId) {
+    throw new ProviderError(
+      "invalid",
+      `handle belongs to '${handle.providerId}', not '${providerId}'`,
+    )
+  }
 }

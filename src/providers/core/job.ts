@@ -5,7 +5,7 @@ export interface PollOptions {
   timeoutMs: number
   backoffFactor?: number
   maxIntervalMs?: number
-  signal?: AbortSignal
+  signal?: AbortSignal | undefined
   onStatus?: (status: JobStatus) => void
 }
 
@@ -34,7 +34,7 @@ export async function pollUntil(
     }
     first = false
 
-    if (opts.signal?.aborted) throw new Error("polling aborted")
+    if (opts.signal?.aborted) throw new Error(`polling aborted (task '${handle.id}')`)
     if (Date.now() >= deadline) throw new JobTimeoutError(handle.id)
 
     const status = await poll(handle)

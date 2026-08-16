@@ -2,8 +2,10 @@ import { toUrlRef } from "../core/fileref"
 import { createJsonClient, type JsonClient } from "../core/http"
 import { JobTimeoutError, pollUntil } from "../core/job"
 import {
+  type CallContext,
   type Env,
   type FileRef,
+  guardHandle,
   type ImageGenerateApi,
   type ImageGenerateRequest,
   type ImageGenerateResult,
@@ -14,10 +16,13 @@ import {
   type VideoGenerateApi,
   type VideoGenerateRequest,
 } from "../core/types"
+import { guardFrameSupport } from "../core/validate"
 import { classifyZhipuError } from "./error-map"
 import { ZHIPU_MODELS, ZHIPU_VIDEO_MODEL_MODES, type ZhipuVideoMode } from "./models"
 
 const DEFAULT_BASE_URL = "https://open.bigmodel.cn/api"
+/** 帧内联上传与同步图像生成,30s 默认超时偏紧。 */
+const SLOW_POST_TIMEOUT_MS = 120_000
 
 // 视频生成(异步): https://docs.bigmodel.cn/api-reference/模型-api/视频生成异步
 // 查询异步结果: https://docs.bigmodel.cn/api-reference/模型-api/查询异步结果
@@ -220,6 +225,7 @@ export function createZhipuProvider(
 
   const videoGenerate: VideoGenerateApi<ZhipuVideoOptions> = {
     async submit(req) {
+      guardFrameSupport(ZHIPU_MODELS, req)
       const mode = ZHIPU_VIDEO_MODEL_MODES[req.model] ?? "cogvideox3"
       const { image_url: optionImages, ...rest } = req.options ?? {}
       const frames = await buildImageUrl(req, mode)
@@ -231,7 +237,9 @@ export function createZhipuProvider(
         body["image_url"] = optionImages
       }
 
-      const resp = await client.post<ZhipuAsyncCreateResponse>("/videos/generations", body)
+      const resp = await client.post<ZhipuAsyncCreateResponse>("/videos/generations", body, {
+        timeoutMs: SLOW_POST_TIMEOUT_MS,
+      })
       if (!resp.id) {
         throw new ProviderError("internal", "Zhipu did not return a task id", resp)
       }
@@ -239,9 +247,7 @@ export function createZhipuProvider(
     },
 
     async poll(handle: JobHandle): Promise<JobStatus> {
-      if (handle.providerId !== "zhipu") {
-        throw new ProviderError("invalid", `handle belongs to '${handle.providerId}', not 'zhipu'`)
-      }
+      guardHandle("zhipu", handle)
       return pollAsyncResult(handle)
     },
   }
@@ -250,6 +256,7 @@ export function createZhipuProvider(
   async function createImageAsync(
     req: ImageGenerateRequest<ZhipuImageOptions>,
     options: Record<string, unknown>,
+    ctx: CallContext | undefined,
   ): Promise<ImageGenerateResult> {
     if (req.model !== "glm-image") {
       throw new ProviderError(
@@ -257,11 +264,15 @@ export function createZhipuProvider(
         "Zhipu async image generation only supports model 'glm-image'",
       )
     }
-    const submitted = await client.post<ZhipuAsyncCreateResponse>("/async/images/generations", {
-      model: req.model,
-      prompt: req.prompt,
-      ...options,
-    })
+    const submitted = await client.post<ZhipuAsyncCreateResponse>(
+      "/async/images/generations",
+      {
+        model: req.model,
+        prompt: req.prompt,
+        ...options,
+      },
+      { timeoutMs: SLOW_POST_TIMEOUT_MS },
+    )
     if (!submitted.id) {
       throw new ProviderError("internal", "Zhipu did not return a task id", submitted)
     }
@@ -269,9 +280,14 @@ export function createZhipuProvider(
     const final = await pollUntil(pollAsyncResult, handle, {
       intervalMs: config.pollIntervalMs ?? 2000,
       timeoutMs: config.pollTimeoutMs ?? 600_000,
+      signal: ctx?.signal,
     }).catch((e: unknown) => {
       if (e instanceof JobTimeoutError) {
-        throw new ProviderError("internal", `image generation timed out (task ${handle.id})`)
+        // raw 带上任务号:该任务仍可用 videoGenerate.poll(handle) 续查
+        // (智谱视频/图像异步任务共用 /async-result/{id} 查询端点)
+        throw new ProviderError("internal", `image generation timed out (task ${handle.id})`, {
+          taskId: handle.id,
+        })
       }
       throw e
     })
@@ -288,11 +304,15 @@ export function createZhipuProvider(
     req: ImageGenerateRequest<ZhipuImageOptions>,
     options: Record<string, unknown>,
   ): Promise<ImageGenerateResult> {
-    const resp = await client.post<ZhipuImageSyncResponse>("/images/generations", {
-      model: req.model,
-      prompt: req.prompt,
-      ...options,
-    })
+    const resp = await client.post<ZhipuImageSyncResponse>(
+      "/images/generations",
+      {
+        model: req.model,
+        prompt: req.prompt,
+        ...options,
+      },
+      { timeoutMs: SLOW_POST_TIMEOUT_MS },
+    )
     const urls = (resp.data ?? [])
       .map((item) => item.url)
       .filter((url): url is string => typeof url === "string")
@@ -303,9 +323,9 @@ export function createZhipuProvider(
   }
 
   const imageGenerate: ImageGenerateApi<ZhipuImageOptions> = {
-    async create(req): Promise<ImageGenerateResult> {
+    async create(req, ctx): Promise<ImageGenerateResult> {
       const { useAsync, ...options } = req.options ?? {}
-      return useAsync ? createImageAsync(req, options) : createImageSync(req, options)
+      return useAsync ? createImageAsync(req, options, ctx) : createImageSync(req, options)
     },
   }
 

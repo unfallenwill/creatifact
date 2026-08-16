@@ -23,6 +23,23 @@ export function defaultClassifyError(status: number, body: unknown): ErrorCatego
 
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504])
 
+/** Never sleep longer than this between retries, even if Retry-After asks. */
+const MAX_BACKOFF_MS = 30_000
+
+/** Honor Retry-After (delta-seconds form) when present; ignore HTTP dates. */
+function retryAfterMs(resp: Response): number | undefined {
+  const value = resp.headers.get("retry-after")
+  if (value === null) return undefined
+  const seconds = Number(value)
+  return Number.isFinite(seconds) && seconds >= 0
+    ? Math.min(seconds * 1000, MAX_BACKOFF_MS)
+    : undefined
+}
+
+function snippet(text: string): string {
+  return text.slice(0, 120).replace(/\s+/g, " ").trim()
+}
+
 /**
  * Safe retry defaults: idempotent GETs retry twice; non-idempotent requests
  * (POST task submissions are billable!) do not retry unless the caller
@@ -47,7 +64,7 @@ function messageFromBody(status: number, body: unknown): string {
 
 type AttemptResult<T> =
   | { ok: true; value: T }
-  | { ok: false; error: ProviderError; retryable: boolean }
+  | { ok: false; error: ProviderError; retryable: boolean; retryAfterMs?: number | undefined }
 
 async function attemptOnce<T>(url: string, opts: RequestJsonOptions): Promise<AttemptResult<T>> {
   const init: RequestInit = {
@@ -64,7 +81,37 @@ async function attemptOnce<T>(url: string, opts: RequestJsonOptions): Promise<At
   try {
     const resp = await fetch(url, init)
     const text = await resp.text()
-    const body = text ? (JSON.parse(text) as unknown) : undefined
+
+    let body: unknown
+    try {
+      body = text ? (JSON.parse(text) as unknown) : undefined
+    } catch {
+      // Non-JSON body: gateways sometimes answer with HTML error pages.
+      if (resp.ok) {
+        return {
+          ok: false,
+          error: new ProviderError(
+            "internal",
+            `expected JSON response but got '${snippet(text)}' (HTTP ${resp.status})`,
+            text,
+          ),
+          retryable: false,
+        }
+      }
+      const category =
+        opts.classifyError?.(resp.status, undefined) ?? defaultClassifyError(resp.status, undefined)
+      return {
+        ok: false,
+        error: new ProviderError(
+          category,
+          `HTTP ${resp.status}: ${snippet(text) || "(empty body)"}`,
+          text,
+          resp.status,
+        ),
+        retryable: RETRYABLE_STATUS.has(resp.status),
+        retryAfterMs: retryAfterMs(resp),
+      }
+    }
 
     if (!resp.ok) {
       const category =
@@ -75,7 +122,12 @@ async function attemptOnce<T>(url: string, opts: RequestJsonOptions): Promise<At
         body,
         resp.status,
       )
-      return { ok: false, error, retryable: RETRYABLE_STATUS.has(resp.status) }
+      return {
+        ok: false,
+        error,
+        retryable: RETRYABLE_STATUS.has(resp.status),
+        retryAfterMs: retryAfterMs(resp),
+      }
     }
     return { ok: true, value: body as T }
   } catch (e) {
@@ -93,16 +145,22 @@ async function attemptOnce<T>(url: string, opts: RequestJsonOptions): Promise<At
 export async function requestJson<T>(url: string, opts: RequestJsonOptions = {}): Promise<T> {
   const retries = opts.retries ?? defaultRetries(opts.method)
   let lastError: ProviderError | undefined
+  let lastRetryAfterMs: number | undefined
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     if (attempt > 0) {
-      await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** (attempt - 1)))
+      // Exponential backoff with jitter (50-100%) so concurrent clients
+      // hammered by the same 429 don't retry in lockstep.
+      const exp = Math.min(500 * 2 ** (attempt - 1), MAX_BACKOFF_MS)
+      const delay = lastRetryAfterMs ?? exp * (0.5 + Math.random() * 0.5)
+      await new Promise((resolve) => setTimeout(resolve, delay))
     }
     const result = await attemptOnce<T>(url, opts)
     if (result.ok) {
       return result.value
     }
     lastError = result.error
+    lastRetryAfterMs = result.retryAfterMs
     if (!result.retryable || attempt === retries) {
       throw result.error
     }
@@ -118,6 +176,8 @@ export interface JsonClientConfig {
   classifyError?: ClassifyError
   /** Default retry count for every call (overrides the method-aware default). */
   retries?: number
+  /** Default per-request timeout for every call (overrides the 30s default). */
+  timeoutMs?: number
 }
 
 export interface JsonClient {
@@ -148,6 +208,8 @@ export function createJsonClient(config: JsonClientConfig): JsonClient {
     if (classify !== undefined) merged.classifyError = classify
     const retries = opts?.retries ?? config.retries
     if (retries !== undefined) merged.retries = retries
+    const timeoutMs = opts?.timeoutMs ?? config.timeoutMs
+    if (timeoutMs !== undefined) merged.timeoutMs = timeoutMs
     return merged
   }
 

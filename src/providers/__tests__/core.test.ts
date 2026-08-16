@@ -5,7 +5,8 @@ import { test } from "vitest"
 import { MAX_INLINE_BYTES, toUrlRef } from "../core/fileref"
 import { createJsonClient, defaultClassifyError, requestJson } from "../core/http"
 import { JobTimeoutError, pollUntil } from "../core/job"
-import { capabilitiesOf, type Provider, ProviderError } from "../core/types"
+import { capabilitiesOf, guardHandle, type Provider, ProviderError } from "../core/types"
+import { guardFrameSupport } from "../core/validate"
 import { at, headersOf, jsonResponse, mockFetch } from "./helpers"
 
 // capabilitiesOf
@@ -20,6 +21,67 @@ test("capabilitiesOf derives capabilities from implemented methods", () => {
   expect(
     capabilitiesOf(fakeProvider({ imageGenerate: {} as never, embed: {} as never })).sort(),
   ).toEqual(["embed", "image.generate"])
+})
+
+// guardHandle
+
+test("guardHandle rejects foreign handles and accepts own", () => {
+  const handle = { providerId: "ark", id: "t-1" }
+  expect(() => guardHandle("kling", handle)).toThrow(/belongs to 'ark'/)
+  expect(() => guardHandle("ark", handle)).not.toThrow()
+})
+
+// guardFrameSupport
+
+const GUARD_MODELS = [
+  {
+    id: "m-no-last",
+    capabilities: { "video.generate": { firstFrame: true, lastFrame: false } },
+    lastVerified: "2026-08",
+  },
+  {
+    id: "m-unverified",
+    capabilities: { "video.generate": {} },
+    lastVerified: "2026-08",
+  },
+] as const
+
+test("guardFrameSupport rejects explicit false, passes omitted/unknown/true", () => {
+  expect(() =>
+    guardFrameSupport([...GUARD_MODELS], {
+      model: "m-no-last",
+      prompt: "x",
+      lastFrame: { url: "u" },
+    }),
+  ).toThrow(/does not support a last frame/)
+
+  // omitted = unverified → passthrough
+  expect(() =>
+    guardFrameSupport([...GUARD_MODELS], {
+      model: "m-unverified",
+      prompt: "x",
+      lastFrame: { url: "u" },
+    }),
+  ).not.toThrow()
+
+  // unknown model id → passthrough (remote API decides)
+  expect(() =>
+    guardFrameSupport([...GUARD_MODELS], {
+      model: "m-unknown",
+      prompt: "x",
+      firstFrame: { url: "u" },
+      lastFrame: { url: "u" },
+    }),
+  ).not.toThrow()
+
+  // supported slot passes
+  expect(() =>
+    guardFrameSupport([...GUARD_MODELS], {
+      model: "m-no-last",
+      prompt: "x",
+      firstFrame: { url: "u" },
+    }),
+  ).not.toThrow()
 })
 
 // http
@@ -59,6 +121,54 @@ test("requestJson classify hook takes precedence", async () => {
       classifyError: (status) => (status === 400 ? "moderation" : undefined),
     }),
   ).rejects.toMatchObject({ category: "moderation" })
+
+  mock.restore()
+})
+
+test("requestJson honors Retry-After seconds on 429", async () => {
+  const mock = mockFetch([
+    () =>
+      new Response(JSON.stringify({ error: "rate" }), {
+        status: 429,
+        headers: { "retry-after": "0" },
+      }),
+    () => jsonResponse(200, { ok: true }),
+  ])
+
+  const started = Date.now()
+  await expect(requestJson("https://example.test/x", { retries: 2 })).resolves.toEqual({ ok: true })
+  // retry-after: 0 → backoff sleep collapses to ~0 instead of 250-500ms jitter
+  expect(Date.now() - started).toBeLessThan(200)
+  expect(mock.recorded.length).toBe(2)
+
+  mock.restore()
+})
+
+test("requestJson reports non-JSON 200 body without retrying", async () => {
+  const mock = mockFetch([() => new Response("<html>gateway noise</html>", { status: 200 })])
+
+  await expect(requestJson("https://example.test/x", { retries: 2 })).rejects.toMatchObject({
+    category: "internal",
+    message: expect.stringContaining("<html>gateway noise</html>"),
+  })
+  expect(mock.recorded.length).toBe(1) // parse failure on 200 is not retryable
+
+  mock.restore()
+})
+
+test("requestJson surfaces non-JSON error pages with status and snippet", async () => {
+  const mock = mockFetch([
+    () => new Response("<html>Bad Gateway</html>", { status: 502 }),
+    () => new Response("<html>Bad Gateway</html>", { status: 502 }),
+    () => new Response("<html>Bad Gateway</html>", { status: 502 }),
+  ])
+
+  await expect(requestJson("https://example.test/x", { retries: 2 })).rejects.toMatchObject({
+    category: "internal",
+    message: expect.stringContaining("HTTP 502"),
+    status: 502,
+  })
+  expect(mock.recorded.length).toBe(3) // 5xx error page stays retryable
 
   mock.restore()
 })
