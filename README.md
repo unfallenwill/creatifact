@@ -246,6 +246,8 @@ cat job.json | openmmcli jobs            # stdin
 The config file lives at `~/.openmmcli/config.json` (override with the
 `OPENMMCLI_CONFIG_DIR` environment variable). It is shared by all commands and
 by other openmmcli modules (e.g. provider API keys under `providers`).
+A per-invocation override is also available: pass `--config-dir <dir>` to any
+subcommand to use `<dir>/config.json` (takes precedence over the env var).
 
 ```json
 {
