@@ -4,13 +4,17 @@ import { readFileSync } from "node:fs"
 
 import { BUILD_USAGE, runBuildFromArgs } from "./build"
 import { CONFIG_USAGE, runConfigFromArgs } from "./configCmd"
+import { GEN_USAGE, runGenFromArgs } from "./gen"
+import { JOBS_USAGE, runJobsFromArgs } from "./jobs"
 import { LOGIN_USAGE, LOGOUT_USAGE, runLoginFromArgs, runLogoutFromArgs } from "./login"
+import { MODELS_USAGE, runModelsFromArgs } from "./models"
 import { PULL_USAGE, runPullFromArgs } from "./pull"
 import { PUSH_USAGE, runPushFromArgs } from "./push"
 
 const MAIN_USAGE = `Usage: openmmcli <command> [options]
 
-A lightweight CLI for building, pushing, and pulling OCI image layouts.
+A lightweight CLI for building, pushing, and pulling OCI image layouts,
+plus AI media generation via provider models.
 
 Commands:
   build    Build an OCI image layout from a build manifest
@@ -19,6 +23,9 @@ Commands:
   login    Save registry credentials to the config file
   logout   Remove saved registry credentials
   config   Manage the openmmcli config file
+  gen      Generate media via a provider model (image/video/understand/embed)
+  models   List providers and their verified models
+  jobs     Resume polling a saved video task handle
 
 Run \`openmmcli <command> --help\` for command details.`
 
@@ -43,6 +50,9 @@ const SUBCOMMANDS: SubcommandSpec[] = [
   { name: "login", usage: LOGIN_USAGE, run: (args) => runLoginFromArgs(args) },
   { name: "logout", usage: LOGOUT_USAGE, run: (args) => runLogoutFromArgs(args) },
   { name: "config", usage: CONFIG_USAGE, run: (args) => runConfigFromArgs(args) },
+  { name: "gen", usage: GEN_USAGE, run: (args) => runGenFromArgs(args) },
+  { name: "models", usage: MODELS_USAGE, run: (args) => runModelsFromArgs(args) },
+  { name: "jobs", usage: JOBS_USAGE, run: (args) => runJobsFromArgs(args) },
 ]
 
 const subcommand = process.argv[2]

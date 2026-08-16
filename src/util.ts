@@ -35,6 +35,31 @@ export interface CliParseOptions {
   repeats?: ReadonlySet<string>
 }
 
+const DURATION_UNITS: Record<string, number> = {
+  ms: 1,
+  s: 1000,
+  m: 60_000,
+  h: 3_600_000,
+}
+
+/** "90s" / "5m" / "600"(裸数字=秒)→ ms;非法抛错。 */
+export function parseDurationMs(raw: string, flag: string): number {
+  const m = /^(\d+)(ms|s|m|h)?$/.exec(raw)
+  if (!m || m[1] === undefined) {
+    throw new Error(`invalid ${flag} '${raw}' (expected e.g. 90s, 5m, or bare seconds)`)
+  }
+  return Number(m[1]) * (DURATION_UNITS[m[2] ?? "s"] ?? 1000)
+}
+
+/** v 合法则 JSON.parse,否则原样字符串(与 `config set` 同语义)。 */
+export function parseKvValue(raw: string): unknown {
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return raw
+  }
+}
+
 export interface CliParseResult {
   values: Record<string, string | string[]>
   flags: Record<string, boolean>
