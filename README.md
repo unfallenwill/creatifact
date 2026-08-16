@@ -178,6 +178,69 @@ Actions:
   reset                 Delete the config file
 ```
 
+### `gen`
+
+Generate media via a provider model. One entry point for all lanes — image/video
+generation, understanding, embeddings — derived from the model's capabilities
+and your trigger flags: `--prompt` drives generation, `--ask` drives
+understanding, `--input` (repeatable) drives embeddings or message attachments.
+Progress and notes go to stderr; results go to stdout.
+
+```
+Usage: openmmcli gen <provider>/<model> [options]
+
+# image generation
+openmmcli gen zhipu/cogview-3-flash --prompt "a crane" --opt size=1024x1024
+
+# video generation (polls until done; --no-wait prints the task handle)
+openmmcli gen zhipu/cogvideox-flash --prompt "a paper crane" --no-wait
+
+# vision understanding with a local image
+openmmcli gen ark/doubao-1.5-vision-pro-32k-250115 --image ./cat.png --ask "what is this"
+
+# embeddings
+openmmcli gen ark/doubao-embedding-large-text-240915 --input "hello" --input ./note.txt
+
+Options:
+  --prompt <text>          Generation instruction
+  --ask <text>             Question for understanding models (mutually exclusive with --prompt)
+  --input <text|path|url>  Repeatable. Embedding inputs or attachments (URL or existing path = file)
+      --first-frame <path|url>  Video first frame
+      --last-frame <path|url>   Video last frame
+      --image <path|url>        Reference image for image generation
+      --opt <k=v>          Repeatable provider option; value JSON-parsed when valid (5 → 5, true → true)
+      --no-wait           Video only: print the task handle and exit
+      --timeout <dur>     Polling timeout (default 10m; e.g. 90s, 5m, 600)
+      --interval <dur>    Polling interval (default 5s)
+      --output <dir>      Directory to save base64-only artifacts
+      --json              Structured JSON output
+```
+
+Credentials come from the config file (`providers.<id>.apiKey`) or the
+provider's env vars (`ZHIPU_API_KEY`, `ARK_API_KEY`, ...). See
+[Provider plugins](#provider-plugins) for third-party providers.
+
+### `models`
+
+```
+# List available providers (built-ins + config-declared plugins)
+openmmcli models
+
+# List a provider's verified models with capability tags
+openmmcli models zhipu
+openmmcli models zhipu --json
+```
+
+### `jobs`
+
+Resume polling a video task saved by `gen --no-wait`:
+
+```
+openmmcli jobs job.json                  # handle file
+openmmcli jobs '{"providerId":"zhipu","id":"..."}'   # inline
+cat job.json | openmmcli jobs            # stdin
+```
+
 ## Configuration
 
 The config file lives at `~/.openmmcli/config.json` (override with the
