@@ -20,6 +20,7 @@ export type { PollOptions } from "./core/job"
 export { JobTimeoutError, pollUntil } from "./core/job"
 export {
   type Artifact,
+  type CallContext,
   type Capability,
   capabilitiesOf,
   type EmbedApi,
@@ -28,6 +29,7 @@ export {
   type Env,
   type ErrorCategory,
   type FileRef,
+  guardHandle,
   type ImageGenerateApi,
   type ImageGenerateRequest,
   type ImageGenerateResult,
@@ -45,6 +47,7 @@ export {
   type VideoGenerateApi,
   type VideoGenerateRequest,
 } from "./core/types"
+export { guardFrameSupport } from "./core/validate"
 export type { KlingImageOptions, KlingProviderConfig, KlingVideoOptions } from "./kling"
 export { createKlingProvider } from "./kling"
 export type {

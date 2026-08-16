@@ -1,23 +1,29 @@
 import { randomUUID } from "node:crypto"
 import { readFile, stat } from "node:fs/promises"
+import { MAX_INLINE_BYTES } from "../core/fileref"
 import { createJsonClient, type JsonClient } from "../core/http"
 import { JobTimeoutError, pollUntil } from "../core/job"
 import {
   type Env,
   type FileRef,
+  guardHandle,
   type ImageGenerateApi,
+  type ImageGenerateResult,
   type JobHandle,
   type JobStatus,
   type Provider,
   ProviderError,
   type VideoGenerateApi,
 } from "../core/types"
+import { guardFrameSupport } from "../core/validate"
 import { classifyKlingError } from "./error-map"
 import { signKlingJwt } from "./jwt"
 import { KLING_MODELS } from "./models"
 
 const DEFAULT_BASE_URL = "https://api-beijing.klingai.com"
 const IMAGE_POLL_TIMEOUT_MS = 300_000
+/** Submits carry inline base64 frames (up to 50MB) — the 30s default is too tight. */
+const SUBMIT_TIMEOUT_MS = 120_000
 
 export interface KlingVideoOptions {
   duration?: number
@@ -38,6 +44,8 @@ export interface KlingProviderConfig {
   secretKey?: string
   baseUrl?: string
   pollIntervalMs?: number
+  /** 图片生成内部轮询超时(默认 300s) */
+  pollTimeoutMs?: number
 }
 
 /** The concrete shape createKlingProvider returns. */
@@ -84,11 +92,11 @@ async function toKlingFileUrl(ref: FileRef): Promise<string> {
   if ("url" in ref) return ref.url
   if ("base64" in ref) return ref.base64
   const { size } = await stat(ref.localPath)
-  const limit = 50 * 1024 * 1024
-  if (size > limit) {
+  if (size > MAX_INLINE_BYTES) {
     throw new ProviderError(
       "invalid",
-      `file too large to inline (${size} bytes): ${ref.localPath}. Pass a { url } FileRef instead`,
+      `file too large to inline (${size} bytes > ${MAX_INLINE_BYTES}): ${ref.localPath}. ` +
+        "Upload it and pass a { url } FileRef instead",
     )
   }
   const data = await readFile(ref.localPath)
@@ -190,9 +198,11 @@ export function createKlingProvider(
     retries: 1,
   })
 
+  /** Kling 在 HTTP 200 里用信封 code 报业务错误,必须走分类而不是一律 internal。 */
   function unwrap<T>(envelope: KlingEnvelope<T>): T {
     if (typeof envelope.code === "number" && envelope.code !== 0) {
-      throw new ProviderError("internal", envelope.message ?? `code ${envelope.code}`, envelope)
+      const category = classifyKlingError(200, envelope) ?? "internal"
+      throw new ProviderError(category, envelope.message ?? `code ${envelope.code}`, envelope)
     }
     return envelope.data as T
   }
@@ -215,12 +225,14 @@ export function createKlingProvider(
 
   const videoGenerate: VideoGenerateApi<KlingVideoOptions> = {
     async submit(req) {
+      // API 层事实:新接口没有尾帧入参(对所有模型,含未知 id)
       if (req.lastFrame) {
         throw new ProviderError(
           "invalid",
           "Kling new API has no last frame input; 3.0 Turbo supports first frame only",
         )
       }
+      guardFrameSupport(KLING_MODELS, req)
       const externalId = randomUUID()
       const contents: Array<Record<string, unknown>> = [{ type: "prompt", text: req.prompt }]
       if (req.firstFrame) {
@@ -231,15 +243,14 @@ export function createKlingProvider(
       const envelope = await client.post<KlingEnvelope<KlingNewTask>>(
         path,
         buildVideoBody(req.options, contents, externalId),
+        { timeoutMs: SUBMIT_TIMEOUT_MS },
       )
       unwrap(envelope)
       return { providerId: "kling", id: externalId }
     },
 
     async poll(handle: JobHandle): Promise<JobStatus> {
-      if (handle.providerId !== "kling") {
-        throw new ProviderError("invalid", `handle belongs to '${handle.providerId}', not 'kling'`)
-      }
+      guardHandle("kling", handle)
       const envelope = await client.get<KlingEnvelope<KlingNewTask[]>>(
         `/tasks?external_task_ids=${handle.id}`,
       )
@@ -250,7 +261,7 @@ export function createKlingProvider(
   }
 
   const imageGenerate: ImageGenerateApi<KlingImageOptions> = {
-    async create(req) {
+    async create(req, ctx): Promise<ImageGenerateResult> {
       const externalId = randomUUID()
       const { watermark, ...rest } = req.options ?? {}
       const body: Record<string, unknown> = {
@@ -266,7 +277,14 @@ export function createKlingProvider(
         body["watermark_info"] = { enabled: watermark }
       }
       // Kling 图片生成端点是旧版任务制,sync 接口内部轮询收口(复用 pollUntil)
-      await client.post<KlingEnvelope<KlingImageTask>>("/v1/images/generations", body)
+      const submitted = await client.post<KlingEnvelope<KlingImageTask>>(
+        "/v1/images/generations",
+        body,
+        { timeoutMs: SUBMIT_TIMEOUT_MS },
+      )
+      // 信封里的业务错误(余额不足/参数非法等)在这里立即抛出,
+      // 否则会去轮询一个不存在的任务直到 300s 超时
+      unwrap(submitted)
 
       const final = await pollUntil(
         async () => {
@@ -278,11 +296,15 @@ export function createKlingProvider(
         { providerId: "kling", id: externalId },
         {
           intervalMs: config.pollIntervalMs ?? 5000,
-          timeoutMs: IMAGE_POLL_TIMEOUT_MS,
+          timeoutMs: config.pollTimeoutMs ?? IMAGE_POLL_TIMEOUT_MS,
+          signal: ctx?.signal,
         },
       ).catch((e: unknown) => {
         if (e instanceof JobTimeoutError) {
-          throw new ProviderError("internal", `image generation timed out (task ${externalId})`)
+          // raw 带上任务号:轮询端点 /v1/images/generations/{id} 可手动续查
+          throw new ProviderError("internal", `image generation timed out (task ${externalId})`, {
+            taskId: externalId,
+          })
         }
         throw e
       })

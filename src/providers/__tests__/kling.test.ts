@@ -139,6 +139,61 @@ test("kling envelope error code throws with raw", async () => {
   mock.restore()
 })
 
+test("kling envelope business errors are classified, not blanket internal", async () => {
+  const mock = mockFetch([
+    () => jsonResponse(200, { code: 4011, message: "insufficient balance" }),
+    () => jsonResponse(200, { code: 4011, message: "rate limit exceeded, too many request" }),
+  ])
+  const kling = createKlingProvider({ apiKey: "k" })
+
+  await expect(
+    kling.videoGenerate.submit({ model: "kling-3.0-turbo", prompt: "x" }),
+  ).rejects.toMatchObject({ category: "quota" })
+  await expect(
+    kling.videoGenerate.submit({ model: "kling-3.0-turbo", prompt: "x" }),
+  ).rejects.toMatchObject({ category: "rate" })
+  mock.restore()
+})
+
+test("kling image create surfaces envelope errors immediately instead of polling 300s", async () => {
+  // HTTP 200 + code != 0:提交即失败(余额不足),不应进入轮询
+  const mock = mockFetch([() => jsonResponse(200, { code: 4011, message: "insufficient balance" })])
+  const kling = createKlingProvider({ apiKey: "k", pollIntervalMs: 1 })
+
+  await expect(
+    kling.imageGenerate.create({ model: "kolors", prompt: "a cat" }),
+  ).rejects.toMatchObject({ category: "quota", message: "insufficient balance" })
+  expect(mock.recorded.length).toBe(1) // submit only, no poll calls
+  mock.restore()
+})
+
+test("kling image create timeout error carries the task id for manual recovery", async () => {
+  // 提交成功但永不完成:用 0 超时立即触发超时分支
+  const mock = mockFetch([() => jsonResponse(200, { code: 0, data: {} })])
+  const kling = createKlingProvider({ apiKey: "k", pollTimeoutMs: 0 })
+
+  await expect(
+    kling.imageGenerate.create({ model: "kolors", prompt: "a cat" }),
+  ).rejects.toMatchObject({
+    category: "internal",
+    raw: expect.objectContaining({ taskId: expect.any(String) }),
+  })
+  mock.restore()
+})
+
+test("kling image create respects an aborted signal", async () => {
+  const mock = mockFetch([() => jsonResponse(200, { code: 0, data: {} })])
+  const kling = createKlingProvider({ apiKey: "k", pollIntervalMs: 1 })
+  const controller = new AbortController()
+  controller.abort()
+
+  await expect(
+    kling.imageGenerate.create({ model: "kolors", prompt: "a cat" }, { signal: controller.signal }),
+  ).rejects.toThrow(/polling aborted/)
+  expect(mock.recorded.length).toBe(1) // submit happened, polling stopped before first poll
+  mock.restore()
+})
+
 test("kling image create submits to legacy endpoint and polls by id", async () => {
   const mock = mockFetch([
     () => jsonResponse(200, { code: 0, data: {} }),

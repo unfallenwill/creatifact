@@ -5,6 +5,7 @@ import {
   type Env,
   type ErrorCategory,
   type FileRef,
+  guardHandle,
   type ImageGenerateApi,
   type JobHandle,
   type JobStatus,
@@ -14,10 +15,13 @@ import {
   type Usage,
   type VideoGenerateApi,
 } from "../core/types"
+import { guardFrameSupport } from "../core/validate"
 import { classifyArkError } from "./error-map"
 import { ARK_MODELS } from "./models"
 
 const DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
+/** 带内联帧(data URI 可达 50MB+)的提交与同步图像生成,30s 默认超时偏紧。 */
+const SLOW_POST_TIMEOUT_MS = 120_000
 
 export interface ArkVideoOptions {
   resolution?: "720p" | "1080p"
@@ -147,19 +151,20 @@ export function createArkProvider(
 
   const videoGenerate: VideoGenerateApi<ArkVideoOptions> = {
     async submit(req) {
+      guardFrameSupport(ARK_MODELS, req)
       const content = await buildVideoContent(req.prompt, req.firstFrame, req.lastFrame)
       const body: Record<string, unknown> = { model: req.model, content }
       if (req.options) {
         applyVideoOptions(body, req.options)
       }
-      const resp = await client.post<ArkTaskResponse>("/contents/generations/tasks", body)
+      const resp = await client.post<ArkTaskResponse>("/contents/generations/tasks", body, {
+        timeoutMs: SLOW_POST_TIMEOUT_MS,
+      })
       return { providerId: "ark", id: resp.id }
     },
 
     async poll(handle: JobHandle): Promise<JobStatus> {
-      if (handle.providerId !== "ark") {
-        throw new ProviderError("invalid", `handle belongs to '${handle.providerId}', not 'ark'`)
-      }
+      guardHandle("ark", handle)
       const task = await client.get<ArkTaskResponse>(`/contents/generations/tasks/${handle.id}`)
       if (task.status === "queued") return { state: "pending" }
       if (task.status === "running") return { state: "running" }
@@ -202,7 +207,9 @@ export function createArkProvider(
         if (watermark !== undefined) body["watermark"] = watermark
         Object.assign(body, rest)
       }
-      const resp = await client.post<ArkImageResponse>("/images/generations", body)
+      const resp = await client.post<ArkImageResponse>("/images/generations", body, {
+        timeoutMs: SLOW_POST_TIMEOUT_MS,
+      })
       return {
         artifacts: (resp.data ?? []).map((item) => ({
           url: item.url,

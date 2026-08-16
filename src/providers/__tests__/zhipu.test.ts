@@ -312,6 +312,20 @@ test("zhipu sync image with empty data fails loudly", async () => {
   mock.restore()
 })
 
+test("zhipu async image timeout error carries the task id (recoverable via videoGenerate.poll)", async () => {
+  // 提交成功但 pollTimeoutMs=0 立即触发超时分支;raw 里的 taskId 可续查
+  const mock = mockFetch([() => jsonResponse(200, { id: "img-task", task_status: "PROCESSING" })])
+  const zhipu = createZhipuProvider({ apiKey: "k", pollTimeoutMs: 0 })
+
+  await expect(
+    zhipu.imageGenerate.create({ model: "glm-image", prompt: "x", options: { useAsync: true } }),
+  ).rejects.toMatchObject({
+    category: "internal",
+    raw: { taskId: "img-task" },
+  })
+  mock.restore()
+})
+
 // auth + errors
 
 test("zhipu missing api key throws auth", () => {

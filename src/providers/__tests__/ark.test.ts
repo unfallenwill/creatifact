@@ -175,3 +175,28 @@ test("ark video submit is not retried on 5xx (billable POST)", async () => {
 
   mock.restore()
 })
+
+test("ark rejects lastFrame for models whose metadata says lastFrame: false", async () => {
+  const mock = mockFetch([() => jsonResponse(200, { id: "never" })])
+  const ark = createArkProvider(settings)
+
+  await expect(
+    ark.videoGenerate.submit({
+      model: "doubao-seedance-1-0-pro-250528",
+      prompt: "x",
+      firstFrame: { url: "https://x.test/f.png" },
+      lastFrame: { url: "https://x.test/l.png" },
+    }),
+  ).rejects.toMatchObject({ category: "invalid", message: /does not support a last frame/ })
+  expect(mock.recorded.length).toBe(0) // rejected before any request
+
+  // unknown model ids still pass through (API is the authority)
+  await expect(
+    ark.videoGenerate.submit({
+      model: "doubao-seedance-3-0",
+      prompt: "x",
+      lastFrame: { url: "https://x.test/l.png" },
+    }),
+  ).resolves.toMatchObject({ providerId: "ark" })
+  mock.restore()
+})
