@@ -31,23 +31,27 @@ export function parseConfigArgs(args: string[]): {
   return { action: parsed.positionals[0], rest: parsed.positionals.slice(1) }
 }
 
-export async function runConfigFromArgs(args: string[]): Promise<void> {
+export async function runConfigFromArgs(
+  args: string[],
+  opts: { configPath?: string } = {},
+): Promise<void> {
   const { action, rest } = parseConfigArgs(args)
+  const file = opts.configPath ?? configPath()
 
   switch (action) {
     case "path":
       expectNoArgs(rest, "config path")
-      console.log(configPath())
+      console.log(file)
       return
 
     case "list":
       expectNoArgs(rest, "config list")
-      console.log(JSON.stringify(maskForPrint(loadConfig()), null, 2))
+      console.log(JSON.stringify(maskForPrint(loadConfig(file)), null, 2))
       return
 
     case "get": {
       const key = requireKey(rest, "config get")
-      const { found, value } = getConfigValue(loadConfig(), key)
+      const { found, value } = getConfigValue(loadConfig(file), key)
       if (!found) {
         throw new Error(`config key not found: ${key}`)
       }
@@ -58,19 +62,19 @@ export async function runConfigFromArgs(args: string[]): Promise<void> {
     case "set": {
       const key = requireKey(rest.slice(0, 1), "config set")
       const rawValue = requireKey(rest.slice(1), "config set")
-      const config = loadConfig()
+      const config = loadConfig(file)
       setConfigValue(config, key, parseValue(rawValue))
-      saveConfig(config)
+      saveConfig(config, file)
       console.log(`Set ${key}`)
       return
     }
 
     case "reset":
       expectNoArgs(rest, "config reset")
-      if (deleteConfig()) {
-        console.log(`Removed ${configPath()}`)
+      if (deleteConfig(file)) {
+        console.log(`Removed ${file}`)
       } else {
-        console.log(`No config file at ${configPath()}`)
+        console.log(`No config file at ${file}`)
       }
       return
 

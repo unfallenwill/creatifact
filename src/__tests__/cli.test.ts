@@ -706,4 +706,34 @@ describe("cli gen/models/jobs — integration", () => {
       expect(stdout).toContain(`Usage: openmmcli ${cmd}`)
     }
   })
+
+  it("--config-dir redirects provider and config lookups", () => {
+    const { env, dir } = demoEnv()
+    const configDir = path.join(dir, "cfg")
+    try {
+      // No OPENMMCLI_CONFIG_DIR: the flag alone must route config reads.
+      const models = run(["models", "--config-dir", configDir])
+      expect(models.code).toBe(0)
+      expect(models.stdout).toContain("demo  (")
+      expect(models.stderr).toContain("unavailable")
+
+      const configPath = run(["config", "path", "--config-dir", configDir])
+      expect(configPath.code).toBe(0)
+      expect(configPath.stdout.trim()).toBe(path.join(configDir, "config.json"))
+
+      const gen = run(
+        ["gen", "demo/demo-image", "--prompt", "x", "--config-dir", configDir],
+        undefined,
+        env,
+      )
+      expect(gen.code).toBe(0)
+      expect(gen.stdout).toContain("https://cdn.test/out.png")
+
+      const missing = run(["models", "--config-dir"])
+      expect(missing.code).toBe(1)
+      expect(missing.stderr).toContain("--config-dir requires a directory")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

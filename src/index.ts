@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { readFileSync } from "node:fs"
+import { join } from "node:path"
 
 import { BUILD_USAGE, runBuildFromArgs } from "./build"
 import { CONFIG_USAGE, runConfigFromArgs } from "./configCmd"
@@ -27,7 +28,11 @@ Commands:
   models   List providers and their verified models
   jobs     Resume polling a saved video task handle
 
-Run \`openmmcli <command> --help\` for command details.`
+Run \`openmmcli <command> --help\` for command details.
+
+Global options:
+  --config-dir <dir>    Use <dir>/config.json instead of ~/.openmmcli/config.json
+                        (takes precedence over OPENMMCLI_CONFIG_DIR)`
 
 if (process.argv.includes("--version")) {
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
@@ -37,23 +42,48 @@ if (process.argv.includes("--version")) {
   process.exit(0)
 }
 
+interface GlobalRunOptions {
+  configPath?: string
+}
+
 interface SubcommandSpec {
   name: string
   usage: string
-  run: (args: string[]) => Promise<void>
+  run: (args: string[], opts: GlobalRunOptions) => Promise<void>
 }
 
 const SUBCOMMANDS: SubcommandSpec[] = [
-  { name: "build", usage: BUILD_USAGE, run: (args) => runBuildFromArgs(args) },
-  { name: "push", usage: PUSH_USAGE, run: (args) => runPushFromArgs(args) },
-  { name: "pull", usage: PULL_USAGE, run: (args) => runPullFromArgs(args) },
-  { name: "login", usage: LOGIN_USAGE, run: (args) => runLoginFromArgs(args) },
-  { name: "logout", usage: LOGOUT_USAGE, run: (args) => runLogoutFromArgs(args) },
-  { name: "config", usage: CONFIG_USAGE, run: (args) => runConfigFromArgs(args) },
-  { name: "gen", usage: GEN_USAGE, run: (args) => runGenFromArgs(args) },
-  { name: "models", usage: MODELS_USAGE, run: (args) => runModelsFromArgs(args) },
-  { name: "jobs", usage: JOBS_USAGE, run: (args) => runJobsFromArgs(args) },
+  { name: "build", usage: BUILD_USAGE, run: (args, o) => runBuildFromArgs(args, o) },
+  { name: "push", usage: PUSH_USAGE, run: (args, o) => runPushFromArgs(args, o) },
+  { name: "pull", usage: PULL_USAGE, run: (args, o) => runPullFromArgs(args, o) },
+  { name: "login", usage: LOGIN_USAGE, run: (args, o) => runLoginFromArgs(args, o) },
+  { name: "logout", usage: LOGOUT_USAGE, run: (args, o) => runLogoutFromArgs(args, o) },
+  { name: "config", usage: CONFIG_USAGE, run: (args, o) => runConfigFromArgs(args, o) },
+  { name: "gen", usage: GEN_USAGE, run: (args, o) => runGenFromArgs(args, o) },
+  { name: "models", usage: MODELS_USAGE, run: (args, o) => runModelsFromArgs(args, o) },
+  { name: "jobs", usage: JOBS_USAGE, run: (args, o) => runJobsFromArgs(args, o) },
 ]
+
+/** Strip the global `--config-dir <dir>` flag; returns remaining args and the resolved config file path. */
+function extractGlobalOptions(args: string[]): { rest: string[]; configPath?: string } {
+  const rest: string[] = []
+  let configPath: string | undefined
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    if (arg === undefined) continue
+    if (arg === "--config-dir") {
+      const dir = args[i + 1]
+      if (dir === undefined || dir === "") {
+        throw new Error("--config-dir requires a directory")
+      }
+      i++
+      configPath = join(dir, "config.json")
+      continue
+    }
+    rest.push(arg)
+  }
+  return configPath === undefined ? { rest } : { rest, configPath }
+}
 
 const subcommand = process.argv[2]
 
@@ -75,16 +105,18 @@ if (!spec) {
   process.exit(1)
 }
 
-const rest = process.argv.slice(3)
-if (rest.includes("--help") || rest.includes("-h")) {
-  console.log(spec.usage)
-  process.exit(0)
-}
-
 try {
-  await spec.run(rest)
+  const { rest, configPath } = extractGlobalOptions(process.argv.slice(3))
+  if (rest.includes("--help") || rest.includes("-h")) {
+    console.log(spec.usage)
+    process.exit(0)
+  }
+  await spec.run(rest, configPath === undefined ? {} : { configPath })
   process.exit(0)
 } catch (e) {
-  console.error(`error: ${(e as Error).message}`)
-  process.exit(1)
+  if (e instanceof Error) {
+    console.error(`error: ${e.message}`)
+    process.exit(1)
+  }
+  throw e
 }
