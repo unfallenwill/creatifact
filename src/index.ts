@@ -22,7 +22,7 @@ plus AI media generation via provider models.
 Commands:
   generate  Generate media by task (gen is an alias)
             (generate text2image|image2image|text2video|... | generate <ref>)
-  package   Build, push, and pull OCI image layouts
+  package   Build, push, and pull OCI image layouts (pkg is an alias)
             (package build|push|pull)
   auth      Save or remove registry credentials (auth login|logout)
   config    Manage the openmmcli config file
@@ -162,7 +162,7 @@ try {
     process.exit(0)
   }
 
-  if (head === "package") {
+  if (head === "package" || head === "pkg") {
     await runGrouped("package", PACKAGE_ACTIONS, PACKAGE_USAGE, rest, opts)
     process.exit(0)
   }

@@ -202,7 +202,7 @@ openmmcli models zhipu --json
 
 ### `package build`
 
-Build an OCI image layout from a build manifest (`openmm-build.json` by default). The manifest describes the image *content*; everything else (tag, output dir, assets override) is passed via CLI flags.
+Build an OCI image layout from a build manifest (`openmm-build.json` by default; `pkg` is an alias for `package`). The manifest describes the image *content*; everything else (tag, output dir, assets override) is passed via CLI flags.
 
 ```
 Usage: openmmcli package build [options]
