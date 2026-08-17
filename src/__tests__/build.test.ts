@@ -129,8 +129,8 @@ test("mergeOptions defaults output and empty lists", () => {
 })
 
 test("mergeOptions forwards gen from manifest", () => {
-  const opts = mergeOptions({ ...emptyCli(), tag: "x:1" }, { gen: { lane: "image" } })
-  expect(opts.gen).toEqual({ lane: "image" })
+  const opts = mergeOptions({ ...emptyCli(), tag: "x:1" }, { gen: { task: "text2image" } })
+  expect(opts.gen).toEqual({ task: "text2image" })
   expect(mergeOptions({ ...emptyCli(), tag: "x:1" }, {}).gen).toBeUndefined()
 })
 
@@ -263,9 +263,9 @@ test("runBuild writes a gen recipe into the config blob", async () => {
     from: [],
     copy: [],
     gen: {
-      lane: "image",
+      task: "image2image",
       provider: "zhipu",
-      model: "cogview-3-flash",
+      model: "cogview-4",
       options: { size: "1024x1024" },
     },
     plainHttp: false,
@@ -284,9 +284,9 @@ test("runBuild writes a gen recipe into the config blob", async () => {
   expect(config).toEqual({
     schemaVersion: 1,
     gen: {
-      lane: "image",
+      task: "image2image",
       provider: "zhipu",
-      model: "cogview-3-flash",
+      model: "cogview-4",
       options: { size: "1024x1024" },
     },
   })

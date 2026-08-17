@@ -1,0 +1,1576 @@
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { defaultGenProvider, loadConfig } from "./config"
+import {
+  buildResultPackage,
+  GEN_CONFIG_MEDIA_TYPE,
+  type GenSpec,
+  parseGenConfigBlob,
+} from "./genPackage"
+import { type FsView, mergeImageLayers } from "./layers"
+import { type LoadedImage, readOciLayout } from "./oci"
+import {
+  type Artifact,
+  type Capability,
+  createProvider,
+  type FileRef,
+  type JobHandle,
+  JobTimeoutError,
+  listConfiguredProviderIds,
+  type ModelSupport,
+  type Provider,
+  ProviderError,
+  pollUntil,
+  type Usage,
+} from "./providers"
+import { fetchImage } from "./pull"
+import { parseCliArgs, parseDurationMs, parseKvValue, readPasswordFromStdin } from "./util"
+
+/**
+ * Task-oriented generation. Every task is an X2Y name; the task registry is
+ * the single source of truth for parameters (required/optional/forbidden),
+ * default-model selection, CLI usage, and the JSON request fields. CLI args,
+ * `-f` JSON files, and recipe packages all normalize to one GenRequest, with
+ * CLI flags taking priority.
+ */
+
+export type GenTaskName =
+  | "text2text"
+  | "image2text"
+  | "video2text"
+  | "text2image"
+  | "image2image"
+  | "text2video"
+  | "image2video"
+  | "frames2video"
+  | "embed"
+  | "resume"
+
+/** The canonical request: CLI flags, `-f` JSON, and recipe packages all map here. */
+export interface GenRequest {
+  task: GenTaskName
+  /** Provider id, optionally "id/model" (positional sugar); overridable per field below. */
+  provider?: string
+  model?: string
+  prompt?: string
+  system?: string
+  /** Reference images (URL / local path / pkg://path into a recipe package). */
+  images?: string[]
+  /** frames2video only. */
+  firstFrame?: string
+  /** frames2video only. */
+  lastFrame?: string
+  /** Media attachments (image2text/video2text) or texts (embed). */
+  inputs?: string[]
+  options?: Record<string, unknown>
+  /** Video tasks: submit and print the task handle without polling. */
+  noWait?: boolean
+  /** Duration strings ("5m", "90s"); parsed and validated before execution. */
+  timeout?: string
+  interval?: string
+  /** Result OCI layout dir (media tasks) or artifact save dir (resume / --no-pack). */
+  output?: string
+  /** Reference name for the result package (default gen-output:latest). */
+  tag?: string
+  /** Skip building a result package; print artifacts only. */
+  noPack?: boolean
+  json?: boolean
+  /** resume only: inline handle JSON or a file path. */
+  handle?: string
+}
+
+/** A partial request used as a merge overlay; absent fields do not override. */
+export type RequestOverlay = { [K in keyof GenRequest]?: GenRequest[K] | undefined }
+
+interface TaskSpec {
+  name: GenTaskName
+  /** undefined for the control command `resume`. */
+  capability: Capability | undefined
+  /** Produces media artifacts → result packaging applies. */
+  media: boolean
+  /** Field requirements; absent optional fields below are forbidden. */
+  required: {
+    prompt?: boolean
+    images?: 1
+    firstFrame?: boolean
+    lastFrame?: boolean
+    inputs?: boolean
+    handle?: boolean
+  }
+  optional: {
+    system?: boolean
+    prompt?: boolean
+    options?: boolean
+    noWait?: boolean
+    timeout?: boolean
+    interval?: boolean
+  }
+  /** Positional payload after the optional provider. */
+  payload: "prompt" | "inputs" | "handle"
+  /** Strict default-model filter over the capability's ModelSupport. */
+  pickModel?: (s: ModelSupport) => boolean
+  /** Hard-fail when no model passes pickModel (frames2video). */
+  strictModel?: boolean
+  usage: string
+}
+
+export const TASKS: Record<GenTaskName, TaskSpec> = {
+  text2text: {
+    name: "text2text",
+    capability: "text.generate",
+    media: false,
+    required: { prompt: true },
+    optional: { system: true, options: true },
+    payload: "prompt",
+    usage: `Usage: openmmcli generate text2text [provider] [prompt] [options]
+
+Text chat completion (text in, text out).
+
+Arguments:
+  [provider]            provider id or provider/model (e.g. zhipu/glm-4-flash);
+                        omit to use the default provider
+  [prompt]              the message to send (or use --prompt)
+
+Options:
+      --prompt <text>   Alternative to the positional prompt
+      --system <text>   System prompt
+      --opt <k=v>       Repeatable provider option (JSON-parsed when valid)
+      --json            Print structured JSON to stdout
+  -h, --help            Show this help message`,
+  },
+  image2text: {
+    name: "image2text",
+    capability: "image.understand",
+    media: false,
+    required: { inputs: true },
+    optional: { prompt: true, options: true },
+    payload: "prompt",
+    usage: `Usage: openmmcli generate image2text [provider] [question] [options]
+
+Ask a question about image(s) (image in, text out); with no question the
+images are described.
+
+Arguments:
+  [provider]            provider id or provider/model
+  [question]            optional question (or use --prompt)
+
+Options:
+      --prompt <text>   Alternative to the positional question
+      --input <x>       Repeatable image (http(s)/data URL, path, pkg://path)
+      --opt <k=v>       Repeatable provider option
+      --json            Print structured JSON to stdout
+  -h, --help            Show this help message`,
+  },
+  video2text: {
+    name: "video2text",
+    capability: "video.understand",
+    media: false,
+    required: { inputs: true },
+    optional: { prompt: true, options: true },
+    payload: "prompt",
+    usage: `Usage: openmmcli generate video2text [provider] [question] [options]
+
+Ask a question about video(s) (video in, text out); with no question the
+videos are described.
+
+Arguments:
+  [provider]            provider id or provider/model
+  [question]            optional question (or use --prompt)
+
+Options:
+      --prompt <text>   Alternative to the positional question
+      --input <x>       Repeatable video (http(s)/data URL, path, pkg://path)
+      --opt <k=v>       Repeatable provider option
+      --json            Print structured JSON to stdout
+  -h, --help            Show this help message`,
+  },
+  text2image: {
+    name: "text2image",
+    capability: "image.generate",
+    media: true,
+    required: { prompt: true },
+    optional: { options: true },
+    payload: "prompt",
+    usage: `Usage: openmmcli generate text2image [provider] [prompt] [options]
+
+Generate an image from text.
+
+Arguments:
+  [provider]            provider id or provider/model (e.g. zhipu/cogview-4)
+  [prompt]              generation instruction (or use --prompt)
+
+Options:
+      --prompt <text>   Alternative to the positional prompt
+      --opt <k=v>       Repeatable provider option
+      --output <dir>    Result OCI layout directory (default ./oci-layout)
+      --tag <repo:tag>  Reference name for the result package
+      --no-pack         Print artifacts only; do not build a result package
+      --json            Print structured JSON to stdout
+  -h, --help            Show this help message`,
+  },
+  image2image: {
+    name: "image2image",
+    capability: "image.generate",
+    media: true,
+    required: { prompt: true, images: 1 },
+    optional: { options: true },
+    payload: "prompt",
+    pickModel: (s) => s.imageInput === true,
+    usage: `Usage: openmmcli generate image2image [provider] [prompt] [options]
+
+Generate an image from a reference image plus text (image editing /
+restyling). Takes exactly one reference image.
+
+Arguments:
+  [provider]            provider id or provider/model
+  [prompt]              generation instruction (or use --prompt)
+
+Options:
+      --prompt <text>   Alternative to the positional prompt
+      --image <ref>     Reference image (required): http(s)/data URL, local
+                        path, or pkg://path into a recipe package
+      --opt <k=v>       Repeatable provider option
+      --output <dir>    Result OCI layout directory (default ./oci-layout)
+      --tag <repo:tag>  Reference name for the result package
+      --no-pack         Print artifacts only; do not build a result package
+      --json            Print structured JSON to stdout
+  -h, --help            Show this help message`,
+  },
+  text2video: {
+    name: "text2video",
+    capability: "video.generate",
+    media: true,
+    required: { prompt: true },
+    optional: { options: true, noWait: true, timeout: true, interval: true },
+    payload: "prompt",
+    pickModel: (s) => s.textOnly !== false,
+    usage: `Usage: openmmcli generate text2video [provider] [prompt] [options]
+
+Generate a video from text (async; polls until done).
+
+Arguments:
+  [provider]            provider id or provider/model (e.g. ark/doubao-seedance-2.0)
+  [prompt]              generation instruction (or use --prompt)
+
+Options:
+      --prompt <text>   Alternative to the positional prompt
+      --opt <k=v>       Repeatable provider option
+      --no-wait         Submit and print the task handle, then exit
+      --timeout <dur>   Polling timeout (default 10m; e.g. 90s, 5m, 600)
+      --interval <dur>  Polling interval (default 5s)
+      --output <dir>    Result OCI layout directory (default ./oci-layout)
+      --tag <repo:tag>  Reference name for the result package
+      --no-pack         Print artifacts only; do not build a result package
+      --json            Print structured JSON to stdout
+  -h, --help            Show this help message`,
+  },
+  image2video: {
+    name: "image2video",
+    capability: "video.generate",
+    media: true,
+    required: { prompt: true, images: 1 },
+    optional: { options: true, noWait: true, timeout: true, interval: true },
+    payload: "prompt",
+    pickModel: (s) => s.firstFrame === true,
+    usage: `Usage: openmmcli generate image2video [provider] [prompt] [options]
+
+Generate a video from a reference image plus text; the image becomes the
+video's first frame.
+
+Arguments:
+  [provider]            provider id or provider/model
+  [prompt]              generation instruction (or use --prompt)
+
+Options:
+      --prompt <text>   Alternative to the positional prompt
+      --image <ref>     Reference image (required): URL, local path, pkg://path
+      --opt <k=v>       Repeatable provider option
+      --no-wait         Submit and print the task handle, then exit
+      --timeout <dur>   Polling timeout (default 10m)
+      --interval <dur>  Polling interval (default 5s)
+      --output <dir>    Result OCI layout directory (default ./oci-layout)
+      --tag <repo:tag>  Reference name for the result package
+      --no-pack         Print artifacts only; do not build a result package
+      --json            Print structured JSON to stdout
+  -h, --help            Show this help message`,
+  },
+  frames2video: {
+    name: "frames2video",
+    capability: "video.generate",
+    media: true,
+    required: { prompt: true, firstFrame: true, lastFrame: true },
+    optional: { options: true, noWait: true, timeout: true, interval: true },
+    payload: "prompt",
+    pickModel: (s) => s.firstFrame === true && s.lastFrame === true,
+    strictModel: true,
+    usage: `Usage: openmmcli generate frames2video [provider] [prompt] [options]
+
+Generate a video from an explicit first frame and last frame plus text.
+
+Arguments:
+  [provider]            provider id or provider/model
+                        (e.g. zhipu/viduq1-start-end)
+  [prompt]              generation instruction (or use --prompt)
+
+Options:
+      --prompt <text>       Alternative to the positional prompt
+      --first-frame <ref>  First frame image (required)
+      --last-frame <ref>   Last frame image (required)
+      --opt <k=v>          Repeatable provider option
+      --no-wait            Submit and print the task handle, then exit
+      --timeout <dur>      Polling timeout (default 10m)
+      --interval <dur>     Polling interval (default 5s)
+      --output <dir>       Result OCI layout directory (default ./oci-layout)
+      --tag <repo:tag>     Reference name for the result package
+      --no-pack            Print artifacts only; skip the result package
+      --json               Print structured JSON to stdout
+  -h, --help               Show this help message`,
+  },
+  embed: {
+    name: "embed",
+    capability: "embed",
+    media: false,
+    required: { inputs: true },
+    optional: { options: true },
+    payload: "inputs",
+    usage: `Usage: openmmcli generate embed [provider] [input...] [options]
+
+Compute text embeddings (text in, vectors out).
+
+Arguments:
+  [provider]            provider id or provider/model
+  [input...]            texts to embed (or use --input)
+
+Options:
+      --input <text>    Repeatable text, URL, or existing path
+      --opt <k=v>       Repeatable provider option
+      --json            Print structured JSON to stdout
+  -h, --help            Show this help message`,
+  },
+  resume: {
+    name: "resume",
+    capability: undefined,
+    media: false,
+    required: { handle: true },
+    optional: { timeout: true, interval: true },
+    payload: "handle",
+    usage: `Usage: openmmcli generate resume <handle|file> [options]
+
+Resume polling a video task saved by a video task's --no-wait.
+
+Arguments:
+  <handle|file>         Task handle: inline JSON (starts with "{") or a file
+                        path. When omitted, reads the handle from stdin.
+
+Options:
+      --timeout <dur>   Polling timeout (default 10m)
+      --interval <dur>  Polling interval (default 5s)
+      --output <dir>    Directory to save base64-only artifacts
+      --json            Print structured JSON to stdout
+  -h, --help            Show this help message`,
+  },
+}
+
+const TASK_LIST = Object.keys(TASKS).join(", ")
+
+export const GENERATE_USAGE = `Usage: openmmcli generate <task> [provider] [prompt] [options]
+   or: openmmcli generate <ref> [prompt] [options]     Run a gen package
+
+Task-oriented generation. CLI flags, \`-f\` request files, and recipe packages
+are equivalent; when both apply, command-line flags win. Progress and notes go
+to stderr; results go to stdout.
+
+Tasks:
+  text2text      文本生成      text → text
+  image2text     图生文        image + question → text
+  video2text     视频理解      video + question → text
+  text2image     文生图        text → image
+  image2image    图生图        image + text → image (one reference image)
+  text2video     文生视频      text → video
+  image2video    图生视频      image + text → video (image = first frame)
+  frames2video   首尾帧生视频  first frame + last frame + text → video
+  embed          向量化        text → vectors
+  resume         续跑          resume polling a saved video task
+
+A <ref> (e.g. example.com/xxxxxx:v1.0) instead of a task runs a gen package
+built by \`openmmcli package build\` (see \`openmmcli generate <ref> --help\`).
+
+Media tasks write their result as an OCI package (provenance included).
+Run \`openmmcli generate <task> --help\` for task details. \`gen\` is an alias.`
+
+export const GENERATE_PACKAGE_USAGE = `Usage: openmmcli generate <ref> [prompt] [options]
+
+Run generation from a gen package built by \`openmmcli package build\` (its
+manifest has a \`gen\` field). The package carries the task, provider, model,
+and parameters; API keys are resolved locally at run time, never from the
+package. <ref> is a registry reference (e.g. example.com/xxxxxx:v1.0) or a
+local OCI layout path (e.g. ./oci-layout).
+
+Arguments:
+  <ref>                 Package reference (registry or local layout)
+  [prompt]              Overrides the package's default prompt
+
+Options: the same flags as the package's task (task-specific fields are
+validated after the package is read), plus:
+      --output <dir>    Result OCI layout directory (default ./oci-layout)
+      --tag <repo:tag>  Reference name for the result package
+                        (default gen-output:latest)
+      --no-pack         Print artifacts only; do not build a result package
+      --plain-http      Use HTTP for the registry (local registries)
+      --json            Print structured JSON to stdout
+  -h, --help            Show this help message
+
+Media references (--image / --first-frame / --last-frame / --input) accept an
+http(s)/data URL, a local path, or a pkg://path into the package's layers.`
+
+// ---------------------------------------------------------------------------
+// CLI parsing
+
+const VALUE_FLAGS: Record<string, string> = {
+  "--prompt": "prompt",
+  "--system": "system",
+  "--image": "images",
+  "--first-frame": "firstFrame",
+  "--last-frame": "lastFrame",
+  "--input": "inputs",
+  "--opt": "options",
+  "--timeout": "timeout",
+  "--interval": "interval",
+  "--output": "output",
+  "--tag": "tag",
+  "--provider": "provider",
+  "--model": "model",
+}
+
+const BOOL_FLAGS: Record<string, string> = {
+  "--no-wait": "noWait",
+  "--no-pack": "noPack",
+  "--json": "json",
+}
+
+const REPEAT_FLAGS = new Set(["--image", "--input", "--opt"])
+
+export interface ProviderContext {
+  known: ReadonlySet<string>
+  hasDefaultProvider: boolean
+}
+
+function single(value: string | string[] | undefined): string | undefined {
+  return typeof value === "string" ? value : undefined
+}
+
+function many(value: string | string[] | undefined): string[] {
+  return value === undefined ? [] : Array.isArray(value) ? value : [value]
+}
+
+function parseOptRepeats(raw: string | string[] | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const item of many(raw)) {
+    const eq = item.indexOf("=")
+    const key = eq === -1 ? "" : item.slice(0, eq)
+    if (eq === -1 || key === "") {
+      throw new Error(`invalid --opt '${item}' (expected k=v)`)
+    }
+    out[key] = parseKvValue(item.slice(eq + 1))
+  }
+  return out
+}
+
+/**
+ * Split the first positional into the [provider] spec vs. payload positionals.
+ * The first positional is a provider only when it contains "/" or matches a
+ * known provider id; anything else is payload.
+ */
+export function splitProviderPositional(
+  positionals: string[],
+  ctx: ProviderContext,
+): { target: string | undefined; payload: string[] } {
+  const first = positionals[0]
+  if (first !== undefined && (first.includes("/") || ctx.known.has(first))) {
+    return { target: first, payload: positionals.slice(1) }
+  }
+  if (first !== undefined && !ctx.hasDefaultProvider) {
+    throw new Error(
+      `expected <provider>, got '${first}' (known providers: ${[...ctx.known].join(", ") || "none configured"}); ` +
+        "or set defaults.gen.provider via `openmmcli config set defaults.gen.provider <id>`",
+    )
+  }
+  return { target: undefined, payload: positionals }
+}
+
+export interface ParseTaskOptions {
+  /** Package mode: the ref consumed positional[0]; no provider positional. */
+  packageMode?: boolean
+}
+
+/** Resolve the [provider] positional vs. payload positionals for a task. */
+function resolvePositionals(
+  task: GenTaskName,
+  positionals: string[],
+  ctx: ProviderContext,
+  hasProviderFlags: boolean,
+  packageMode: boolean,
+): { target: string | undefined; payload: string[] } {
+  if (packageMode || task === "resume") {
+    return { target: undefined, payload: positionals }
+  }
+  if (hasProviderFlags) {
+    const first = positionals[0]
+    if (first !== undefined && (first.includes("/") || ctx.known.has(first))) {
+      throw new Error(
+        `conflicting provider specification: '${first}' and --provider/--model are mutually exclusive`,
+      )
+    }
+    return { target: undefined, payload: positionals }
+  }
+  return splitProviderPositional(positionals, ctx)
+}
+
+/** Split a "provider[/model]" target string into its two fields. */
+function splitTargetString(target: string): { provider: string; model: string | undefined } {
+  const slash = target.indexOf("/")
+  if (slash === -1) return { provider: target, model: undefined }
+  const provider = target.slice(0, slash)
+  const model = target.slice(slash + 1)
+  if (provider === "" || model === "" || model.includes("/")) {
+    throw new Error(`expected <provider>[/<model>], got '${target}'`)
+  }
+  return { provider, model }
+}
+
+function applyResumePayload(
+  payload: string[],
+  flagPrompt: string | undefined,
+  overlay: RequestOverlay,
+): void {
+  if (payload.length > 1) {
+    throw new Error(
+      `too many positional arguments for resume (${payload.slice(1).join(" ")}); the form is: generate resume <handle|file>`,
+    )
+  }
+  if (flagPrompt !== undefined) throw new Error("--prompt is not accepted by resume")
+  if (payload[0] !== undefined) overlay.handle = payload[0]
+}
+
+function applyPromptPayload(
+  task: GenTaskName,
+  payload: string[],
+  flagPrompt: string | undefined,
+  overlay: RequestOverlay,
+): void {
+  if (payload.length > 1) {
+    throw new Error(
+      `too many positional arguments for ${task} (${payload.slice(1).join(" ")}); the form is: generate ${task} [provider] [prompt]`,
+    )
+  }
+  if (payload[0] !== undefined && flagPrompt !== undefined) {
+    throw new Error("--prompt and the positional prompt are mutually exclusive")
+  }
+  const prompt = payload[0] ?? flagPrompt
+  if (prompt !== undefined) overlay.prompt = prompt
+}
+
+function applyInputsPayload(
+  payload: string[],
+  flagPrompt: string | undefined,
+  flagInputs: string[],
+  overlay: RequestOverlay,
+): void {
+  if (flagPrompt !== undefined) {
+    throw new Error("embed takes text via --input or positionals, not --prompt")
+  }
+  const inputs = [...payload, ...flagInputs]
+  if (inputs.length > 0) overlay.inputs = inputs
+}
+
+/** Apply the positional payload (prompt / inputs / handle) onto the overlay. */
+function applyPositionalPayload(
+  task: GenTaskName,
+  payload: string[],
+  flagPrompt: string | undefined,
+  flagInputs: string[],
+  overlay: RequestOverlay,
+): void {
+  if (task === "resume") {
+    applyResumePayload(payload, flagPrompt, overlay)
+  } else if (TASKS[task].payload === "prompt") {
+    applyPromptPayload(task, payload, flagPrompt, overlay)
+  } else {
+    applyInputsPayload(payload, flagPrompt, flagInputs, overlay)
+  }
+}
+
+/** Copy explicitly-passed value/bool flags onto the overlay. */
+function collectFlagFields(
+  task: GenTaskName,
+  parsed: ReturnType<typeof parseCliArgs>,
+  overlay: RequestOverlay,
+): void {
+  const system = single(parsed.values["system"])
+  if (system !== undefined) overlay.system = system
+  const firstFrame = single(parsed.values["firstFrame"])
+  if (firstFrame !== undefined) overlay.firstFrame = firstFrame
+  const lastFrame = single(parsed.values["lastFrame"])
+  if (lastFrame !== undefined) overlay.lastFrame = lastFrame
+  const images = many(parsed.values["images"])
+  if (images.length > 0) overlay.images = images
+  const inputs = many(parsed.values["inputs"])
+  if (task !== "embed" && inputs.length > 0) overlay.inputs = inputs
+  const options = parseOptRepeats(parsed.values["options"])
+  if (Object.keys(options).length > 0) overlay.options = options
+  const timeout = single(parsed.values["timeout"])
+  if (timeout !== undefined) overlay.timeout = timeout
+  const interval = single(parsed.values["interval"])
+  if (interval !== undefined) overlay.interval = interval
+  const output = single(parsed.values["output"])
+  if (output !== undefined) overlay.output = output
+  const tag = single(parsed.values["tag"])
+  if (tag !== undefined) overlay.tag = tag
+  if (parsed.flags["noWait"] === true) overlay.noWait = true
+  if (parsed.flags["noPack"] === true) overlay.noPack = true
+  if (parsed.flags["json"] === true) overlay.json = true
+}
+
+/** Parse CLI args for a task into a merge overlay (explicit fields only). */
+export function parseGenerateArgs(
+  task: GenTaskName,
+  args: string[],
+  ctx: ProviderContext,
+  opts: ParseTaskOptions = {},
+): RequestOverlay {
+  const parsed = parseCliArgs(args, {
+    values: VALUE_FLAGS,
+    flags: BOOL_FLAGS,
+    repeats: REPEAT_FLAGS,
+  })
+
+  const flagProvider = single(parsed.values["provider"])
+  const flagModel = single(parsed.values["model"])
+  const hasProviderFlags = flagProvider !== undefined || flagModel !== undefined
+
+  const { target, payload } = resolvePositionals(
+    task,
+    parsed.positionals,
+    ctx,
+    hasProviderFlags,
+    opts.packageMode === true,
+  )
+
+  const overlay: RequestOverlay = { task }
+
+  if (hasProviderFlags || target !== undefined) {
+    const split = target !== undefined ? splitTargetString(target) : undefined
+    const provider = split?.provider ?? flagProvider
+    const model = split?.model ?? flagModel
+    if (provider !== undefined) overlay.provider = provider
+    if (model !== undefined) overlay.model = model
+  }
+
+  applyPositionalPayload(
+    task,
+    payload,
+    single(parsed.values["prompt"]),
+    many(parsed.values["inputs"]),
+    overlay,
+  )
+  collectFlagFields(task, parsed, overlay)
+
+  return overlay
+}
+
+// ---------------------------------------------------------------------------
+// Validation
+
+function fail(message: string): never {
+  throw new Error(message)
+}
+
+function hasValue(v: string | undefined): boolean {
+  return v !== undefined && v !== ""
+}
+
+function validateRequiredImages(spec: TaskSpec, req: GenRequest): void {
+  if (spec.required.images !== 1) return
+  const count = (req.images ?? []).length
+  if (count === 0) {
+    fail(`${req.task} requires --image <path|url|pkg://path>`)
+  }
+  if (count > 1) {
+    fail(`${req.task} takes exactly one --image; multi-image generation is not supported yet`)
+  }
+}
+
+/** Required-field checks. Throws with the missing flag. */
+function validateRequired(spec: TaskSpec, req: GenRequest): void {
+  if (spec.required.prompt && !hasValue(req.prompt)) {
+    fail(`${req.task} requires a prompt (positional or --prompt)`)
+  }
+  validateRequiredImages(spec, req)
+  if (spec.required.firstFrame && !hasValue(req.firstFrame)) {
+    fail("frames2video requires --first-frame <img>")
+  }
+  if (spec.required.lastFrame && !hasValue(req.lastFrame)) {
+    fail("frames2video requires --last-frame <img>")
+  }
+  if (spec.required.inputs && (req.inputs ?? []).length === 0) {
+    fail(`${req.task} requires --input <media|text>`)
+  }
+  if (spec.required.handle && !hasValue(req.handle)) {
+    fail("resume requires a handle (inline JSON, file path, or stdin)")
+  }
+}
+
+function failForbiddenImages(req: GenRequest): void {
+  if (req.task === "text2image") {
+    fail("text2image does not take --image; image-to-image is `generate image2image --image ...`")
+  }
+  if (req.task === "text2video") {
+    fail("text2video does not take --image; image-to-video is `generate image2video --image ...`")
+  }
+  if (req.task === "image2text" || req.task === "video2text") {
+    fail(`${req.task} does not take --image; attachments use --input`)
+  }
+  fail(`${req.task} does not accept --image`)
+}
+
+function validateForbiddenTiming(spec: TaskSpec, req: GenRequest): void {
+  if (req.noWait === true && spec.optional.noWait !== true) {
+    fail(`--no-wait applies to video tasks only, not ${req.task}`)
+  }
+  if (hasValue(req.timeout) && spec.optional.timeout !== true) {
+    fail(`--timeout applies to video tasks and resume only, not ${req.task}`)
+  }
+  if (hasValue(req.interval) && spec.optional.interval !== true) {
+    fail(`--interval applies to video tasks and resume only, not ${req.task}`)
+  }
+}
+
+/** Forbidden-field checks with guidance toward the right task. */
+function validateForbidden(spec: TaskSpec, req: GenRequest): void {
+  if ((req.images ?? []).length > 0 && spec.required.images === undefined) {
+    failForbiddenImages(req)
+  }
+  const hasFrames = hasValue(req.firstFrame) || hasValue(req.lastFrame)
+  if (hasFrames && spec.required.firstFrame === undefined) {
+    failForbiddenFrames(req)
+  }
+  if (hasValue(req.system) && spec.optional.system !== true) {
+    fail(`${req.task} does not accept --system (text2text only)`)
+  }
+  if (hasValue(req.prompt) && spec.required.prompt !== true && spec.optional.prompt !== true) {
+    fail("embed takes text via --input or positionals, not a prompt")
+  }
+  if ((req.inputs ?? []).length > 0 && spec.required.inputs === undefined) {
+    fail(`${req.task} does not accept --input`)
+  }
+  validateForbiddenTiming(spec, req)
+  validateForbiddenPackaging(spec, req)
+  if (hasValue(req.handle) && req.task !== "resume") {
+    fail("a handle is only accepted by resume")
+  }
+}
+
+function failForbiddenFrames(req: GenRequest): void {
+  const flag = hasValue(req.firstFrame) ? "--first-frame" : "--last-frame"
+  if (req.task === "text2video") {
+    fail(`text2video does not take ${flag}; use \`generate image2video --image <img>\``)
+  }
+  if (req.task === "image2video") {
+    fail(
+      "image2video uses --image (it becomes the first frame); first+last frames belong to `generate frames2video`",
+    )
+  }
+  fail(`${req.task} does not accept ${flag}`)
+}
+
+function validateForbiddenPackaging(spec: TaskSpec, req: GenRequest): void {
+  const packaging = req.output !== undefined || req.tag !== undefined || req.noPack === true
+  if (!packaging || spec.media || req.task === "resume") return
+  const flag = req.output !== undefined ? "--output" : req.tag !== undefined ? "--tag" : "--no-pack"
+  fail(`${flag} applies to media tasks (and resume for --output), not ${req.task}`)
+}
+
+/** Validate a merged request against its task contract. Throws with guidance. */
+export function validateRequest(req: GenRequest): void {
+  const spec = TASKS[req.task]
+  if (spec === undefined) fail(`unknown generate task '${req.task}'`)
+
+  validateRequired(spec, req)
+  validateForbidden(spec, req)
+
+  // Duration strings must parse
+  if (hasValue(req.timeout)) parseDurationMs(req.timeout as string, "--timeout")
+  if (hasValue(req.interval)) parseDurationMs(req.interval as string, "--interval")
+}
+
+/**
+ * Merge an overlay onto a base request. Scalars override when set; arrays
+ * (images, inputs) replace wholesale; options shallow-merge with overlay keys
+ * winning. Absent overlay fields never override.
+ */
+export function mergeRequest(base: GenRequest, overlay: RequestOverlay): GenRequest {
+  const out: GenRequest = { ...base }
+  for (const key of Object.keys(overlay) as Array<keyof GenRequest>) {
+    const value = overlay[key]
+    if (value === undefined) continue
+    if (key === "options") {
+      out.options = { ...(base.options ?? {}), ...(overlay.options ?? {}) }
+    } else if (key === "task") {
+      out.task = value as GenTaskName
+    } else {
+      Object.assign(out, { [key]: value })
+    }
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// Provider / model resolution
+
+export interface ResolvedTarget {
+  provider: Provider
+  model: string
+}
+
+export interface PickedModel {
+  model: string
+  /** True when the picked model is not verified for this task (passing through). */
+  warned: boolean
+}
+
+/**
+ * Pick the default model for a task: the provider's declared default for the
+ * capability when it satisfies the task filter, else the first verified model
+ * that does, else (non-strict tasks) any model with the capability plus a
+ * warning. Strict tasks (frames2video) hard-fail instead of falling back.
+ */
+export function pickModelForTask(provider: Provider, task: GenTaskName): PickedModel {
+  const spec = TASKS[task]
+  const cap = spec.capability
+  if (cap === undefined) fail(`task '${task}' has no model capability`)
+
+  const filter = spec.pickModel
+  const satisfies = (support: ModelSupport | undefined): boolean =>
+    support !== undefined && (filter === undefined || filter(support))
+
+  const declared = provider.defaultModels?.[cap]
+  if (
+    declared !== undefined &&
+    satisfies(provider.models.find((m) => m.id === declared)?.capabilities[cap])
+  ) {
+    return { model: declared, warned: false }
+  }
+
+  const hit = provider.models.find((m) => satisfies(m.capabilities[cap]))
+  if (hit !== undefined) {
+    return { model: hit.id, warned: declared !== undefined && declared !== hit.id }
+  }
+
+  if (spec.strictModel === true) {
+    fail(
+      `provider '${provider.id}' has no verified model supporting ${task}; pass provider/<model> or --model explicitly`,
+    )
+  }
+
+  const fallback = declared ?? provider.models.find((m) => m.capabilities[cap] !== undefined)?.id
+  if (fallback === undefined) {
+    fail(`provider '${provider.id}' has no model for ${cap}; specify provider/<model>`)
+  }
+  return { model: fallback, warned: true }
+}
+
+/** Resolve the request's provider/model, applying task-aware default model picking. */
+export async function resolveProviderForTask(
+  req: GenRequest,
+  opts: { configPath?: string | undefined } = {},
+): Promise<ResolvedTarget> {
+  const spec = TASKS[req.task]
+  if (spec.capability === undefined) {
+    fail(`task '${req.task}' runs no provider`)
+  }
+
+  let providerId = ""
+  let model = ""
+  const target = req.provider
+  if (target !== undefined && target !== "") {
+    const split = splitTargetString(target)
+    providerId = split.provider
+    model = split.model ?? ""
+  } else {
+    providerId = defaultGenProvider(loadConfig(opts.configPath)) ?? ""
+    if (providerId === "") {
+      fail(
+        "no <provider> given and no default provider configured; " +
+          "set defaults.gen.provider via `openmmcli config set defaults.gen.provider <id>`",
+      )
+    }
+  }
+  if (req.model !== undefined && req.model !== "") model = req.model
+
+  const provider = await createProvider(providerId, providerOpts(opts))
+  if (model === "") {
+    const picked = pickModelForTask(provider, req.task)
+    if (picked.warned) {
+      console.error(
+        `note: '${picked.model}' is not marked as supporting ${req.task} in ${provider.id}'s verified list; passing through`,
+      )
+    }
+    model = picked.model
+  }
+  return { provider, model }
+}
+
+function providerOpts(opts: { configPath?: string | undefined }): { configPath?: string } {
+  return opts.configPath === undefined ? {} : { configPath: opts.configPath }
+}
+
+function providerContext(opts: { configPath?: string | undefined }): ProviderContext {
+  const config = loadConfig(opts.configPath)
+  return {
+    known: new Set(listConfiguredProviderIds(providerOpts(opts))),
+    hasDefaultProvider: defaultGenProvider(config) !== undefined,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Execution
+
+export interface MediaRunResult {
+  artifacts: Artifact[]
+  usage: Usage | undefined
+}
+
+interface ExecCtx {
+  req: GenRequest
+  provider: Provider
+  model: string
+  signal: AbortSignal
+}
+
+const URL_RE = /^(https?:|data:)/
+
+export function toFileRef(value: string, flag: string): FileRef {
+  if (URL_RE.test(value)) return { url: value }
+  if (!existsSync(value)) {
+    throw new Error(`${flag} file not found: ${value} (or pass an http(s)/data URL)`)
+  }
+  return { localPath: value }
+}
+
+function toContentPart(value: string): string | { file: FileRef; text?: string } {
+  if (URL_RE.test(value)) return { file: { url: value } }
+  if (existsSync(value)) return { file: { localPath: value } }
+  return value
+}
+
+function describeStatus(status: { state: string; progress?: number | undefined }): string {
+  return status.progress === undefined ? status.state : `${status.state} ${status.progress}%`
+}
+
+const MIME_EXT: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "video/mp4": "mp4",
+}
+
+export function printArtifacts(
+  artifacts: Artifact[],
+  opts: { outputDir?: string | undefined },
+): void {
+  artifacts.forEach((a, i) => {
+    if (a.url !== undefined) {
+      console.log(a.url)
+      return
+    }
+    if (a.base64 === undefined) return
+    if (opts.outputDir === undefined) {
+      console.error(
+        `artifact ${i + 1}: base64 ${a.mimeType ?? "unknown"} (pass --output <dir> to save)`,
+      )
+      return
+    }
+    mkdirSync(opts.outputDir, { recursive: true })
+    const ext = (a.mimeType && MIME_EXT[a.mimeType]) || "bin"
+    const file = `${opts.outputDir}/artifact-${i + 1}.${ext}`
+    writeFileSync(file, Buffer.from(a.base64, "base64"))
+    console.log(file)
+  })
+}
+
+async function runTextTask(ctx: ExecCtx): Promise<void> {
+  const { req, provider, model } = ctx
+  const api = provider.textGenerate
+  if (api === undefined) fail(`provider '${provider.id}' implements no text generation`)
+  const result = await api.create({
+    model,
+    prompt: req.prompt ?? "",
+    ...(req.system === undefined ? {} : { system: req.system }),
+    options: req.options ?? {},
+  })
+  if (req.json) {
+    console.log(
+      JSON.stringify(
+        { provider: provider.id, model, capability: "text.generate", ...result },
+        null,
+        2,
+      ),
+    )
+  } else {
+    console.log(result.text)
+  }
+}
+
+async function runUnderstandTask(ctx: ExecCtx): Promise<void> {
+  const { req, provider, model } = ctx
+  const api = req.task === "image2text" ? provider.imageUnderstand : provider.videoUnderstand
+  const kind = req.task === "image2text" ? "image" : "video"
+  if (api === undefined) fail(`provider '${provider.id}' implements no ${kind} understanding`)
+  const content: (string | { file: FileRef; text?: string })[] = [
+    req.prompt ?? `Describe this ${kind}.`,
+    ...(req.inputs ?? []).map(toContentPart),
+  ]
+  const result = await api.create({
+    model,
+    messages: [{ role: "user", content }],
+    options: req.options ?? {},
+  })
+  if (req.json) {
+    console.log(
+      JSON.stringify(
+        { provider: provider.id, model, capability: `${kind}.understand`, ...result },
+        null,
+        2,
+      ),
+    )
+  } else {
+    console.log(result.text)
+  }
+}
+
+async function runEmbedTask(ctx: ExecCtx): Promise<void> {
+  const { req, provider, model } = ctx
+  const api = provider.embed
+  if (api === undefined) fail(`provider '${provider.id}' implements no embeddings`)
+  const result = await api.create({ model, inputs: req.inputs ?? [], options: req.options ?? {} })
+  if (req.json) {
+    console.log(
+      JSON.stringify({ provider: provider.id, model, capability: "embed", ...result }, null, 2),
+    )
+  } else {
+    const dims = result.dimensions ?? result.vectors[0]?.length ?? "?"
+    console.log(`Generated ${result.vectors.length} vector(s) of ${dims} dimensions`)
+  }
+}
+
+async function runImageTask(ctx: ExecCtx): Promise<MediaRunResult> {
+  const { req, provider, model, signal } = ctx
+  const api = provider.imageGenerate
+  if (api === undefined) fail(`provider '${provider.id}' implements no image generation`)
+  const images = req.images ?? []
+  const result = await api.create(
+    {
+      model,
+      prompt: req.prompt ?? "",
+      options: req.options ?? {},
+      ...(images.length > 0 ? { image: toFileRef(images[0] as string, "--image") } : {}),
+    },
+    { signal },
+  )
+  return { artifacts: result.artifacts, usage: result.usage }
+}
+
+async function runVideoTask(ctx: ExecCtx): Promise<MediaRunResult | null> {
+  const { req, provider, model, signal } = ctx
+  const api = provider.videoGenerate
+  if (api === undefined) fail(`provider '${provider.id}' implements no video generation`)
+  const first = req.task === "frames2video" ? req.firstFrame : (req.images ?? [])[0]
+  const last = req.task === "frames2video" ? req.lastFrame : undefined
+
+  const handle = await api.submit({
+    model,
+    prompt: req.prompt ?? "",
+    options: req.options ?? {},
+    ...(first !== undefined ? { firstFrame: toFileRef(first, "--first-frame/--image") } : {}),
+    ...(last !== undefined ? { lastFrame: toFileRef(last, "--last-frame") } : {}),
+  })
+  if (req.noWait === true) {
+    console.log(JSON.stringify(handle))
+    return null
+  }
+
+  const timeoutMs = req.timeout === undefined ? 600_000 : parseDurationMs(req.timeout, "--timeout")
+  const intervalMs = req.interval === undefined ? 5000 : parseDurationMs(req.interval, "--interval")
+
+  const startedAt = Date.now()
+  const final = await pollUntil((h) => api.poll(h), handle, {
+    intervalMs,
+    timeoutMs,
+    signal,
+    onStatus: (s) =>
+      console.error(
+        `polling... ${describeStatus(s)} (${Math.round((Date.now() - startedAt) / 1000)}s)`,
+      ),
+  }).catch((e: unknown) => {
+    if (signal.aborted || e instanceof JobTimeoutError) {
+      throw new Error(`${(e as Error).message}; task handle: ${JSON.stringify(handle)}`)
+    }
+    throw e
+  })
+  if (final.state === "failed") {
+    throw new ProviderError(
+      final.error.category,
+      `generation failed (task ${handle.id})`,
+      final.error.raw,
+    )
+  }
+  return { artifacts: final.artifacts, usage: final.usage }
+}
+
+/** Run a task; media tasks return their artifacts/usage for result packaging. */
+async function executeTask(ctx: ExecCtx): Promise<MediaRunResult | null> {
+  switch (ctx.req.task) {
+    case "text2text":
+      await runTextTask(ctx)
+      return null
+    case "image2text":
+    case "video2text":
+      await runUnderstandTask(ctx)
+      return null
+    case "embed":
+      await runEmbedTask(ctx)
+      return null
+    case "text2image":
+    case "image2image":
+      return runImageTask(ctx)
+    case "text2video":
+    case "image2video":
+    case "frames2video":
+      return runVideoTask(ctx)
+    default:
+      fail(`task '${ctx.req.task}' is not executable here`)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// resume
+
+function parseHandle(raw: string): JobHandle {
+  let value: unknown
+  try {
+    value = JSON.parse(raw)
+  } catch {
+    fail("handle is not valid JSON")
+  }
+  const handle = value as Partial<JobHandle>
+  if (typeof handle.providerId !== "string" || handle.providerId === "") {
+    fail("handle JSON must have a non-empty string 'providerId'")
+  }
+  if (typeof handle.id !== "string" || handle.id === "") {
+    fail("handle JSON must have a non-empty string 'id'")
+  }
+  return handle as JobHandle
+}
+
+async function runResumeTask(
+  req: GenRequest,
+  opts: { configPath?: string | undefined },
+): Promise<void> {
+  let raw: string | undefined
+  if (req.handle !== undefined) {
+    raw = req.handle.startsWith("{") ? req.handle : readFileSync(req.handle, "utf8")
+  } else if (!process.stdin.isTTY) {
+    raw = await readPasswordFromStdin()
+  }
+  if (raw === undefined) fail("resume requires a handle (inline JSON, file path, or stdin)")
+  const handle = parseHandle(raw.trim())
+
+  const provider = await createProvider(handle.providerId, providerOpts(opts))
+  const api = provider.videoGenerate
+  if (api === undefined) {
+    fail(`provider '${handle.providerId}' implements no video generation`)
+  }
+
+  const controller = new AbortController()
+  const onSignal = () => controller.abort()
+  process.on("SIGINT", onSignal)
+  process.on("SIGTERM", onSignal)
+
+  const timeoutMs = req.timeout === undefined ? 600_000 : parseDurationMs(req.timeout, "--timeout")
+  const intervalMs = req.interval === undefined ? 5000 : parseDurationMs(req.interval, "--interval")
+
+  const startedAt = Date.now()
+  const final = await pollUntil((h) => api.poll(h), handle, {
+    intervalMs,
+    timeoutMs,
+    signal: controller.signal,
+    onStatus: (s) =>
+      console.error(
+        `polling... ${s.state}${s.state === "running" && s.progress !== undefined ? ` ${s.progress}%` : ""} (${Math.round((Date.now() - startedAt) / 1000)}s)`,
+      ),
+  }).catch((e: unknown) => {
+    if (controller.signal.aborted || e instanceof JobTimeoutError) {
+      throw new Error(`${(e as Error).message}; task handle: ${JSON.stringify(handle)}`)
+    }
+    throw e
+  })
+
+  if (final.state === "failed") {
+    throw new ProviderError(
+      final.error.category,
+      `generation failed (task ${handle.id})`,
+      final.error.raw,
+    )
+  }
+  if (req.json) {
+    console.log(
+      JSON.stringify(
+        { provider: provider.id, artifacts: final.artifacts, usage: final.usage },
+        null,
+        2,
+      ),
+    )
+  } else {
+    printArtifacts(final.artifacts, { outputDir: req.output })
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Result packaging
+
+/** Provenance spec recorded in a result package: the effective merged request. */
+export function effectiveGenSpec(req: GenRequest, providerId: string, model: string): GenSpec {
+  const spec: GenSpec = { task: req.task, provider: providerId, model }
+  if (req.prompt !== undefined) spec.prompt = req.prompt
+  if (req.system !== undefined) spec.system = req.system
+  if (req.images !== undefined && req.images.length > 0) spec.images = req.images
+  if (req.firstFrame !== undefined) spec.firstFrame = req.firstFrame
+  if (req.lastFrame !== undefined) spec.lastFrame = req.lastFrame
+  if (req.inputs !== undefined && req.inputs.length > 0) spec.inputs = req.inputs
+  if (req.options !== undefined && Object.keys(req.options).length > 0) spec.options = req.options
+  return spec
+}
+
+function printResult(req: GenRequest, providerId: string, result: MediaRunResult): void {
+  const capability: Capability =
+    req.task === "text2image" || req.task === "image2image" ? "image.generate" : "video.generate"
+  if (req.json) {
+    console.log(
+      JSON.stringify(
+        {
+          provider: providerId,
+          capability,
+          artifacts: result.artifacts,
+          usage: result.usage,
+        },
+        null,
+        2,
+      ),
+    )
+    return
+  }
+  printArtifacts(result.artifacts, { outputDir: undefined })
+}
+
+function printPackagedResult(
+  req: GenRequest,
+  providerId: string,
+  result: MediaRunResult,
+  packageRef: string,
+  packageDir: string,
+): void {
+  if (req.json) {
+    const capability: Capability =
+      req.task === "text2image" || req.task === "image2image" ? "image.generate" : "video.generate"
+    console.log(
+      JSON.stringify(
+        {
+          provider: providerId,
+          capability,
+          artifacts: result.artifacts,
+          usage: result.usage,
+          package: { ref: packageRef, dir: packageDir },
+        },
+        null,
+        2,
+      ),
+    )
+    return
+  }
+  result.artifacts.forEach((a, i) => {
+    if (a.url !== undefined) {
+      console.log(a.url)
+      return
+    }
+    if (a.base64 === undefined) return
+    const ext = (a.mimeType && MIME_EXT[a.mimeType]) || "bin"
+    console.log(`artifact-${i + 1}.${ext}`)
+  })
+  console.error(`Built ${packageRef} → ${packageDir}`)
+}
+
+/** JSON request field names a task accepts (for `-f` files and the schema). */
+export function requestFieldsForTask(task: GenTaskName): Set<string> {
+  const spec = TASKS[task]
+  const fields = new Set<string>(["provider", "model", "json"])
+  if (spec.required.prompt || spec.optional.prompt) fields.add("prompt")
+  if (spec.optional.system === true) fields.add("system")
+  if (spec.required.images !== undefined) fields.add("images")
+  if (spec.required.firstFrame === true) fields.add("firstFrame")
+  if (spec.required.lastFrame === true) fields.add("lastFrame")
+  if (spec.required.inputs === true) fields.add("inputs")
+  if (spec.optional.options === true) fields.add("options")
+  if (spec.optional.noWait === true) fields.add("noWait")
+  if (spec.optional.timeout === true) fields.add("timeout")
+  if (spec.optional.interval === true) fields.add("interval")
+  if (spec.media || task === "resume") fields.add("output")
+  if (spec.media) {
+    fields.add("tag")
+    fields.add("noPack")
+  }
+  if (task === "resume") fields.add("handle")
+  return fields
+}
+
+/** Execute a validated request: run the task and package media results. */
+async function executeAndPackage(opts: {
+  req: GenRequest
+  runReq: GenRequest
+  provider: Provider
+  model: string
+  fromRef?: string
+}): Promise<void> {
+  const { req, runReq, provider, model } = opts
+  const controller = new AbortController()
+  const onSignal = () => controller.abort()
+  process.on("SIGINT", onSignal)
+  process.on("SIGTERM", onSignal)
+
+  const ctx: ExecCtx = { req: runReq, provider, model, signal: controller.signal }
+  const result = await executeTask(ctx)
+  if (result === null) return
+
+  if (req.noPack === true || !TASKS[req.task].media) {
+    printResult(req, provider.id, result)
+    return
+  }
+
+  const outputDir = req.output ?? "./oci-layout"
+  const resultTag = req.tag ?? "gen-output:latest"
+  await buildResultPackage({
+    outputDir,
+    tag: resultTag,
+    ...(opts.fromRef === undefined ? {} : { fromRef: opts.fromRef }),
+    artifacts: result.artifacts,
+    spec: effectiveGenSpec(req, provider.id, model),
+    usage: result.usage,
+  })
+  printPackagedResult(req, provider.id, result, resultTag, outputDir)
+}
+
+/** Run a request built programmatically (CLI args, `-f` files, callers). */
+export async function runGenerateRequest(
+  req: GenRequest,
+  opts: GenerateRunOptions = {},
+): Promise<void> {
+  validateRequest(req)
+  if (req.task === "resume") return runResumeTask(req, opts)
+  rejectPkgRefsOutsidePackageMode(req)
+  const { provider, model } = await resolveProviderForTask(req, opts)
+  await executeAndPackage({ req, runReq: req, provider, model })
+}
+
+// ---------------------------------------------------------------------------
+// Package (recipe) mode
+
+/** True when the first positional is a package ref rather than a task. */
+function looksLikeGenRef(arg: string): boolean {
+  if (arg.startsWith(".") || arg.startsWith("/")) return true
+  const slash = arg.indexOf("/")
+  if (slash <= 0) return false
+  const first = arg.slice(0, slash)
+  return first.includes(".") || first.includes(":") || first === "localhost"
+}
+
+/** Extract the fetch-time flag (--plain-http) that is not a task field. */
+function extractPlainHttp(args: string[]): { rest: string[]; plainHttp: boolean } {
+  const rest: string[] = []
+  let plainHttp = false
+  for (const arg of args) {
+    if (arg === undefined) continue
+    if (arg === "--plain-http") {
+      plainHttp = true
+      continue
+    }
+    rest.push(arg)
+  }
+  return { rest, plainHttp }
+}
+
+async function loadGenImage(
+  ref: string,
+  opts: { plainHttp: boolean; configPath?: string | undefined },
+): Promise<LoadedImage> {
+  if (ref.startsWith(".") || ref.startsWith("/")) {
+    return readOciLayout(ref)
+  }
+  return fetchImage(ref, {
+    plainHttp: opts.plainHttp,
+    username: undefined,
+    password: undefined,
+    config: loadConfig(opts.configPath),
+  })
+}
+
+/** Merge every layer of a gen package into a single file view. */
+async function packageFsView(image: LoadedImage): Promise<FsView> {
+  const layerBlobs: Buffer[] = []
+  for (const layer of image.manifest.layers) {
+    const blob = image.blobs.get(layer.digest)
+    if (blob === undefined) {
+      fail(`layer blob ${layer.digest} is missing from the package`)
+    }
+    layerBlobs.push(blob)
+  }
+  if (layerBlobs.length === 0) return new Map()
+  return (await mergeImageLayers(layerBlobs)).view
+}
+
+/**
+ * Materialize pkg:// media references (images / frames / inputs) into temp
+ * files extracted from the package layers. Non-pkg values pass through.
+ */
+async function materializePackageMedia(
+  req: GenRequest,
+  image: LoadedImage,
+): Promise<{ req: GenRequest; cleanup: () => void }> {
+  const usesPkg =
+    (req.images ?? []).some((v) => v.startsWith("pkg://")) ||
+    (req.firstFrame?.startsWith("pkg://") ?? false) ||
+    (req.lastFrame?.startsWith("pkg://") ?? false) ||
+    (req.inputs ?? []).some((v) => v.startsWith("pkg://"))
+  if (!usesPkg) return { req, cleanup: () => {} }
+
+  const view = await packageFsView(image)
+  const tmp = mkdtempSync(join(tmpdir(), "openmm-pkgref-"))
+  const extract = (value: string | undefined): string | undefined => {
+    if (value === undefined || !value.startsWith("pkg://")) return value
+    const rel = value.slice("pkg://".length)
+    const entry = view.get(rel)
+    if (entry === undefined || entry.type !== "file") {
+      fail(`package media ref '${value}': '${rel}' not found in the package layers`)
+    }
+    const base = rel.split("/").pop() ?? "file"
+    const out = join(tmp, base)
+    writeFileSync(out, entry.data)
+    return out
+  }
+
+  const images = req.images?.map((v) => extract(v) ?? v)
+  const firstFrame = extract(req.firstFrame)
+  const lastFrame = extract(req.lastFrame)
+  const inputs = req.inputs?.map((v) => extract(v) ?? v)
+
+  return {
+    req: {
+      ...req,
+      ...(images !== undefined ? { images } : {}),
+      ...(firstFrame !== undefined ? { firstFrame } : {}),
+      ...(lastFrame !== undefined ? { lastFrame } : {}),
+      ...(inputs !== undefined ? { inputs } : {}),
+    },
+    cleanup: () => rmSync(tmp, { recursive: true, force: true }),
+  }
+}
+
+async function runGeneratePackage(
+  ref: string,
+  rest: string[],
+  opts: { configPath?: string | undefined } = {},
+): Promise<void> {
+  if (rest.includes("--help") || rest.includes("-h")) {
+    console.log(GENERATE_PACKAGE_USAGE)
+    return
+  }
+  const { rest: taskArgs, plainHttp } = extractPlainHttp(rest)
+
+  const image = await loadGenImage(ref, { plainHttp, configPath: opts.configPath })
+  if (image.manifest.config.mediaType !== GEN_CONFIG_MEDIA_TYPE) {
+    fail(
+      `${ref}: not a gen package (config mediaType ${image.manifest.config.mediaType}); ` +
+        "build one by adding a 'gen' field to openmm-build.json",
+    )
+  }
+  const configBlob = image.blobs.get(image.manifest.config.digest)
+  if (configBlob === undefined) {
+    fail(`${ref}: config blob ${image.manifest.config.digest} is missing from the layout`)
+  }
+  const recipe = parseGenConfigBlob(configBlob, ref).gen
+
+  const overlay = parseGenerateArgs(recipe.task, taskArgs, providerContext(opts), {
+    packageMode: true,
+  })
+  const req = mergeRequest({ ...recipe, task: recipe.task }, overlay)
+
+  if (req.task === "resume") return runResumeTask(req, opts)
+  validateRequest(req)
+
+  const { provider, model } = await resolveProviderForTask(req, opts)
+  const { req: runReq, cleanup } = await materializePackageMedia(req, image)
+
+  try {
+    await executeAndPackage({ req, runReq, provider, model, fromRef: ref })
+  } finally {
+    cleanup()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+
+/** pkg:// references only resolve inside package mode. */
+function rejectPkgRefsOutsidePackageMode(req: GenRequest): void {
+  const fields = [
+    ...(req.images ?? []),
+    ...(req.inputs ?? []),
+    ...(req.firstFrame !== undefined ? [req.firstFrame] : []),
+    ...(req.lastFrame !== undefined ? [req.lastFrame] : []),
+  ]
+  if (fields.some((v) => v.startsWith("pkg://"))) {
+    fail("`pkg://` media references only work with `openmmcli generate <ref>` (a gen package)")
+  }
+}
+
+export interface GenerateRunOptions {
+  configPath?: string | undefined
+}
+
+export async function runGenerateFromArgs(
+  args: string[],
+  opts: GenerateRunOptions = {},
+): Promise<void> {
+  const head = args[0]
+  if (head === undefined || head === "--help" || head === "-h") {
+    console.log(GENERATE_USAGE)
+    return
+  }
+  if (looksLikeGenRef(head)) {
+    return runGeneratePackage(head, args.slice(1), opts)
+  }
+  const task = head as GenTaskName
+  const spec = TASKS[task]
+  if (spec === undefined) {
+    fail(`unknown generate task '${task}' (expected ${TASK_LIST}, or a gen package ref)`)
+  }
+  const rest = args.slice(1)
+  if (rest.includes("--help") || rest.includes("-h")) {
+    console.log(spec.usage)
+    return
+  }
+
+  const overlay = parseGenerateArgs(task, rest, providerContext(opts))
+  const req = mergeRequest({ task }, overlay)
+  await runGenerateRequest(req, opts)
+}

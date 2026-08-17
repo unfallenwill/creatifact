@@ -39,8 +39,9 @@ export const ARK_MODELS: VerifiedModel[] = [
   },
   {
     id: "doubao-seedream-4.0-250828",
-    capabilities: { "image.generate": {} },
+    capabilities: { "image.generate": { imageInput: true } },
     lastVerified: "2026-08",
+    note: "传 image 时走图生图/编辑",
   },
   {
     id: "doubao-1.5-vision-pro-32k-250115",

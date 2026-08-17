@@ -98,13 +98,13 @@ export const MINIMAX_MODELS: VerifiedModel[] = [
   },
   {
     id: "image-01",
-    capabilities: { "image.generate": {} },
+    capabilities: { "image.generate": { imageInput: true } },
     lastVerified: "2026-08",
     note: "图生图走 subject_reference;产物 url 有效期 24h",
   },
   {
     id: "image-01-live",
-    capabilities: { "image.generate": {} },
+    capabilities: { "image.generate": { imageInput: true } },
     lastVerified: "2026-08",
     note: "支持 style 画风设置;产物 url 有效期 24h",
   },

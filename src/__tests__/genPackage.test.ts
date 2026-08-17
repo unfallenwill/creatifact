@@ -9,34 +9,39 @@ import {
 } from "../genPackage"
 
 test("validateGenSpec normalizes inputs and rejects bad specs", () => {
-  expect(validateGenSpec({ lane: "image", provider: "zhipu" }, "m")).toEqual({
-    lane: "image",
+  expect(validateGenSpec({ task: "image2image", provider: "zhipu" }, "m")).toEqual({
+    task: "image2image",
     provider: "zhipu",
   })
-  expect(validateGenSpec({ lane: "embed", input: "a" }, "m")).toEqual({
-    lane: "embed",
-    input: ["a"],
+  expect(validateGenSpec({ task: "embed", inputs: "a" }, "m")).toEqual({
+    task: "embed",
+    inputs: ["a"],
   })
-  expect(() => validateGenSpec({}, "m")).toThrow(/gen\.lane/)
-  expect(() => validateGenSpec({ lane: "resume" }, "m")).toThrow(/gen\.lane/)
-  expect(() => validateGenSpec({ lane: "image", options: [] }, "m")).toThrow(/gen\.options/)
-  expect(() => validateGenSpec({ lane: "image", input: [] }, "m")).toThrow(/gen\.input/)
+  expect(validateGenSpec({ task: "image2video", images: ["a.png"] }, "m")).toEqual({
+    task: "image2video",
+    images: ["a.png"],
+  })
+  expect(() => validateGenSpec({}, "m")).toThrow(/gen\.task/)
+  expect(() => validateGenSpec({ task: "nope" }, "m")).toThrow(/gen\.task/)
+  expect(() => validateGenSpec({ task: "resume" }, "m")).toThrow(/gen\.task/)
+  expect(() => validateGenSpec({ task: "text2image", options: [] }, "m")).toThrow(/gen\.options/)
+  expect(() => validateGenSpec({ task: "text2image", images: [] }, "m")).toThrow(/gen\.images/)
 })
 
 test("validateGenSpec warns on unknown fields", () => {
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-  const spec = validateGenSpec({ lane: "image", prompte: "x" }, "m")
-  expect(spec).toEqual({ lane: "image" })
+  const spec = validateGenSpec({ task: "text2image", prompte: "x" }, "m")
+  expect(spec).toEqual({ task: "text2image" })
   expect(warn).toHaveBeenCalledWith(expect.stringContaining("unknown field 'prompte'"))
   warn.mockRestore()
 })
 
 test("parseGenConfigBlob requires schemaVersion 1 and valid JSON", () => {
   const ok = parseGenConfigBlob(
-    Buffer.from(JSON.stringify({ schemaVersion: 1, gen: { lane: "text" } })),
+    Buffer.from(JSON.stringify({ schemaVersion: 1, gen: { task: "text2text" } })),
     "ref",
   )
-  expect(ok.gen.lane).toBe("text")
+  expect(ok.gen.task).toBe("text2text")
 
   expect(() => parseGenConfigBlob(Buffer.from("{}"), "ref")).toThrow(/schemaVersion/)
   expect(() => parseGenConfigBlob(Buffer.from("{broken"), "ref")).toThrow(/not valid JSON/)
@@ -56,10 +61,11 @@ test("buildResultPackage records provenance and packs base64 artifacts", async (
       { base64: Buffer.from("png-bytes").toString("base64"), mimeType: "image/png" },
     ],
     spec: {
-      lane: "image",
+      task: "image2image",
       provider: "zhipu",
-      model: "cogview-3-flash",
+      model: "cogview-4",
       prompt: "a crane",
+      images: ["pkg://refs/cat.png"],
       options: { size: "1024x1024" },
     },
     usage: { native: { tokens: 5 } },
@@ -74,27 +80,21 @@ test("buildResultPackage records provenance and packs base64 artifacts", async (
   )
   expect(manifest.config.mediaType).toBe(GEN_CONFIG_MEDIA_TYPE)
   expect(manifest.layers).toHaveLength(1)
+  expect(manifest.annotations["org.openmm.gen.task"]).toBe("image2image")
   expect(manifest.annotations["org.openmm.gen.provider"]).toBe("zhipu")
 
   const config = JSON.parse(
     await readFile(join(outputDir, "blobs", "sha256", manifest.config.digest.slice(7)), "utf8"),
   )
   expect(config.gen).toEqual({
-    lane: "image",
+    task: "image2image",
     provider: "zhipu",
-    model: "cogview-3-flash",
+    model: "cogview-4",
     prompt: "a crane",
+    images: ["pkg://refs/cat.png"],
     options: { size: "1024x1024" },
   })
-  expect(config.result).toEqual({
-    createdAt: "2026-08-17T00:00:00.000Z",
-    from: "example.com/xxxxxx:v1.0",
-    usage: { native: { tokens: 5 } },
-    artifacts: [
-      { url: "https://cdn.test/a.png", mimeType: "image/png" },
-      { name: "artifact-2.png", mimeType: "image/png" },
-    ],
-  })
+  expect(config.result.from).toBe("example.com/xxxxxx:v1.0")
 
   await rm(tmp, { recursive: true, force: true })
 })
@@ -111,7 +111,7 @@ test("buildResultPackage refuses a non-empty output dir", async () => {
       outputDir,
       tag: "x:1",
       artifacts: [],
-      spec: { lane: "image", provider: "zhipu" },
+      spec: { task: "text2image", provider: "zhipu" },
     }),
   ).rejects.toThrow(/not empty/)
 

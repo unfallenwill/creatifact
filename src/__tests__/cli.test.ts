@@ -466,18 +466,20 @@ import { appendFileSync, readFileSync } from "node:fs"
 export default (settings, env) => ({
   id: "demo",
   models: [
-    { id: "demo-image", capabilities: { "image.generate": {} }, lastVerified: "2026-08" },
-    { id: "demo-video", capabilities: { "video.generate": {} }, lastVerified: "2026-08" },
-    { id: "demo-stuck", capabilities: { "video.generate": {} }, lastVerified: "2026-08" },
+    { id: "demo-image", capabilities: { "image.generate": { imageInput: true } }, lastVerified: "2026-08" },
+    { id: "demo-image-t2i", capabilities: { "image.generate": {} }, lastVerified: "2026-08" },
+    { id: "demo-video", capabilities: { "video.generate": { textOnly: true, firstFrame: true, lastFrame: true } }, lastVerified: "2026-08" },
+    { id: "demo-stuck", capabilities: { "video.generate": { textOnly: true } }, lastVerified: "2026-08" },
     { id: "demo-vision", capabilities: { "image.understand": {}, "video.understand": {} }, lastVerified: "2026-08" },
     { id: "demo-embed", capabilities: { embed: {} }, lastVerified: "2026-08" },
     { id: "demo-text", capabilities: { "text.generate": {} }, lastVerified: "2026-08" },
   ],
   defaultModels: {
     "text.generate": "demo-text",
-    "image.generate": "demo-image",
+    "image.generate": "demo-image-t2i",
     "video.generate": "demo-video",
     "image.understand": "demo-vision",
+    "video.understand": "demo-vision",
     embed: "demo-embed",
   },
   textGenerate: {
@@ -509,6 +511,12 @@ export default (settings, env) => ({
       return { text: "it is a demo crane" }
     },
   },
+  videoUnderstand: {
+    async create(req) {
+      appendFileSync(settings.recordPath, JSON.stringify(req) + "\\n")
+      return { text: "it is a demo video" }
+    },
+  },
   embed: {
     async create(req) {
       return { vectors: req.inputs.map(() => [0.1, 0.2]), dimensions: 2 }
@@ -537,64 +545,35 @@ function demoEnv(): {
   return { env: { OPENMMCLI_CONFIG_DIR: configDir }, dir, recordPath, configPath }
 }
 
-describe("cli gen — integration", () => {
-  it("gen image runs image generation through a plugin provider", () => {
-    const { env, dir, recordPath } = demoEnv()
-    try {
-      const r = run(["gen", "image", "demo/demo-image", "a crane"], undefined, env)
-      expect(r.code).toBe(0)
-      expect(r.stdout).toContain("https://cdn.test/out.png")
-      expect(readFileSync(recordPath, "utf8")).toContain("a crane")
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
+function lastRequest(recordPath: string): Record<string, unknown> {
+  const lines = readFileSync(recordPath, "utf8").trim().split("\n")
+  return JSON.parse(lines[lines.length - 1] ?? "{}")
+}
 
-  it("gen image without a model uses the provider's default model", () => {
-    const { env, dir, recordPath } = demoEnv()
-    try {
-      const r = run(["gen", "image", "demo", "default crane"], undefined, env)
-      expect(r.code).toBe(0)
-      expect(r.stdout).toContain("https://cdn.test/out.png")
-      const req = JSON.parse(readFileSync(recordPath, "utf8"))
-      expect(req.model).toBe("demo-image")
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
+/** Digest hex of a result layout's config blob. */
+function manifestConfigDigest(resultDir: string): string {
+  const index = JSON.parse(readFileSync(path.join(resultDir, "index.json"), "utf8"))
+  const manifest = JSON.parse(
+    readFileSync(
+      path.join(resultDir, "blobs", "sha256", index.manifests[0].digest.slice(7)),
+      "utf8",
+    ),
+  )
+  return manifest.config.digest.slice(7)
+}
 
-  it("gen without a provider uses the configured default provider", () => {
-    const { env, dir, recordPath, configPath } = demoEnv()
-    try {
-      const config = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>
-      config["defaults"] = { gen: { provider: "demo" } }
-      writeFileSync(configPath, JSON.stringify(config))
-
-      const r = run(["gen", "image", "a crane"], undefined, env)
-      expect(r.code).toBe(0)
-      expect(r.stdout).toContain("https://cdn.test/out.png")
-      expect(readFileSync(recordPath, "utf8")).toContain("a crane")
-
-      const t = run(["gen", "text", "hi"], undefined, env)
-      expect(t.code).toBe(0)
-      expect(t.stdout).toContain("demo text reply")
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
-  it("gen text runs chat completion with system prompt", () => {
+describe("cli generate — integration", () => {
+  it("text2text runs chat completion with system prompt", () => {
     const { env, dir, recordPath } = demoEnv()
     try {
       const r = run(
-        ["gen", "text", "demo/demo-text", "hello", "--system", "be brief"],
+        ["generate", "text2text", "demo/demo-text", "hello", "--system", "be brief"],
         undefined,
         env,
       )
       expect(r.code).toBe(0)
       expect(r.stdout).toContain("demo text reply")
-      const req = JSON.parse(readFileSync(recordPath, "utf8"))
-      expect(req).toEqual({
+      expect(lastRequest(recordPath)).toEqual({
         model: "demo-text",
         prompt: "hello",
         system: "be brief",
@@ -605,51 +584,265 @@ describe("cli gen — integration", () => {
     }
   })
 
-  it("gen passes typed --opt values to the provider", () => {
+  it("text2image uses the provider's declared default model", () => {
     const { env, dir, recordPath } = demoEnv()
     try {
       const r = run(
-        ["gen", "image", "demo/demo-image", "x", "--opt", "quality=hd", "--opt", "size=1024x1024"],
+        ["generate", "text2image", "demo", "default crane", "--no-pack"],
         undefined,
         env,
       )
       expect(r.code).toBe(0)
-      const req = JSON.parse(readFileSync(recordPath, "utf8"))
-      expect(req.options).toEqual({ quality: "hd", size: "1024x1024" })
+      expect(r.stdout).toContain("https://cdn.test/out.png")
+      expect(lastRequest(recordPath)["model"]).toBe("demo-image-t2i")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
   })
 
-  it("gen video polls to completion with progress on stderr", () => {
+  it("image2image requires --image and picks the imageInput model", () => {
+    const { env, dir, recordPath } = demoEnv()
+    try {
+      const missing = run(["generate", "image2image", "demo", "x"], undefined, env)
+      expect(missing.code).toBe(1)
+      expect(missing.stderr).toContain("image2image requires --image")
+
+      const img = path.join(dir, "cat.png")
+      writeFileSync(img, "png")
+      const r = run(
+        ["generate", "image2image", "demo", "paint it", "--image", img, "--no-pack"],
+        undefined,
+        env,
+      )
+      expect(r.code).toBe(0)
+      const req = lastRequest(recordPath)
+      expect(req["model"]).toBe("demo-image")
+      expect((req["image"] as { localPath: string }).localPath).toBe(img)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("text2video rejects --first-frame with guidance to image2video", () => {
     const { env, dir } = demoEnv()
     try {
-      const r = run(["gen", "video", "demo/demo-video", "x", "--interval", "50ms"], undefined, env)
+      const r = run(
+        ["generate", "text2video", "demo", "x", "--first-frame", "/nonexistent.png"],
+        undefined,
+        env,
+      )
+      expect(r.code).toBe(1)
+      expect(r.stderr).toContain("text2video does not take --first-frame")
+      expect(r.stderr).toContain("image2video")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("image2video maps --image to the first frame and packages results", () => {
+    const { env, dir, recordPath } = demoEnv()
+    const resultDir = path.join(dir, "result")
+    try {
+      const img = path.join(dir, "first.png")
+      writeFileSync(img, "f")
+      const r = run(
+        [
+          "generate",
+          "image2video",
+          "demo",
+          "animate",
+          "--image",
+          img,
+          "--interval",
+          "50ms",
+          "--output",
+          resultDir,
+          "--tag",
+          "org/v:1",
+        ],
+        undefined,
+        env,
+      )
       expect(r.code).toBe(0)
       expect(r.stdout).toContain("https://cdn.test/out.mp4")
+      expect(r.stderr).toContain("Built org/v:1")
+      const req = lastRequest(recordPath)
+      expect(req["model"]).toBe("demo-video")
+      expect((req["firstFrame"] as { localPath: string }).localPath).toBe(img)
+      expect(req["lastFrame"]).toBeUndefined()
+
+      const config = JSON.parse(
+        readFileSync(
+          path.join(resultDir, "blobs", "sha256", manifestConfigDigest(resultDir)),
+          "utf8",
+        ),
+      )
+      expect(config.gen.task).toBe("image2video")
+      expect(config.gen.images).toEqual([img])
+      expect(config.result.from).toBeUndefined()
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
   })
 
-  it("gen video --no-wait prints a single-line handle JSON", () => {
+  it("frames2video requires both frames and submits them", () => {
+    const { env, dir, recordPath } = demoEnv()
+    try {
+      const missing = run(
+        ["generate", "frames2video", "demo", "x", "--first-frame", "a.png"],
+        undefined,
+        env,
+      )
+      expect(missing.code).toBe(1)
+      expect(missing.stderr).toContain("requires --last-frame")
+
+      const a = path.join(dir, "a.png")
+      const b = path.join(dir, "b.png")
+      writeFileSync(a, "a")
+      writeFileSync(b, "b")
+      const r = run(
+        [
+          "generate",
+          "frames2video",
+          "demo",
+          "x",
+          "--first-frame",
+          a,
+          "--last-frame",
+          b,
+          "--interval",
+          "50ms",
+          "--no-pack",
+        ],
+        undefined,
+        env,
+      )
+      expect(r.code).toBe(0)
+      const req = lastRequest(recordPath)
+      expect((req["firstFrame"] as { localPath: string }).localPath).toBe(a)
+      expect((req["lastFrame"] as { localPath: string }).localPath).toBe(b)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("frames2video with an explicit model bypasses the strict filter", () => {
     const { env, dir } = demoEnv()
     try {
-      const r = run(["gen", "video", "demo/demo-video", "x", "--no-wait"], undefined, env)
+      const a = path.join(dir, "a.png")
+      const b = path.join(dir, "b.png")
+      writeFileSync(a, "a")
+      writeFileSync(b, "b")
+      const r = run(
+        [
+          "generate",
+          "frames2video",
+          "demo/demo-stuck",
+          "x",
+          "--first-frame",
+          a,
+          "--last-frame",
+          b,
+          "--no-wait",
+        ],
+        undefined,
+        env,
+      )
+      expect(r.code).toBe(0)
+      expect(JSON.parse(r.stdout.trim())).toEqual({ providerId: "demo", id: "stuck-task" })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("image2text and video2text ask questions with attachments", () => {
+    const { env, dir, recordPath } = demoEnv()
+    try {
+      const img = path.join(dir, "cat.png")
+      writeFileSync(img, "png")
+      const ask = run(
+        ["generate", "image2text", "demo/demo-vision", "what is this", "--input", img],
+        undefined,
+        env,
+      )
+      expect(ask.code).toBe(0)
+      expect(ask.stdout).toContain("it is a demo crane")
+      const req = lastRequest(recordPath)
+      expect((req["messages"] as Array<{ content: unknown }>)[0]?.content).toEqual([
+        "what is this",
+        { file: { localPath: img } },
+      ])
+
+      const vid = run(
+        ["generate", "video2text", "demo/demo-vision", "--input", "https://cdn.test/v.mp4"],
+        undefined,
+        env,
+      )
+      expect(vid.code).toBe(0)
+      expect(vid.stdout).toContain("it is a demo video")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("embed prints vector summary or --json", () => {
+    const { env, dir } = demoEnv()
+    try {
+      const r = run(["generate", "embed", "demo/demo-embed", "a", "b"], undefined, env)
+      expect(r.code).toBe(0)
+      expect(r.stdout).toContain("2 vector(s) of 2 dimensions")
+
+      const j = run(["generate", "embed", "demo/demo-embed", "a", "--json"], undefined, env)
+      expect(j.code).toBe(0)
+      const parsed = JSON.parse(j.stdout) as { capability: string; vectors: number[][] }
+      expect(parsed.capability).toBe("embed")
+      expect(parsed.vectors).toEqual([[0.1, 0.2]])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("video tasks print a handle with --no-wait and resume polls it", () => {
+    const { env, dir } = demoEnv()
+    try {
+      const r = run(["generate", "text2video", "demo/demo-video", "x", "--no-wait"], undefined, env)
       expect(r.code).toBe(0)
       const lines = r.stdout.trim().split("\n")
       expect(lines).toHaveLength(1)
       expect(JSON.parse(lines[0] ?? "")).toEqual({ providerId: "demo", id: "ok-task" })
+
+      const handleFile = path.join(dir, "job.json")
+      writeFileSync(handleFile, JSON.stringify({ providerId: "demo", id: "ok-task" }))
+      const resumed = run(["generate", "resume", handleFile, "--interval", "50ms"], undefined, env)
+      expect(resumed.code).toBe(0)
+      expect(resumed.stdout).toContain("out.mp4")
+
+      const inline = run(
+        ["generate", "resume", '{"providerId":"demo","id":"ok-task"}', "--interval", "50ms"],
+        undefined,
+        env,
+      )
+      expect(inline.code).toBe(0)
+      expect(inline.stdout).toContain("out.mp4")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
   })
 
-  it("gen video surfaces timeout with the task handle for resuming", () => {
+  it("video polling timeout surfaces the task handle", () => {
     const { env, dir } = demoEnv()
     try {
       const r = run(
-        ["gen", "video", "demo/demo-stuck", "x", "--interval", "50ms", "--timeout", "300ms"],
+        [
+          "generate",
+          "text2video",
+          "demo/demo-stuck",
+          "x",
+          "--interval",
+          "50ms",
+          "--timeout",
+          "300ms",
+        ],
         undefined,
         env,
       )
@@ -661,80 +854,61 @@ describe("cli gen — integration", () => {
     }
   })
 
-  it("gen video rejects missing frame files", () => {
-    const { env, dir } = demoEnv()
+  it("generate without a provider uses the configured default provider", () => {
+    const { env, dir, recordPath, configPath } = demoEnv()
     try {
-      const r = run(
-        ["gen", "video", "demo/demo-video", "x", "--first-frame", "/nonexistent.png"],
-        undefined,
-        env,
-      )
-      expect(r.code).toBe(1)
-      expect(r.stderr).toContain("file not found")
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
+      const config = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>
+      config["defaults"] = { gen: { provider: "demo" } }
+      writeFileSync(configPath, JSON.stringify(config))
 
-  it("gen understand asks a question with media attachments", () => {
-    const { env, dir, recordPath } = demoEnv()
-    try {
-      const img = path.join(dir, "cat.png")
-      writeFileSync(img, "png")
-      const ask = run(
-        ["gen", "understand", "demo/demo-vision", "what is this", "--input", img],
-        undefined,
-        env,
-      )
-      expect(ask.code).toBe(0)
-      expect(ask.stdout).toContain("it is a demo crane")
-      const req = JSON.parse(readFileSync(recordPath, "utf8"))
-      expect(req.messages[0].content).toEqual(["what is this", { file: { localPath: img } }])
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
-  it("gen embed prints vector summary or --json", () => {
-    const { env, dir } = demoEnv()
-    try {
-      const r = run(["gen", "embed", "demo/demo-embed", "a", "b"], undefined, env)
+      const r = run(["generate", "text2image", "a crane", "--no-pack"], undefined, env)
       expect(r.code).toBe(0)
-      expect(r.stdout).toContain("2 vector(s) of 2 dimensions")
-
-      const j = run(["gen", "embed", "demo/demo-embed", "a", "--json"], undefined, env)
-      expect(j.code).toBe(0)
-      const parsed = JSON.parse(j.stdout) as { capability: string; vectors: number[][] }
-      expect(parsed.capability).toBe("embed")
-      expect(parsed.vectors).toEqual([[0.1, 0.2]])
+      expect(r.stdout).toContain("https://cdn.test/out.png")
+      expect(lastRequest(recordPath)["prompt"]).toBe("a crane")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
   })
 
-  it("gen notes unverified models and rejects unknown providers", () => {
+  it("gen is an alias for generate", () => {
     const { env, dir } = demoEnv()
     try {
-      // Unknown model passes through to the lane's API with a note.
-      const pass = run(["gen", "image", "demo/demo-unknown", "x"], undefined, env)
+      const r = run(["gen", "text2image", "demo", "x", "--no-pack"], undefined, env)
+      expect(r.code).toBe(0)
+      expect(r.stdout).toContain("https://cdn.test/out.png")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("unknown tasks and unverified models behave predictably", () => {
+    const { env, dir } = demoEnv()
+    try {
+      const unknown = run(["generate", "frobnicate"], undefined, env)
+      expect(unknown.code).toBe(1)
+      expect(unknown.stderr).toContain("unknown generate task 'frobnicate'")
+
+      const pass = run(
+        ["generate", "text2image", "demo/demo-unknown", "x", "--no-pack"],
+        undefined,
+        env,
+      )
       expect(pass.code).toBe(0)
-      expect(pass.stderr).toContain("not in demo's verified list")
       expect(pass.stdout).toContain("https://cdn.test/out.png")
 
-      const unknown = run(["gen", "image", "nope/m", "x"], undefined, env)
-      expect(unknown.code).toBe(1)
-      expect(unknown.stderr).toContain("unknown provider 'nope'")
-      expect(unknown.stderr).toContain("demo")
+      const unknownProvider = run(["generate", "text2image", "nope/m", "x"], undefined, env)
+      expect(unknownProvider.code).toBe(1)
+      expect(unknownProvider.stderr).toContain("unknown provider 'nope'")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
   })
 
-  it("gen errors on missing credentials for real providers", () => {
+  it("errors on missing credentials for real providers", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "openmmcli-empty-"))
     try {
       const env = { OPENMMCLI_CONFIG_DIR: dir }
-      const r = run(["gen", "image", "zhipu/cogview-4", "x"], undefined, env)
+      const r = run(["generate", "text2image", "zhipu/cogview-4", "x"], undefined, env)
       expect(r.code).toBe(1)
       expect(r.stderr).toContain("missing Zhipu API key")
     } finally {
@@ -742,99 +916,32 @@ describe("cli gen — integration", () => {
     }
   })
 
-  it("gen rejects malformed targets and conflicting prompts", () => {
-    const { env, dir } = demoEnv()
-    try {
-      const noslash = run(["gen", "image", "noslash", "x"], undefined, env)
-      expect(noslash.code).toBe(1)
-      expect(noslash.stderr).toContain("expected <provider>, got 'noslash'")
-
-      const toomany = run(["gen", "image", "a/b/c", "x"], undefined, env)
-      expect(toomany.code).toBe(1)
-      expect(toomany.stderr).toContain("expected <provider>[/<model>], got 'a/b/c'")
-
-      const conflict = run(
-        ["gen", "image", "demo/demo-image", "pos", "--prompt", "x"],
-        undefined,
-        env,
-      )
-      expect(conflict.code).toBe(1)
-      expect(conflict.stderr).toContain("mutually exclusive")
-
-      const nolane = run(["gen", "frobnicate"], undefined, env)
-      expect(nolane.code).toBe(1)
-      expect(nolane.stderr).toContain("unknown gen lane 'frobnicate'")
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
-  it("gen resume polls from a handle file or inline JSON", () => {
-    const { env, dir } = demoEnv()
-    try {
-      const handleFile = path.join(dir, "job.json")
-      writeFileSync(handleFile, JSON.stringify({ providerId: "demo", id: "ok-task" }))
-      const r = run(["gen", "resume", handleFile, "--interval", "50ms"], undefined, env)
-      expect(r.code).toBe(0)
-      expect(r.stdout).toContain("https://cdn.test/out.mp4")
-
-      const inline = run(
-        ["gen", "resume", '{"providerId":"demo","id":"ok-task"}', "--interval", "50ms"],
-        undefined,
-        env,
-      )
-      expect(inline.code).toBe(0)
-      expect(inline.stdout).toContain("out.mp4")
-
-      const bad = run(["gen", "resume", "{broken"], undefined, env)
-      expect(bad.code).toBe(1)
-      expect(bad.stderr).toContain("not valid JSON")
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
-  it("models lists providers, plugin details, and errors on unknown", () => {
-    const { env, dir } = demoEnv()
-    try {
-      const all = run(["models"], undefined, env)
-      expect(all.code).toBe(0)
-      expect(all.stdout).toContain("demo  (")
-      expect(all.stdout).toContain("6 models")
-      expect(all.stderr).toContain("unavailable")
-
-      const one = run(["models", "demo"], undefined, env)
-      expect(one.code).toBe(0)
-      expect(one.stdout).toContain("demo-image")
-      expect(one.stdout).toContain("demo-vision")
-
-      const j = run(["models", "demo", "--json"], undefined, env)
-      expect(JSON.parse(j.stdout).models).toHaveLength(6)
-
-      expect(run(["models", "nope"], undefined, env).stderr).toContain("unknown provider")
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
-  it("gen/models --help print usage", () => {
-    const gen = run(["gen", "--help"])
+  it("generate --help prints usage and each task has help", () => {
+    const gen = run(["generate", "--help"])
     expect(gen.code).toBe(0)
-    expect(gen.stdout).toContain("Usage: openmmcli gen <lane>")
-    expect(gen.stdout).toContain("understand")
+    expect(gen.stdout).toContain("Usage: openmmcli generate <task>")
+    expect(gen.stdout).toContain("image2image")
+    expect(gen.stdout).toContain("frames2video")
 
-    for (const lane of ["text", "image", "video", "understand", "embed", "resume"]) {
-      const { stdout, code } = run(["gen", lane, "--help"])
+    for (const task of [
+      "text2text",
+      "image2text",
+      "video2text",
+      "text2image",
+      "image2image",
+      "text2video",
+      "image2video",
+      "frames2video",
+      "embed",
+      "resume",
+    ]) {
+      const { stdout, code } = run(["generate", task, "--help"])
       expect(code).toBe(0)
-      expect(stdout).toContain(`Usage: openmmcli gen ${lane}`)
+      expect(stdout).toContain(`Usage: openmmcli generate ${task}`)
     }
-
-    const models = run(["models", "--help"])
-    expect(models.code).toBe(0)
-    expect(models.stdout).toContain("Usage: openmmcli models")
   })
 
-  it("package build with gen + gen <ref> runs the recipe and packages results", () => {
+  it("package build with gen + generate <ref> runs the recipe and packages results", () => {
     const { env, dir, recordPath } = demoEnv()
     const recipeDir = path.join(dir, "recipe")
     const resultDir = path.join(dir, "result")
@@ -842,7 +949,12 @@ describe("cli gen — integration", () => {
     writeFileSync(
       manifestPath,
       JSON.stringify({
-        gen: { lane: "image", provider: "demo", model: "demo-image", options: { quality: "hd" } },
+        gen: {
+          task: "text2image",
+          provider: "demo",
+          model: "demo-image",
+          options: { quality: "hd" },
+        },
       }),
     )
     try {
@@ -861,7 +973,7 @@ describe("cli gen — integration", () => {
 
       const gen = run(
         [
-          "gen",
+          "generate",
           recipeDir,
           "override crane",
           "--opt",
@@ -878,9 +990,9 @@ describe("cli gen — integration", () => {
       expect(gen.stdout).toContain("https://cdn.test/out.png")
       expect(gen.stderr).toContain("Built org/result:1.0")
 
-      const req = JSON.parse(readFileSync(recordPath, "utf8"))
-      expect(req.prompt).toBe("override crane")
-      expect(req.options).toEqual({ quality: "hd", size: "1024x1024" })
+      const req = lastRequest(recordPath)
+      expect(req["prompt"]).toBe("override crane")
+      expect(req["options"]).toEqual({ quality: "hd", size: "1024x1024" })
 
       const index = JSON.parse(readFileSync(path.join(resultDir, "index.json"), "utf8"))
       expect(index.manifests[0].annotations["org.opencontainers.image.ref.name"]).toBe(
@@ -899,7 +1011,7 @@ describe("cli gen — integration", () => {
         ),
       )
       expect(config.gen).toEqual({
-        lane: "image",
+        task: "text2image",
         provider: "demo",
         model: "demo-image",
         prompt: "override crane",
@@ -911,17 +1023,23 @@ describe("cli gen — integration", () => {
     }
   })
 
-  it("gen <ref> materializes pkg:// reference images from package layers", () => {
+  it("generate <ref> materializes pkg:// reference images from package layers", () => {
     const { env, dir, recordPath } = demoEnv()
     const assetsDir = path.join(dir, "assets")
     const recipeDir = path.join(dir, "recipe")
+    const resultDir = path.join(dir, "result")
     mkdirSync(assetsDir, { recursive: true })
     writeFileSync(path.join(assetsDir, "ref.png"), "REFIMAGE")
     const manifestPath = path.join(dir, "openmm-build.json")
     writeFileSync(
       manifestPath,
       JSON.stringify({
-        gen: { lane: "image", provider: "demo", model: "demo-image", image: "pkg://ref.png" },
+        gen: {
+          task: "image2image",
+          provider: "demo",
+          model: "demo-image",
+          images: ["pkg://ref.png"],
+        },
         assets: assetsDir,
       }),
     )
@@ -938,18 +1056,52 @@ describe("cli gen — integration", () => {
       ])
       expect(built.code).toBe(0)
 
-      const gen = run(
-        ["gen", recipeDir, "paint it", "--output", path.join(dir, "result")],
-        undefined,
-        env,
-      )
+      const gen = run(["generate", recipeDir, "paint it", "--output", resultDir], undefined, env)
       expect(gen.code).toBe(0)
       expect(gen.stdout).toContain("https://cdn.test/out.png")
 
-      const req = JSON.parse(readFileSync(recordPath, "utf8"))
-      expect(req.image.localPath).toMatch(/openmm-pkgref-/)
-      expect(req.image.localPath).toContain("ref.png")
-      expect(req.image.url).toBeUndefined()
+      const req = lastRequest(recordPath)
+      expect((req["image"] as { localPath: string }).localPath).toMatch(/openmm-pkgref-/)
+      expect((req["image"] as { localPath: string }).localPath).toContain("ref.png")
+
+      const index = JSON.parse(readFileSync(path.join(resultDir, "index.json"), "utf8"))
+      const manifest = JSON.parse(
+        readFileSync(
+          path.join(resultDir, "blobs", "sha256", index.manifests[0].digest.slice(7)),
+          "utf8",
+        ),
+      )
+      const config = JSON.parse(
+        readFileSync(
+          path.join(resultDir, "blobs", "sha256", manifest.config.digest.slice(7)),
+          "utf8",
+        ),
+      )
+      // provenance keeps the original pkg:// reference
+      expect(config.gen.images).toEqual(["pkg://ref.png"])
+      expect(config.gen["prompt"]).toBe("paint it")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("models lists providers, plugin details, and errors on unknown", () => {
+    const { env, dir } = demoEnv()
+    try {
+      const all = run(["models"], undefined, env)
+      expect(all.code).toBe(0)
+      expect(all.stdout).toContain("demo  (")
+      expect(all.stderr).toContain("unavailable")
+
+      const one = run(["models", "demo"], undefined, env)
+      expect(one.code).toBe(0)
+      expect(one.stdout).toContain("demo-image")
+      expect(one.stdout).toContain("demo-vision")
+
+      const j = run(["models", "demo", "--json"], undefined, env)
+      expect(JSON.parse(j.stdout).models).toHaveLength(7)
+
+      expect(run(["models", "nope"], undefined, env).stderr).toContain("unknown provider")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -970,7 +1122,7 @@ describe("cli gen — integration", () => {
       expect(configPath.stdout.trim()).toBe(path.join(configDir, "config.json"))
 
       const gen = run(
-        ["gen", "image", "demo/demo-image", "x", "--config-dir", configDir],
+        ["generate", "text2image", "demo/demo-image", "x", "--no-pack", "--config-dir", configDir],
         undefined,
         env,
       )
@@ -993,13 +1145,14 @@ describe("cli -f file-driven — integration", () => {
     expect(stdout).toContain("Usage: openmmcli -f <file>.json")
   })
 
-  it("runs gen.image from a JSON file with typed options", () => {
+  it("runs generate.text2image from a JSON file, CLI flags override fields", () => {
     const { env, dir, recordPath } = demoEnv()
     const reqPath = path.join(dir, "req.json")
+    const resultDir = path.join(dir, "result")
     writeFileSync(
       reqPath,
       JSON.stringify({
-        command: "gen.image",
+        command: "generate.text2image",
         provider: "demo/demo-image",
         prompt: "file crane",
         options: { quality: "hd" },
@@ -1007,27 +1160,52 @@ describe("cli -f file-driven — integration", () => {
       }),
     )
     try {
-      const r = run(["-f", reqPath], undefined, env)
+      // File-only run
+      const r = run(["-f", reqPath, "--output", resultDir], undefined, env)
       expect(r.code).toBe(0)
       const parsed = JSON.parse(r.stdout) as { capability: string; artifacts: { url: string }[] }
       expect(parsed.capability).toBe("image.generate")
       expect(parsed.artifacts[0]?.url).toContain("out.png")
 
-      const req = JSON.parse(readFileSync(recordPath, "utf8"))
-      expect(req.prompt).toBe("file crane")
-      expect(req.options).toEqual({ quality: "hd" })
+      const req = lastRequest(recordPath)
+      expect(req["prompt"]).toBe("file crane")
+      expect(req["options"]).toEqual({ quality: "hd" })
+
+      // CLI positional prompt + --opt override the file's fields
+      const overridden = run(
+        [
+          "-f",
+          reqPath,
+          "cli crane",
+          "--opt",
+          "quality=standard",
+          "--output",
+          path.join(dir, "result2"),
+        ],
+        undefined,
+        env,
+      )
+      expect(overridden.code).toBe(0)
+      const req2 = lastRequest(recordPath)
+      expect(req2["prompt"]).toBe("cli crane")
+      expect(req2["options"]).toEqual({ quality: "standard" })
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
   })
 
-  it("runs gen.video --no-wait and gen.text from JSON files", () => {
+  it("runs generate.text2video --no-wait and generate.embed from JSON files", () => {
     const { env, dir } = demoEnv()
     try {
       const videoPath = path.join(dir, "video.json")
       writeFileSync(
         videoPath,
-        JSON.stringify({ command: "gen.video", provider: "demo", prompt: "x", noWait: true }),
+        JSON.stringify({
+          command: "generate.text2video",
+          provider: "demo",
+          prompt: "x",
+          noWait: true,
+        }),
       )
       const v = run(["-f", videoPath], undefined, env)
       expect(v.code).toBe(0)
@@ -1036,7 +1214,7 @@ describe("cli -f file-driven — integration", () => {
       const textPath = path.join(dir, "text.json")
       writeFileSync(
         textPath,
-        JSON.stringify({ command: "gen.text", provider: "demo", prompt: "hi" }),
+        JSON.stringify({ command: "generate.text2text", provider: "demo", prompt: "hi" }),
       )
       const t = run(["-f", textPath], undefined, env)
       expect(t.code).toBe(0)
@@ -1130,10 +1308,13 @@ describe("cli -f file-driven — integration", () => {
       expect(r2.stderr).toContain("unknown command 'frobnicate'")
 
       const typo = path.join(dir, "typo.json")
-      writeFileSync(typo, JSON.stringify({ command: "gen.image", provider: "demo", promp: "x" }))
+      writeFileSync(
+        typo,
+        JSON.stringify({ command: "generate.text2image", provider: "demo", promp: "x" }),
+      )
       const r3 = run(["-f", typo])
       expect(r3.code).toBe(1)
-      expect(r3.stderr).toContain("unknown field 'promp' for command 'gen.image'")
+      expect(r3.stderr).toContain("unknown field 'promp' for command 'generate.text2image'")
 
       const missing = run(["-f", path.join(dir, "nope.json")])
       expect(missing.code).toBe(1)

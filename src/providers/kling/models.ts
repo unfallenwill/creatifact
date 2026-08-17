@@ -19,8 +19,8 @@ export const KLING_MODELS: VerifiedModel[] = [
   },
   {
     id: "kolors",
-    capabilities: { "image.generate": {} },
+    capabilities: { "image.generate": { imageInput: true } },
     lastVerified: "2026-08",
-    note: "图片生成模型",
+    note: "图片生成模型;传 image 时走图生图",
   },
 ]

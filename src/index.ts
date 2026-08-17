@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { BUILD_USAGE, runBuildFromArgs } from "./build"
 import { CONFIG_USAGE, runConfigFromArgs } from "./configCmd"
 import { FILE_USAGE, runFileFromArgs } from "./fileCmd"
-import { runGenFromArgs } from "./gen"
+import { runGenerateFromArgs } from "./generate"
 import { LOGIN_USAGE, LOGOUT_USAGE, runLoginFromArgs, runLogoutFromArgs } from "./login"
 import { MODELS_USAGE, runModelsFromArgs } from "./models"
 import { PULL_USAGE, runPullFromArgs } from "./pull"
@@ -20,8 +20,8 @@ A lightweight CLI for building, pushing, and pulling OCI image layouts,
 plus AI media generation via provider models.
 
 Commands:
-  gen       Generate text/image/video, understand media, or embed text
-            (gen <lane> ... | gen <ref> ... to run a gen package)
+  generate  Generate media by task (gen is an alias)
+            (generate text2image|image2image|text2video|... | generate <ref>)
   package   Build, push, and pull OCI image layouts
             (package build|push|pull)
   auth      Save or remove registry credentials (auth login|logout)
@@ -157,8 +157,8 @@ try {
     process.exit(0)
   }
 
-  if (head === "gen") {
-    await runGenFromArgs(rest, opts)
+  if (head === "generate" || head === "gen") {
+    await runGenerateFromArgs(rest, opts)
     process.exit(0)
   }
 

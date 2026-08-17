@@ -2,19 +2,23 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/unfallenwill/openmmcli/main/schemas/openmm-request.schema.json",
   "title": "openmmcli request file",
-  "description": "Describes one openmmcli command to run via `openmmcli -f <file>.json`. The 'command' field selects the command; the remaining fields map to its arguments.",
+  "description": "Describes one openmmcli command to run via `openmmcli -f <file>.json`. The 'command' field selects the command; the remaining fields map to its arguments. For generate.* commands, command-line flags after the file override the file's fields.",
   "type": "object",
   "required": ["command"],
   "properties": {
     "command": {
       "description": "Which command to run.",
       "enum": [
-        "gen.text",
-        "gen.image",
-        "gen.video",
-        "gen.understand",
-        "gen.embed",
-        "gen.resume",
+        "generate.text2text",
+        "generate.image2text",
+        "generate.video2text",
+        "generate.text2image",
+        "generate.image2image",
+        "generate.text2video",
+        "generate.image2video",
+        "generate.frames2video",
+        "generate.embed",
+        "generate.resume",
         "package.build",
         "package.push",
         "package.pull",
@@ -29,79 +33,80 @@
       ]
     },
     "provider": {
-      "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-3-flash'. Omit to use the default provider (config key defaults.gen.provider).",
+      "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider).",
       "type": "string",
       "minLength": 1
     },
     "model": {
-      "description": "Model id (requires 'provider'). Omit to use the provider's default model for the lane.",
+      "description": "Model id (overrides any model in 'provider').",
       "type": "string",
       "minLength": 1
     },
     "prompt": {
-      "description": "Generation instruction (gen.text / gen.image / gen.video).",
-      "type": "string",
-      "minLength": 1
-    },
-    "ask": {
-      "description": "Question for gen.understand.",
+      "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text).",
       "type": "string",
       "minLength": 1
     },
     "system": {
-      "description": "System prompt for gen.text.",
+      "description": "System prompt (generate.text2text only).",
       "type": "string"
     },
-    "input": {
-      "description": "Attachment(s) for gen.understand or text(s) to embed for gen.embed.",
-      "oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }]
-    },
-    "image": {
-      "description": "Reference image for gen.image (http(s)/data URL or existing path).",
-      "type": "string"
+    "images": {
+      "description": "Reference image(s): http(s)/data URL, local path, or pkg://path into a recipe package. Repeatable as --image. Exactly one for image2image and image2video.",
+      "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }]
     },
     "firstFrame": {
-      "description": "Video first frame / reference image for gen.video.",
-      "type": "string"
+      "description": "generate.frames2video only: first frame image.",
+      "type": "string",
+      "minLength": 1
     },
     "lastFrame": {
-      "description": "Video last frame for gen.video.",
-      "type": "string"
+      "description": "generate.frames2video only: last frame image.",
+      "type": "string",
+      "minLength": 1
+    },
+    "inputs": {
+      "description": "Media attachments (generate.image2text / video2text) or texts to embed (generate.embed). Repeatable as --input.",
+      "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }]
     },
     "options": {
-      "description": "Provider-specific options for gen.* commands (passed as --opt k=v).",
+      "description": "Provider-specific options (passed as --opt k=v).",
       "type": "object"
     },
     "noWait": {
-      "description": "gen.video only: submit and print the task handle without polling.",
+      "description": "Video tasks only: submit and print the task handle without polling.",
       "type": "boolean"
     },
     "timeout": {
-      "description": "Polling timeout: duration string (e.g. \"5m\") or milliseconds.",
+      "description": "Video tasks and resume: polling timeout, duration string (e.g. \"5m\") or milliseconds.",
       "oneOf": [{ "type": "string" }, { "type": "number", "exclusiveMinimum": 0 }]
     },
     "interval": {
-      "description": "Polling interval: duration string (e.g. \"5s\") or milliseconds.",
+      "description": "Video tasks and resume: polling interval, duration string (e.g. \"5s\") or milliseconds.",
       "oneOf": [{ "type": "string" }, { "type": "number", "exclusiveMinimum": 0 }]
     },
     "output": {
-      "description": "Directory to save base64-only artifacts (gen.*) or OCI layout output directory (package.build / package.pull).",
+      "description": "Media tasks: result OCI layout directory. Resume / --no-pack: directory to save artifacts. Also used by package.build / package.pull.",
       "type": "string"
+    },
+    "tag": {
+      "description": "Media tasks only: reference name for the result package (default gen-output:latest). Also package.build's image reference.",
+      "type": "string"
+    },
+    "noPack": {
+      "description": "Media tasks only: print artifacts without building a result package.",
+      "type": "boolean"
     },
     "json": {
       "description": "Print structured JSON output.",
       "type": "boolean"
     },
     "handle": {
-      "description": "gen.resume only: the saved task handle (object or inline JSON string).",
+      "description": "generate.resume only: the saved task handle (object or inline JSON string).",
       "oneOf": [{ "type": "object" }, { "type": "string" }]
     },
     "file": {
-      "description": "Build manifest path (package.build) or handle file path (gen.resume).",
-      "type": "string"
-    },
-    "tag": {
-      "description": "package.build only: image reference, e.g. org/myapp:1.0.0.",
+      "description": "Build manifest path (package.build).",
       "type": "string"
     },
     "dir": {

@@ -154,6 +154,8 @@ export interface ModelSupport {
   textOnly?: boolean
   firstFrame?: boolean
   lastFrame?: boolean
+  /** image.generate: the model accepts a reference image (image-to-image). */
+  imageInput?: boolean
 }
 
 export interface VerifiedModel {

@@ -36,7 +36,8 @@ Every command supports two forms — a subcommand tree and a JSON request file:
 
 ```bash
 # Form 1: subcommand tree
-openmmcli gen image zhipu "a crane" --opt size=1024x1024
+openmmcli generate text2image zhipu "a crane" --opt size=1024x1024
+openmmcli generate image2image demo "paint it" --image cat.png
 openmmcli package build -t org/myapp:1.0.0
 
 # Form 2: JSON request file (openmmcli -f <file>.json)
@@ -46,7 +47,7 @@ openmmcli -f request.json
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/unfallenwill/openmmcli/main/schemas/openmm-request.schema.json",
-  "command": "gen.image",
+  "command": "generate.text2image",
   "provider": "zhipu",
   "prompt": "a crane",
   "options": { "size": "1024x1024" },
@@ -56,63 +57,76 @@ openmmcli -f request.json
 
 The request file must be a JSON object with a `command` field; the remaining
 fields map to that command's arguments. `command` mirrors the subcommand tree:
-`gen.text` / `gen.image` / `gen.video` / `gen.understand` / `gen.embed` /
-`gen.resume`, `package.build` / `package.push` / `package.pull`,
-`auth.login` / `auth.logout`, `config.*`, and `models`.
+`generate.text2text` / `generate.image2text` / `generate.video2text` /
+`generate.text2image` / `generate.image2image` / `generate.text2video` /
+`generate.image2video` / `generate.frames2video` / `generate.embed` /
+`generate.resume`, `package.build` / `package.push` / `package.pull`,
+`auth.login` / `auth.logout`, `config.*`, and `models`. For `generate.*`
+commands, flags after the file override the file's fields (CLI wins):
+
+```bash
+openmmcli -f request.json --prompt "a red crane" --opt size=2048x2048
+```
 
 ## Commands
 
-### `gen`
+### `generate`
 
-Generate text, images, and video via a provider model; ask questions about
-media; compute embeddings. The lane is explicit; the model comes from
-`<provider>` (as `provider` or `provider/model`), from the provider's default
-model for that lane, or from the default provider (config key
-`defaults.gen.provider`). Progress and notes go to stderr; results go to stdout.
+Task-oriented generation (`gen` is an alias). CLI flags, `-f` request files,
+and recipe packages are equivalent; when both apply, command-line flags win.
+Progress and notes go to stderr; results go to stdout.
+
+| Task | 中文 | In → out | Key options |
+|------|------|----------|-------------|
+| `text2text` | 文本生成 | text → text | positional prompt, `--system`, `--opt` |
+| `image2text` | 图生文 | image + question → text | `--input` (repeatable), optional prompt |
+| `video2text` | 视频理解 | video + question → text | `--input` (repeatable), optional prompt |
+| `text2image` | 文生图 | text → image | `--opt`, result packaging |
+| `image2image` | 图生图 | image + text → image | `--image` (exactly one), `--opt` |
+| `text2video` | 文生视频 | text → video | `--no-wait`, `--timeout`, `--interval` |
+| `image2video` | 图生视频 | image + text → video | `--image` (becomes the first frame) |
+| `frames2video` | 首尾帧生视频 | first+last frame + text → video | `--first-frame`, `--last-frame` |
+| `embed` | 向量化 | text → vectors | positional inputs or `--input` |
+| `resume` | 续跑 | resume a saved video task | `<handle\|file>`, `--timeout`, `--interval` |
 
 ```
-Usage: openmmcli gen <lane> [provider] [args]
+# text chat
+openmmcli generate text2text zhipu "explain ECC memory in one paragraph"
+openmmcli generate text2text ark/doubao-seed-1-6-250615 "hi" --system "be brief"
 
-# text chat completion
-openmmcli gen text zhipu "explain ECC memory in one paragraph"
-openmmcli gen text ark/doubao-seed-1-6-250615 "hi" --system "be brief"
+# text-to-image / image-to-image
+openmmcli generate text2image zhipu "a crane" --opt size=1024x1024
+openmmcli generate image2image ark "oil painting style" --image cat.png
 
-# image generation
-openmmcli gen image zhipu "a crane" --opt size=1024x1024
-openmmcli gen image zhipu/cogview-3-flash "a crane"
+# video: text / image / first+last frames
+openmmcli generate text2video ark "a paper crane" --no-wait
+openmmcli generate image2video kling/kling-3.0-turbo "animate" --image first.png
+openmmcli generate frames2video zhipu/viduq1-start-end "morph" \
+  --first-frame a.png --last-frame b.png
 
-# video generation (polls until done; --no-wait prints the task handle)
-openmmcli gen video ark "a paper crane" --no-wait
-openmmcli gen video ark/doubao-seedance-2.0 "a paper crane"
-
-# vision understanding with a local image
-openmmcli gen understand ark/doubao-1.5-vision-pro-32k-250115 "what is this" --input ./cat.png
-
-# embeddings
-openmmcli gen embed ark "hello" "world"
-
-# resume a video task saved by --no-wait
-openmmcli gen resume job.json
+# understanding and embeddings
+openmmcli generate image2text ark/doubao-1.5-vision-pro-32k-250115 "what is this" --input cat.png
+openmmcli generate embed ark "hello" "world"
 ```
 
 With no `<provider>`, the default provider from the config is used; with no
-`/model`, the provider's default model for the lane is used:
+`/model`, the task picks a default model: the provider's declared default
+when it satisfies the task (e.g. `imageInput` for image2image, `firstFrame` +
+`lastFrame` for frames2video), else the first verified model that does, else
+a fallback with a warning (frames2video is strict and errors instead):
 
 ```bash
 openmmcli config set defaults.gen.provider zhipu
-openmmcli gen image "a crane"   # uses zhipu + its default image model
+openmmcli generate text2image "a crane"   # zhipu + its default image model
 ```
 
-Lane options (run `openmmcli gen <lane> --help` for details):
+Wrong flag/task combinations are rejected with guidance instead of failing at
+the provider:
 
-| Lane | Key options |
-|------|-------------|
-| `text` | positional or `--prompt`, `--system`, `--opt`, `--json` |
-| `image` | positional or `--prompt`, `--image <path\|url>`, `--opt`, `--output`, `--json` |
-| `video` | positional or `--prompt`, `--first-frame`, `--last-frame`, `--opt`, `--no-wait`, `--timeout`, `--interval`, `--output`, `--json` |
-| `understand` | positional or `--ask`, `--input` (repeatable), `--opt`, `--json` |
-| `embed` | positional inputs or `--input` (repeatable), `--opt`, `--json` |
-| `resume` | `<handle\|file>`, `--timeout`, `--interval`, `--output`, `--json` |
+```
+$ openmmcli generate text2video demo x --first-frame a.png
+error: text2video does not take --first-frame; use `generate image2video --image <img>`
+```
 
 `--opt k=v` values are JSON-parsed when valid (`5` → 5, `true` → true), else
 kept as strings. Credentials come from the config file (`providers.<id>.apiKey`)
@@ -121,20 +135,22 @@ or the provider's env vars (`ZHIPU_API_KEY`, `ARK_API_KEY`, ...). See
 
 ### Gen packages
 
-`openmmcli package build` can bake a generation *recipe* (lane, provider, model,
-and parameters — never API keys) into an OCI package, and `openmmcli gen <ref>`
-runs it:
+`openmmcli package build` can bake a generation *recipe* (task, provider, model,
+and parameters — never API keys) into an OCI package, and
+`openmmcli generate <ref>` runs it:
 
 ```jsonc
 // openmm-build.json
 {
   "gen": {
-    "lane": "image",
+    "task": "image2image",
     "provider": "zhipu",
-    "model": "cogview-3-flash",
+    "model": "cogview-4",
     "prompt": "a crane",          // optional default
+    "images": ["pkg://refs/cat.png"],
     "options": { "size": "1024x1024" }
-  }
+  },
+  "assets": "./assets"             // contains refs/cat.png
 }
 ```
 
@@ -143,58 +159,35 @@ runs it:
 openmmcli package build -t example.com/xxxxxx:v1.0
 openmmcli package push example.com/xxxxxx:v1.0
 
-# 2. Run it from anywhere: the lane comes from the package
-openmmcli gen example.com/xxxxxx:v1.0 "a red crane" --opt size=2048x2048
-openmmcli gen ./oci-layout "a crane"          # local layout also works
+# 2. Run it from anywhere: the task comes from the package
+openmmcli generate example.com/xxxxxx:v1.0 "a red crane" --opt size=2048x2048
+openmmcli generate ./oci-layout "a crane"      # local layout also works
 ```
 
-`gen <ref>` accepts a registry reference or a local OCI layout path. The
-positional prompt (and `--prompt`/`--system`/`--opt`/`--image`/frame/`--input`
-flags) override the package; `--opt` merges over the package options.
-Credentials are resolved locally at run time.
+`generate <ref>` accepts a registry reference or a local OCI layout path. CLI
+flags (positional prompt, `--prompt`/`--opt`/`--image`/frames/`--input`,
+`--provider`/`--model`) override the package: scalars override, arrays replace,
+`--opt` merges per key.
 
-**Image-to-image (and video frames) from package files.** Pack the reference
-image into the package with the `assets` dir, then point at it with a
-`pkg://path` reference:
-
-```jsonc
-// openmm-build.json
-{
-  "gen": {
-    "lane": "image",
-    "provider": "zhipu",
-    "model": "cogview-3-flash",
-    "image": "pkg://refs/cat.png"   // file inside the package's layers
-  },
-  "assets": "./assets"               // contains refs/cat.png
-}
-```
-
-```bash
-openmmcli package build -t example.com/img2img:v1.0
-openmmcli gen example.com/img2img:v1.0 "turn it into a painting"
-openmmcli gen example.com/img2img:v1.0 --image pkg://refs/dog.png   # override ref
-```
-
-Media references (`image` / `firstFrame` / `lastFrame` / `input`) accept an
-http(s)/data URL, a local path, or `pkg://path` (a file in the package layers).
-At `gen` time the referenced file is extracted from the package and sent to the
-provider; the result package records the original `pkg://` reference for
+Media references (`images` / `firstFrame` / `lastFrame` / `inputs`) accept an
+http(s)/data URL, a local path, or a `pkg://path` into the package's layers
+(packed via the `assets` dir). At generate time the file is extracted and sent
+to the provider; the result package records the original `pkg://` reference for
 provenance.
 
-For image/video lanes, `gen <ref>` writes the **result as an OCI package**
-(default `./oci-layout`, override with `--output`, name it with `--tag`). The
-artifact becomes a layer, and the config blob records the *effective* generation
-parameters plus result metadata (usage, timestamp, source ref) — so anyone can
-see exactly how the image/video was produced:
+Media tasks write their **result as an OCI package** (default `./oci-layout`,
+override with `--output`, name it with `--tag`). The artifact becomes a layer,
+and the config blob records the *effective* generation parameters plus result
+metadata (usage, timestamp, source ref) — so anyone can see exactly how the
+image/video was produced:
 
 ```bash
-openmmcli gen example.com/xxxxxx:v1.0 "a red crane" --tag org/myresult:1.0
+openmmcli generate example.com/xxxxxx:v1.0 "a red crane" --tag org/myresult:1.0
 # → ./oci-layout (index.json + blobs + a config blob with provenance)
 ```
 
-Pass `--no-pack` to print artifacts without building a result package. Text/
-understand/embed lanes print to stdout as usual (no artifact to package).
+Pass `--no-pack` to print artifacts without building a result package.
+Non-media tasks (text/understand/embed) print to stdout.
 
 ### `models`
 
@@ -379,7 +372,7 @@ subcommand to use `<dir>/config.json` (takes precedence over the env var).
 }
 ```
 
-- `defaults.gen.provider` — provider used when `openmmcli gen <lane>` omits `<provider>`; its per-lane default model is then used.
+- `defaults.gen.provider` — provider used when `openmmcli generate <task>` omits `<provider>`; the task then picks a suitable default model.
 - `auths.<registry>.auth` — base64(`user:password`), docker-config-compatible; managed by `openmmcli auth login`/`logout`.
 - `auths.<registry>.insecure` — talk plain HTTP to this registry without `--plain-http` (per registry, not global).
 - `providers.*` — passthrough section for other openmmcli modules; preserved by every write.

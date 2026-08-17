@@ -1,29 +1,46 @@
 import { readFileSync } from "node:fs"
 import { runBuildFromArgs } from "./build"
+import { defaultGenProvider, loadConfig } from "./config"
 import { runConfigFromArgs } from "./configCmd"
-import { type GenLane, runGenFromArgs } from "./gen"
+import {
+  type GenRequest,
+  type GenTaskName,
+  mergeRequest,
+  parseGenerateArgs,
+  requestFieldsForTask,
+  runGenerateRequest,
+  TASKS,
+} from "./generate"
 import { runLoginFromArgs, runLogoutFromArgs } from "./login"
 import { runModelsFromArgs } from "./models"
+import { listConfiguredProviderIds } from "./providers"
 import { runPullFromArgs } from "./pull"
 import { runPushFromArgs } from "./push"
 
-export const FILE_USAGE = `Usage: openmmcli -f <file>.json [options]
+export const FILE_USAGE = `Usage: openmmcli -f <file>.json [options] [-- generate flags]
 
 Run the command described by a JSON file. The file must be an object with a
 "command" field selecting what to do; the remaining fields map to that
 command's arguments. Commands mirror the CLI subcommand tree:
 
-  gen.text / gen.image / gen.video / gen.understand / gen.embed / gen.resume
+  generate.text2text / generate.image2text / generate.video2text
+  generate.text2image / generate.image2image
+  generate.text2video / generate.image2video / generate.frames2video
+  generate.embed / generate.resume
   package.build / package.push / package.pull
   auth.login / auth.logout
   config.path / config.list / config.get / config.set / config.reset
   models
 
+For generate.* commands, flags after the file override the file's fields
+(command line wins):
+
+  openmmcli -f req.json --prompt "a red crane" --opt size=2048x2048
+
 Examples:
-  {"command":"gen.image","provider":"zhipu","prompt":"a crane",
-   "options":{"size":"1024x1024"}}
-  {"command":"gen.video","provider":"ark/doubao-seedance-2.0","prompt":"...",
-   "noWait":true}
+  {"command":"generate.image2image","provider":"zhipu","prompt":"a crane",
+   "images":["https://…/cat.png"],"options":{"size":"1024x1024"}}
+  {"command":"generate.text2video","provider":"ark","prompt":"…","noWait":true}
   {"command":"package.build","tag":"org/app:1.0.0","file":"./openmm-build.json"}
   {"command":"auth.login","registry":"localhost:5000","username":"u","password":"p"}
 
@@ -65,10 +82,15 @@ function asRecord(value: unknown, field: string): Record<string, unknown> {
 
 function asStringArray(value: unknown, field: string): string[] {
   if (typeof value === "string") return [value]
-  if (Array.isArray(value) && value.every((v) => typeof v === "string")) {
+  if (Array.isArray(value) && value.every((v) => typeof v === "string" && v !== "")) {
     return value as string[]
   }
-  throw new Error(`field '${field}' must be a string or an array of strings`)
+  throw new Error(`field '${field}' must be a string or an array of non-empty strings`)
+}
+
+function asOptionalStringArray(value: unknown, field: string): string[] | undefined {
+  if (value === undefined) return undefined
+  return asStringArray(value, field)
 }
 
 /** Accept "5m" durations or numbers (milliseconds) for timeout/interval. */
@@ -90,184 +112,57 @@ function rejectUnknown(fields: Fields, allowed: ReadonlySet<string>, command: st
   }
 }
 
-function targetArg(fields: Fields): string | undefined {
-  const provider = asOptionalString(fields["provider"], "provider")
-  const model = asOptionalString(fields["model"], "model")
-  if (provider === undefined) {
-    if (model !== undefined) {
-      throw new Error("field 'model' requires field 'provider'")
-    }
-    return undefined
+/** String / string[] / bool / duration field readers for generate requests. */
+function readGenerateStringFields(fields: Fields, req: GenRequest): void {
+  for (const field of [
+    "provider",
+    "model",
+    "prompt",
+    "system",
+    "firstFrame",
+    "lastFrame",
+    "output",
+    "tag",
+  ] as const) {
+    const value = asOptionalString(fields[field], field)
+    if (value !== undefined) req[field] = value
   }
-  return model === undefined ? provider : `${provider}/${model}`
 }
 
-function optionArgs(fields: Fields): string[] {
+function readGenerateListFields(fields: Fields, req: GenRequest): void {
+  for (const field of ["images", "inputs"] as const) {
+    const value = asOptionalStringArray(fields[field], field)
+    if (value !== undefined) req[field] = value
+  }
+}
+
+function readGenerateFlagFields(fields: Fields, req: GenRequest): void {
+  for (const field of ["noWait", "noPack", "json"] as const) {
+    const value = asOptionalBool(fields[field], field)
+    if (value !== undefined) req[field] = value
+  }
+}
+
+/** Build a GenRequest from a generate.<task> file's fields. */
+function generateRequest(task: GenTaskName, fields: Fields): GenRequest {
+  rejectUnknown(fields, requestFieldsForTask(task), `generate.${task}`)
+
+  const req: GenRequest = { task }
+  readGenerateStringFields(fields, req)
+  readGenerateListFields(fields, req)
+  readGenerateFlagFields(fields, req)
+
   const options = fields["options"]
-  if (options === undefined) return []
-  const record = asRecord(options, "options")
-  const out: string[] = []
-  for (const [key, value] of Object.entries(record)) {
-    out.push("--opt", `${key}=${JSON.stringify(value)}`)
-  }
-  return out
-}
-
-function pushJson(fields: Fields, argv: string[]): void {
-  if (asOptionalBool(fields["json"], "json") === true) argv.push("--json")
-}
-
-function textArgv(fields: Fields): string[] {
-  rejectUnknown(
-    fields,
-    new Set(["provider", "model", "prompt", "system", "options", "json"]),
-    "gen.text",
-  )
-  const argv: string[] = []
-  const target = targetArg(fields)
-  if (target !== undefined) argv.push(target)
-  const prompt = asOptionalString(fields["prompt"], "prompt")
-  if (prompt !== undefined) argv.push(prompt)
-  const system = asOptionalString(fields["system"], "system")
-  if (system !== undefined) argv.push("--system", system)
-  argv.push(...optionArgs(fields))
-  pushJson(fields, argv)
-  return argv
-}
-
-function imageArgv(fields: Fields): string[] {
-  rejectUnknown(
-    fields,
-    new Set(["provider", "model", "prompt", "image", "options", "output", "json"]),
-    "gen.image",
-  )
-  const argv: string[] = []
-  const target = targetArg(fields)
-  if (target !== undefined) argv.push(target)
-  const prompt = asOptionalString(fields["prompt"], "prompt")
-  if (prompt !== undefined) argv.push(prompt)
-  const image = asOptionalString(fields["image"], "image")
-  if (image !== undefined) argv.push("--image", image)
-  const output = asOptionalString(fields["output"], "output")
-  if (output !== undefined) argv.push("--output", output)
-  argv.push(...optionArgs(fields))
-  pushJson(fields, argv)
-  return argv
-}
-
-function videoArgv(fields: Fields): string[] {
-  rejectUnknown(
-    fields,
-    new Set([
-      "provider",
-      "model",
-      "prompt",
-      "firstFrame",
-      "lastFrame",
-      "options",
-      "noWait",
-      "timeout",
-      "interval",
-      "output",
-      "json",
-    ]),
-    "gen.video",
-  )
-  const argv: string[] = []
-  const target = targetArg(fields)
-  if (target !== undefined) argv.push(target)
-  const prompt = asOptionalString(fields["prompt"], "prompt")
-  if (prompt !== undefined) argv.push(prompt)
-  const firstFrame = asOptionalString(fields["firstFrame"], "firstFrame")
-  if (firstFrame !== undefined) argv.push("--first-frame", firstFrame)
-  const lastFrame = asOptionalString(fields["lastFrame"], "lastFrame")
-  if (lastFrame !== undefined) argv.push("--last-frame", lastFrame)
-  if (asOptionalBool(fields["noWait"], "noWait") === true) argv.push("--no-wait")
+  if (options !== undefined) req.options = asRecord(options, "options")
   const timeout = fields["timeout"]
-  if (timeout !== undefined) argv.push("--timeout", durationArg(timeout, "timeout"))
+  if (timeout !== undefined) req.timeout = durationArg(timeout, "timeout")
   const interval = fields["interval"]
-  if (interval !== undefined) argv.push("--interval", durationArg(interval, "interval"))
-  const output = asOptionalString(fields["output"], "output")
-  if (output !== undefined) argv.push("--output", output)
-  argv.push(...optionArgs(fields))
-  pushJson(fields, argv)
-  return argv
-}
-
-function understandArgv(fields: Fields): string[] {
-  rejectUnknown(
-    fields,
-    new Set(["provider", "model", "ask", "input", "options", "json"]),
-    "gen.understand",
-  )
-  const argv: string[] = []
-  const target = targetArg(fields)
-  if (target !== undefined) argv.push(target)
-  const ask = asOptionalString(fields["ask"], "ask")
-  if (ask !== undefined) argv.push(ask)
-  const input = fields["input"]
-  if (input !== undefined) {
-    for (const item of asStringArray(input, "input")) argv.push("--input", item)
-  }
-  argv.push(...optionArgs(fields))
-  pushJson(fields, argv)
-  return argv
-}
-
-function embedArgv(fields: Fields): string[] {
-  rejectUnknown(fields, new Set(["provider", "model", "input", "options", "json"]), "gen.embed")
-  const argv: string[] = []
-  const target = targetArg(fields)
-  if (target !== undefined) argv.push(target)
-  const input = fields["input"]
-  if (input !== undefined) {
-    for (const item of asStringArray(input, "input")) argv.push("--input", item)
-  }
-  argv.push(...optionArgs(fields))
-  pushJson(fields, argv)
-  return argv
-}
-
-function genArgv(lane: Exclude<GenLane, "resume">, fields: Fields): string[] {
-  switch (lane) {
-    case "text":
-      return textArgv(fields)
-    case "image":
-      return imageArgv(fields)
-    case "video":
-      return videoArgv(fields)
-    case "understand":
-      return understandArgv(fields)
-    case "embed":
-      return embedArgv(fields)
-  }
-}
-
-function resumeArgv(fields: Fields): string[] {
-  rejectUnknown(
-    fields,
-    new Set(["handle", "file", "timeout", "interval", "output", "json"]),
-    "gen.resume",
-  )
-  const argv: string[] = []
+  if (interval !== undefined) req.interval = durationArg(interval, "interval")
   const handle = fields["handle"]
-  const file = asOptionalString(fields["file"], "file")
-  if (handle !== undefined && file !== undefined) {
-    throw new Error("fields 'handle' and 'file' are mutually exclusive")
-  }
   if (handle !== undefined) {
-    argv.push(typeof handle === "string" ? handle : JSON.stringify(handle))
-  } else if (file !== undefined) {
-    argv.push(file)
+    req.handle = typeof handle === "string" ? asString(handle, "handle") : JSON.stringify(handle)
   }
-  const timeout = fields["timeout"]
-  if (timeout !== undefined) argv.push("--timeout", durationArg(timeout, "timeout"))
-  const interval = fields["interval"]
-  if (interval !== undefined) argv.push("--interval", durationArg(interval, "interval"))
-  const output = asOptionalString(fields["output"], "output")
-  if (output !== undefined) argv.push("--output", output)
-  if (asOptionalBool(fields["json"], "json") === true) argv.push("--json")
-  return argv
+  return req
 }
 
 function buildArgv(fields: Fields): string[] {
@@ -337,11 +232,16 @@ export interface FileRunOptions {
   configPath?: string
 }
 
-export async function runFileFromArgs(args: string[], opts: FileRunOptions = {}): Promise<void> {
-  const file = args[0]
-  if (file === undefined || file === "") {
-    throw new Error("-f requires a JSON file path, e.g. openmmcli -f request.json")
+function fileOverlayContext(opts: FileRunOptions) {
+  const config = loadConfig(opts.configPath)
+  return {
+    known: new Set(listConfiguredProviderIds(opts)),
+    hasDefaultProvider: defaultGenProvider(config) !== undefined,
   }
+}
+
+/** Parse a request file's contents into (command, fields). */
+function readRequestFile(file: string): { command: string; fields: Fields } {
   let raw: string
   try {
     raw = readFileSync(file, "utf8")
@@ -361,18 +261,39 @@ export async function runFileFromArgs(args: string[], opts: FileRunOptions = {})
   const fields: Fields = { ...(parsed as Fields) }
   delete fields["command"]
   delete fields["$schema"]
+  return { command, fields }
+}
+
+/** Dispatch a generate.<task> command with CLI flags overriding file fields. */
+async function runFileGenerate(
+  command: string,
+  fields: Fields,
+  args: string[],
+  opts: FileRunOptions,
+): Promise<void> {
+  const task = command.slice("generate.".length) as GenTaskName
+  if (TASKS[task] === undefined) {
+    throw new Error(`unknown generate task '${task}' in command '${command}'`)
+  }
+  // Command-line flags after the file override the file's fields.
+  const overlay = parseGenerateArgs(task, args, fileOverlayContext(opts), {
+    packageMode: true,
+  })
+  return runGenerateRequest(mergeRequest(generateRequest(task, fields), overlay), opts)
+}
+
+export async function runFileFromArgs(args: string[], opts: FileRunOptions = {}): Promise<void> {
+  const file = args[0]
+  if (file === undefined || file === "") {
+    throw new Error("-f requires a JSON file path, e.g. openmmcli -f request.json")
+  }
+  const { command, fields } = readRequestFile(file)
+
+  if (command.startsWith("generate.")) {
+    return runFileGenerate(command, fields, args.slice(1), opts)
+  }
 
   switch (command) {
-    case "gen.text":
-    case "gen.image":
-    case "gen.video":
-    case "gen.understand":
-    case "gen.embed": {
-      const lane = command.slice("gen.".length) as Exclude<GenLane, "resume">
-      return runGenFromArgs([lane, ...genArgv(lane, fields)], opts)
-    }
-    case "gen.resume":
-      return runGenFromArgs(["resume", ...resumeArgv(fields)], opts)
     case "package.build":
       return runBuildFromArgs(buildArgv(fields), opts)
     case "package.push":
@@ -411,7 +332,7 @@ export async function runFileFromArgs(args: string[], opts: FileRunOptions = {})
     }
     default:
       throw new Error(
-        `unknown command '${command}' (expected gen.*, package.*, auth.*, config.*, or models)`,
+        `unknown command '${command}' (expected generate.*, package.*, auth.*, config.*, or models)`,
       )
   }
 }

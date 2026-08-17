@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { GenLane } from "./gen"
+import type { GenTaskName } from "./generate"
 import { createLayerTarball } from "./layers"
 import {
   MANIFEST_MEDIA_TYPE,
@@ -17,22 +17,35 @@ import { ensureOutputDirEmpty } from "./util"
 export const GEN_CONFIG_MEDIA_TYPE = "application/vnd.openmm.gen.v1+json"
 export const GEN_SCHEMA_VERSION = 1
 
+const GEN_TASKS = new Set([
+  "text2text",
+  "image2text",
+  "video2text",
+  "text2image",
+  "image2image",
+  "text2video",
+  "image2video",
+  "frames2video",
+  "embed",
+])
+
 /**
  * A generation recipe baked into a package by `openmmcli package build`.
- * It never contains credentials — only provider/model ids and parameters.
- * Media references (image / frames / input) are URLs or local paths.
+ * Task-oriented (X2Y); never contains credentials — only provider/model ids
+ * and parameters. Media references are URLs, local paths, or pkg://paths into
+ * the package's own layers.
  */
 export interface GenSpec {
-  lane: GenLane
+  task: GenTaskName
   provider?: string
   model?: string
   prompt?: string
   system?: string
-  options?: Record<string, unknown>
-  image?: string
+  images?: string[]
   firstFrame?: string
   lastFrame?: string
-  input?: string[]
+  inputs?: string[]
+  options?: Record<string, unknown>
 }
 
 export interface GenConfigBlob {
@@ -53,19 +66,17 @@ export interface GenResultBlob {
   result: GenResultMeta
 }
 
-const GEN_LANES = new Set(["text", "image", "video", "understand", "embed"])
-
 const KNOWN_SPEC_FIELDS = new Set([
-  "lane",
+  "task",
   "provider",
   "model",
   "prompt",
   "system",
-  "options",
-  "image",
+  "images",
   "firstFrame",
   "lastFrame",
-  "input",
+  "inputs",
+  "options",
 ])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -90,30 +101,22 @@ function optionalString(
   return value
 }
 
-function validateOptionsField(
+function validateStringList(
   raw: Record<string, unknown>,
   path: string,
-): Record<string, unknown> | undefined {
-  const options = raw["options"]
-  if (options === undefined) return undefined
-  if (!isRecord(options)) {
-    fail(path, "options", "must be an object")
-  }
-  return options as Record<string, unknown>
-}
-
-function validateInputField(raw: Record<string, unknown>, path: string): string[] | undefined {
-  const input = raw["input"]
-  if (input === undefined) return undefined
-  if (typeof input === "string" && input !== "") return [input]
+  field: string,
+): string[] | undefined {
+  const value = raw[field]
+  if (value === undefined) return undefined
+  if (typeof value === "string" && value !== "") return [value]
   if (
-    Array.isArray(input) &&
-    input.length > 0 &&
-    input.every((v) => typeof v === "string" && v !== "")
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((v) => typeof v === "string" && v !== "")
   ) {
-    return input as string[]
+    return value as string[]
   }
-  fail(path, "input", "must be a non-empty string or an array of non-empty strings")
+  fail(path, field, "must be a non-empty string or an array of non-empty strings")
 }
 
 /** Validate the `gen` section of a build manifest or a package config blob. */
@@ -122,19 +125,18 @@ export function validateGenSpec(raw: unknown, path: string): GenSpec {
     fail(path, "", "must be an object")
   }
 
-  const lane = raw["lane"]
-  if (typeof lane !== "string" || !GEN_LANES.has(lane)) {
-    fail(path, "lane", `must be one of ${[...GEN_LANES].join(", ")}`)
+  const task = raw["task"]
+  if (typeof task !== "string" || !GEN_TASKS.has(task)) {
+    fail(path, "task", `must be one of ${[...GEN_TASKS].join(", ")}`)
   }
 
-  const spec: GenSpec = { lane: lane as GenLane }
+  const spec: GenSpec = { task: task as GenTaskName }
 
   for (const field of [
     "provider",
     "model",
     "prompt",
     "system",
-    "image",
     "firstFrame",
     "lastFrame",
   ] as const) {
@@ -142,11 +144,18 @@ export function validateGenSpec(raw: unknown, path: string): GenSpec {
     if (value !== undefined) spec[field] = value
   }
 
-  const options = validateOptionsField(raw, path)
-  if (options !== undefined) spec.options = options
+  const images = validateStringList(raw, path, "images")
+  if (images !== undefined) spec.images = images
+  const inputs = validateStringList(raw, path, "inputs")
+  if (inputs !== undefined) spec.inputs = inputs
 
-  const input = validateInputField(raw, path)
-  if (input !== undefined) spec.input = input
+  const options = raw["options"]
+  if (options !== undefined) {
+    if (!isRecord(options)) {
+      fail(path, "options", "must be an object")
+    }
+    spec.options = options as Record<string, unknown>
+  }
 
   for (const key of Object.keys(raw)) {
     if (!KNOWN_SPEC_FIELDS.has(key)) {
@@ -252,7 +261,7 @@ export async function buildResultPackage(opts: ResultPackageOptions): Promise<vo
   )
 
   const annotations: Record<string, string> = {
-    "org.openmm.gen.lane": opts.spec.lane,
+    "org.openmm.gen.task": opts.spec.task,
   }
   if (opts.spec.provider !== undefined) annotations["org.openmm.gen.provider"] = opts.spec.provider
   if (opts.spec.model !== undefined) annotations["org.openmm.gen.model"] = opts.spec.model
