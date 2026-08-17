@@ -1,31 +1,9 @@
 import { isCancel, password as passwordPrompt, text } from "@clack/prompts"
 
+import { Command } from "commander"
+
 import { encodeAuth, isValidRegistry, loadConfig, normalizeRegistry, saveConfig } from "./config"
-import { parseCliArgs, resolvePassword } from "./util"
-
-export const LOGIN_USAGE = `Usage: openmmcli auth login <registry> [options]
-
-Save registry credentials to the openmmcli config file.
-
-Arguments:
-  <registry>             Registry host[:port] (e.g. localhost:5000, registry.example.com)
-
-Options:
-  -u, --username <user>  Registry username (prompted if omitted and interactive)
-  -p, --password <pw>    Registry password (prefer --password-stdin)
-      --password-stdin   Read password from stdin
-  -h, --help             Show this help message
-
-Credentials are stored base64-encoded in "auths" inside the config file
-(same format as ~/.docker/config.json), never in shell history.`
-
-export const LOGOUT_USAGE = `Usage: openmmcli auth logout <registry>
-
-Remove saved credentials for a registry from the config file.
-
-Arguments:
-  <registry>             Registry host[:port] (e.g. localhost:5000)
-  -h, --help             Show this help message`
+import { addGlobalOptions, configOpts, parseArgsWith, resolvePassword } from "./util"
 
 interface RunOpts {
   configPath?: string
@@ -75,15 +53,33 @@ export async function runLogout(registry: string, opts?: RunOpts): Promise<boole
   return true
 }
 
-const LOGIN_STR_OPTS: Record<string, string> = {
-  "--username": "username",
-  "-u": "username",
-  "--password": "password",
-  "-p": "password",
+export interface LoginCommandOptions {
+  username?: string
+  password?: string
+  passwordStdin?: boolean
+  configDir?: string
 }
 
-const LOGIN_BOOL_FLAGS: Record<string, string> = {
-  "--password-stdin": "passwordStdin",
+export function buildLoginCommand(): Command {
+  const cmd = new Command("login")
+    .description("Save registry credentials to the openmmcli config file")
+    .argument("[registry]", "Registry host[:port] (e.g. localhost:5000, registry.example.com)")
+    .option("-u, --username <user>", "Registry username (prompted if omitted and interactive)")
+    .option("-p, --password <pw>", "Registry password (prefer --password-stdin)")
+    .option("--password-stdin", "Read password from stdin")
+  return addGlobalOptions(cmd)
+}
+
+export function loginArgsFromOptions(
+  registry: string | undefined,
+  o: LoginCommandOptions,
+): ParsedLoginArgs {
+  return {
+    registry,
+    username: o.username,
+    password: o.password,
+    passwordStdin: o.passwordStdin === true,
+  }
 }
 
 export interface ParsedLoginArgs {
@@ -94,17 +90,8 @@ export interface ParsedLoginArgs {
 }
 
 export function parseLoginArgs(args: string[]): ParsedLoginArgs {
-  const parsed = parseCliArgs(args, { values: LOGIN_STR_OPTS, flags: LOGIN_BOOL_FLAGS })
-  return {
-    registry: parsed.positionals[0],
-    username: singleValue(parsed.values["username"]),
-    password: singleValue(parsed.values["password"]),
-    passwordStdin: parsed.flags["passwordStdin"] === true,
-  }
-}
-
-function singleValue(value: string | string[] | undefined): string | undefined {
-  return typeof value === "string" ? value : undefined
+  const { options, positionals } = parseArgsWith<LoginCommandOptions>(buildLoginCommand(), args)
+  return loginArgsFromOptions(positionals[0], options)
 }
 
 function isInteractive(): boolean {
@@ -112,8 +99,10 @@ function isInteractive(): boolean {
 }
 
 export async function runLoginFromArgs(args: string[], opts?: RunOpts): Promise<void> {
-  const parsed = parseLoginArgs(args)
+  await runLoginFromParsed(parseLoginArgs(args), opts)
+}
 
+export async function runLoginFromParsed(parsed: ParsedLoginArgs, opts?: RunOpts): Promise<void> {
   if (!parsed.registry) {
     throw new Error(
       "login requires a <registry> argument, e.g. openmmcli auth login localhost:5000",
@@ -158,16 +147,30 @@ async function resolveLoginPassword(parsed: ParsedLoginArgs): Promise<string> {
   return answer
 }
 
-const LOGOUT_STR_OPTS: Record<string, string> = {}
+export interface LogoutCommandOptions {
+  configDir?: string
+}
+
+export function buildLogoutCommand(): Command {
+  const cmd = new Command("logout")
+    .description("Remove saved credentials for a registry from the config file")
+    .argument("[registry]", "Registry host[:port] (e.g. localhost:5000)")
+  return addGlobalOptions(cmd)
+}
 
 export function parseLogoutArgs(args: string[]): { registry: string | undefined } {
-  const parsed = parseCliArgs(args, { values: LOGOUT_STR_OPTS })
-  return { registry: parsed.positionals[0] }
+  const { positionals } = parseArgsWith(buildLogoutCommand(), args)
+  return { registry: positionals[0] }
 }
 
 export async function runLogoutFromArgs(args: string[], opts?: RunOpts): Promise<void> {
-  const parsed = parseLogoutArgs(args)
+  await runLogoutFromParsed(parseLogoutArgs(args), opts)
+}
 
+export async function runLogoutFromParsed(
+  parsed: { registry: string | undefined },
+  opts?: RunOpts,
+): Promise<void> {
   if (!parsed.registry) {
     throw new Error(
       "logout requires a <registry> argument, e.g. openmmcli auth logout localhost:5000",
@@ -178,4 +181,40 @@ export async function runLogoutFromArgs(args: string[], opts?: RunOpts): Promise
   if (!removed) {
     throw new Error(`Not logged in to ${normalizeRegistry(parsed.registry)}`)
   }
+}
+
+export function buildAuthCommand(): Command {
+  const auth = new Command("auth")
+    .usage("<action>")
+    .description("Manage registry credentials stored in the openmmcli config file")
+  addGlobalOptions(auth)
+  auth.allowExcessArguments(true)
+
+  auth.addCommand(
+    buildLoginCommand().action(
+      async (registry: string | undefined, opts: LoginCommandOptions, command: Command) => {
+        await runLoginFromParsed(
+          loginArgsFromOptions(registry, opts),
+          configOpts(command, opts.configDir),
+        )
+      },
+    ),
+  )
+  auth.addCommand(
+    buildLogoutCommand().action(
+      async (registry: string | undefined, opts: LogoutCommandOptions, command: Command) => {
+        await runLogoutFromParsed({ registry }, configOpts(command, opts.configDir))
+      },
+    ),
+  )
+
+  auth.action((_opts, command) => {
+    const action = command.args[0]
+    if (action === undefined) {
+      command.help()
+      return
+    }
+    throw new Error(`unknown auth action '${action}' (expected login, logout)`)
+  })
+  return auth
 }

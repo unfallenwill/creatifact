@@ -1,40 +1,42 @@
+import { Command } from "commander"
+
 import { capabilitiesOf, createProvider, listConfiguredProviderIds } from "./providers"
-import { parseCliArgs } from "./util"
+import { addGlobalOptions, parseArgsWith } from "./util"
 
-export const MODELS_USAGE = `Usage: openmmcli models [provider] [options]
+export interface ModelsCommandOptions {
+  json?: boolean
+  configDir?: string
+}
 
-List providers and their verified models.
+export function buildModelsCommand(): Command {
+  const cmd = new Command("models")
+    .description("List providers and their verified models")
+    .argument("[provider]")
+    .option("--json", "Full metadata as JSON")
+  return addGlobalOptions(cmd)
+}
 
-Without arguments, one line per available provider (built-ins plus any
-provider configured with providers.<id>.module). Providers whose credentials
-are missing or whose plugin fails to load are noted on stderr and skipped.
-
-With a provider argument, lists its models with capability tags and notes.
-
-Options:
-      --json            Full metadata as JSON
-  -h, --help            Show this help message`
-
-const VALUE_OPTS: Record<string, string> = {}
-const BOOL_FLAGS: Record<string, string> = { "--json": "json" }
+export function modelsArgsFromOptions(
+  provider: string | undefined,
+  o: ModelsCommandOptions,
+): { provider: string | undefined; json: boolean } {
+  return { provider, json: o.json === true }
+}
 
 export function parseModelsArgs(args: string[]): { provider: string | undefined; json: boolean } {
-  const parsed = parseCliArgs(args, { values: VALUE_OPTS, flags: BOOL_FLAGS })
-  return {
-    provider: parsed.positionals[0],
-    json: parsed.flags["json"] === true,
-  }
+  const { options, positionals } = parseArgsWith<ModelsCommandOptions>(buildModelsCommand(), args)
+  return modelsArgsFromOptions(positionals[0], options)
 }
 
 function truncate(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`
 }
 
-export async function runModelsFromArgs(
-  args: string[],
+export async function runModelsFromParsed(
+  parsed: { provider: string | undefined; json: boolean },
   opts: { configPath?: string } = {},
 ): Promise<void> {
-  const { provider: id, json } = parseModelsArgs(args)
+  const { provider: id, json } = parsed
 
   if (id === undefined) {
     for (const providerId of listConfiguredProviderIds(opts)) {
@@ -59,4 +61,11 @@ export async function runModelsFromArgs(
     const caps = Object.keys(m.capabilities).join(", ")
     console.log(`${m.id}  ${caps}${m.note ? `  ${truncate(m.note, 60)}` : ""}`)
   }
+}
+
+export async function runModelsFromArgs(
+  args: string[],
+  opts: { configPath?: string } = {},
+): Promise<void> {
+  await runModelsFromParsed(parseModelsArgs(args), opts)
 }

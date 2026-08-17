@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { Command } from "commander"
 import { defaultGenProvider, loadConfig } from "./config"
 import {
   buildResultPackage,
@@ -25,7 +26,15 @@ import {
   type Usage,
 } from "./providers"
 import { fetchImage } from "./pull"
-import { parseCliArgs, parseDurationMs, parseKvValue, readPasswordFromStdin } from "./util"
+import {
+  addGlobalOptions,
+  collectValue,
+  configOpts,
+  parseArgsWith,
+  parseDurationMs,
+  parseKvValue,
+  readPasswordFromStdin,
+} from "./util"
 
 /**
  * Task-oriented generation. Every task is an X2Y name; the task registry is
@@ -374,99 +383,75 @@ Options:
 
 const TASK_LIST = Object.keys(TASKS).join(", ")
 
-export const GENERATE_USAGE = `Usage: openmmcli generate <task> [provider] [prompt] [options]
-   or: openmmcli generate <ref> [prompt] [options]     Run a gen package
-
-Task-oriented generation. CLI flags, \`-f\` request files, and recipe packages
-are equivalent; when both apply, command-line flags win. Progress and notes go
-to stderr; results go to stdout.
-
-Tasks:
-  text2text      文本生成      text → text
-  image2text     图生文        image + question → text
-  video2text     视频理解      video + question → text
-  text2image     文生图        text → image
-  image2image    图生图        image + text → image (one reference image)
-  text2video     文生视频      text → video
-  image2video    图生视频      image + text → video (image = first frame)
-  frames2video   首尾帧生视频  first frame + last frame + text → video
-  embed          向量化        text → vectors
-  resume         续跑          resume polling a saved video task
-
-A <ref> (e.g. example.com/xxxxxx:v1.0) instead of a task runs a gen package
-built by \`openmmcli package build\` (see \`openmmcli generate <ref> --help\`).
-
-Media tasks write their result as an OCI package (provenance included).
-Run \`openmmcli generate <task> --help\` for task details. \`gen\` is an alias.`
-
-export const GENERATE_PACKAGE_USAGE = `Usage: openmmcli generate <ref> [prompt] [options]
-
-Run generation from a gen package built by \`openmmcli package build\` (its
-manifest has a \`gen\` field). The package carries the task, provider, model,
-and parameters; API keys are resolved locally at run time, never from the
-package. <ref> is a registry reference (e.g. example.com/xxxxxx:v1.0) or a
-local OCI layout path (e.g. ./oci-layout).
-
-Arguments:
-  <ref>                 Package reference (registry or local layout)
-  [prompt]              Overrides the package's default prompt
-
-Options: the same flags as the package's task (task-specific fields are
-validated after the package is read), plus:
-      --output <dir>    Result OCI layout directory (default ./oci-layout)
-      --tag <repo:tag>  Reference name for the result package
-                        (default gen-output:latest)
-      --no-pack         Print artifacts only; do not build a result package
-      --plain-http      Use HTTP for the registry (local registries)
-      --json            Print structured JSON to stdout
-  -h, --help            Show this help message
-
-Media references (--image / --first-frame / --last-frame / --input) accept an
-http(s)/data URL, a local path, or a pkg://path into the package's layers.`
-
 // ---------------------------------------------------------------------------
-// CLI parsing
+// CLI parsing (commander)
 
-const VALUE_FLAGS: Record<string, string> = {
-  "--prompt": "prompt",
-  "--system": "system",
-  "--image": "images",
-  "--first-frame": "firstFrame",
-  "--last-frame": "lastFrame",
-  "--input": "inputs",
-  "--opt": "options",
-  "--timeout": "timeout",
-  "--interval": "interval",
-  "--output": "output",
-  "--tag": "tag",
-  "--provider": "provider",
-  "--model": "model",
+export interface GenerateCommandOptions {
+  prompt?: string
+  system?: string
+  image?: string[]
+  firstFrame?: string
+  lastFrame?: string
+  input?: string[]
+  opt?: string[]
+  timeout?: string
+  interval?: string
+  output?: string
+  tag?: string
+  provider?: string
+  model?: string
+  /** Set to false by --no-wait. */
+  wait?: boolean
+  /** Set to false by --no-pack. */
+  pack?: boolean
+  json?: boolean
+  plainHttp?: boolean
+  configDir?: string
 }
 
-const BOOL_FLAGS: Record<string, string> = {
-  "--no-wait": "noWait",
-  "--no-pack": "noPack",
-  "--json": "json",
+export function addGenerateOptions(cmd: Command): Command {
+  return cmd
+    .option("--prompt <text>", "Alternative to the positional prompt")
+    .option("--system <text>", "System prompt (text2text only)")
+    .option(
+      "--image <media>",
+      "Reference image: URL, local path, or pkg://path (repeatable)",
+      collectValue,
+    )
+    .option("--first-frame <img>", "First frame image (frames2video only)")
+    .option("--last-frame <img>", "Last frame image (frames2video only)")
+    .option(
+      "--input <media>",
+      "Attachment (image2text/video2text) or text (embed); repeatable",
+      collectValue,
+    )
+    .option("--opt <k=v>", "Repeatable provider option (JSON-parsed when valid)", collectValue)
+    .option("--timeout <dur>", "Polling timeout (e.g. 90s, 5m); video tasks and resume only")
+    .option("--interval <dur>", "Polling interval (e.g. 1s); video tasks and resume only")
+    .option("--output <dir>", "Result OCI layout directory (default ./oci-layout)")
+    .option("--tag <repo:tag>", "Reference name for the result package (default gen-output:latest)")
+    .option("--provider <id>", "Provider id (alternative to the positional provider)")
+    .option("--model <id>", "Model id (requires --provider or a provider positional)")
+    .option("--no-wait", "Submit a video task and print the handle without polling")
+    .option("--no-pack", "Print artifacts only; do not build a result package")
+    .option("--json", "Print structured JSON to stdout")
+    .option("--plain-http", "Use HTTP for the registry (gen packages)")
 }
 
-const REPEAT_FLAGS = new Set(["--image", "--input", "--opt"])
+export function buildGenerateTaskCommand(name: string): Command {
+  const cmd = new Command(name).argument("[args...]")
+  addGenerateOptions(cmd)
+  return addGlobalOptions(cmd)
+}
 
 export interface ProviderContext {
   known: ReadonlySet<string>
   hasDefaultProvider: boolean
 }
 
-function single(value: string | string[] | undefined): string | undefined {
-  return typeof value === "string" ? value : undefined
-}
-
-function many(value: string | string[] | undefined): string[] {
-  return value === undefined ? [] : Array.isArray(value) ? value : [value]
-}
-
-function parseOptRepeats(raw: string | string[] | undefined): Record<string, unknown> {
+function parseOptRepeats(raw: string[]): Record<string, unknown> {
   const out: Record<string, unknown> = {}
-  for (const item of many(raw)) {
+  for (const item of raw) {
     const eq = item.indexOf("=")
     const key = eq === -1 ? "" : item.slice(0, eq)
     if (eq === -1 || key === "") {
@@ -601,57 +586,48 @@ function applyPositionalPayload(
   }
 }
 
-/** Copy explicitly-passed value/bool flags onto the overlay. */
+/** Copy explicitly-passed flags onto the overlay. */
 function collectFlagFields(
   task: GenTaskName,
-  parsed: ReturnType<typeof parseCliArgs>,
+  o: GenerateCommandOptions,
   overlay: RequestOverlay,
 ): void {
-  const system = single(parsed.values["system"])
-  if (system !== undefined) overlay.system = system
-  const firstFrame = single(parsed.values["firstFrame"])
-  if (firstFrame !== undefined) overlay.firstFrame = firstFrame
-  const lastFrame = single(parsed.values["lastFrame"])
-  if (lastFrame !== undefined) overlay.lastFrame = lastFrame
-  const images = many(parsed.values["images"])
+  collectScalarFlagFields(o, overlay)
+
+  const images = o.image ?? []
   if (images.length > 0) overlay.images = images
-  const inputs = many(parsed.values["inputs"])
+  const inputs = o.input ?? []
   if (task !== "embed" && inputs.length > 0) overlay.inputs = inputs
-  const options = parseOptRepeats(parsed.values["options"])
+  const options = parseOptRepeats(o.opt ?? [])
   if (Object.keys(options).length > 0) overlay.options = options
-  const timeout = single(parsed.values["timeout"])
-  if (timeout !== undefined) overlay.timeout = timeout
-  const interval = single(parsed.values["interval"])
-  if (interval !== undefined) overlay.interval = interval
-  const output = single(parsed.values["output"])
-  if (output !== undefined) overlay.output = output
-  const tag = single(parsed.values["tag"])
-  if (tag !== undefined) overlay.tag = tag
-  if (parsed.flags["noWait"] === true) overlay.noWait = true
-  if (parsed.flags["noPack"] === true) overlay.noPack = true
-  if (parsed.flags["json"] === true) overlay.json = true
+  if (o.wait === false) overlay.noWait = true
+  if (o.pack === false) overlay.noPack = true
+  if (o.json === true) overlay.json = true
 }
 
-/** Parse CLI args for a task into a merge overlay (explicit fields only). */
-export function parseGenerateArgs(
-  task: GenTaskName,
-  args: string[],
-  ctx: ProviderContext,
-  opts: ParseTaskOptions = {},
-): RequestOverlay {
-  const parsed = parseCliArgs(args, {
-    values: VALUE_FLAGS,
-    flags: BOOL_FLAGS,
-    repeats: REPEAT_FLAGS,
-  })
+function collectScalarFlagFields(o: GenerateCommandOptions, overlay: RequestOverlay): void {
+  if (o.system !== undefined) overlay.system = o.system
+  if (o.firstFrame !== undefined) overlay.firstFrame = o.firstFrame
+  if (o.lastFrame !== undefined) overlay.lastFrame = o.lastFrame
+  if (o.timeout !== undefined) overlay.timeout = o.timeout
+  if (o.interval !== undefined) overlay.interval = o.interval
+  if (o.output !== undefined) overlay.output = o.output
+  if (o.tag !== undefined) overlay.tag = o.tag
+}
 
-  const flagProvider = single(parsed.values["provider"])
-  const flagModel = single(parsed.values["model"])
-  const hasProviderFlags = flagProvider !== undefined || flagModel !== undefined
+/** Build the merge overlay for a task from explicitly-passed CLI fields only. */
+function overlayFromParsed(
+  task: GenTaskName,
+  positionals: string[],
+  o: GenerateCommandOptions,
+  ctx: ProviderContext,
+  opts: ParseTaskOptions,
+): RequestOverlay {
+  const hasProviderFlags = o.provider !== undefined || o.model !== undefined
 
   const { target, payload } = resolvePositionals(
     task,
-    parsed.positionals,
+    positionals,
     ctx,
     hasProviderFlags,
     opts.packageMode === true,
@@ -661,22 +637,29 @@ export function parseGenerateArgs(
 
   if (hasProviderFlags || target !== undefined) {
     const split = target !== undefined ? splitTargetString(target) : undefined
-    const provider = split?.provider ?? flagProvider
-    const model = split?.model ?? flagModel
+    const provider = split?.provider ?? o.provider
+    const model = split?.model ?? o.model
     if (provider !== undefined) overlay.provider = provider
     if (model !== undefined) overlay.model = model
   }
 
-  applyPositionalPayload(
-    task,
-    payload,
-    single(parsed.values["prompt"]),
-    many(parsed.values["inputs"]),
-    overlay,
-  )
-  collectFlagFields(task, parsed, overlay)
+  applyPositionalPayload(task, payload, o.prompt, o.input ?? [], overlay)
+  collectFlagFields(task, o, overlay)
 
   return overlay
+}
+
+export function parseGenerateArgs(
+  task: GenTaskName,
+  args: string[],
+  ctx: ProviderContext,
+  opts: ParseTaskOptions = {},
+): RequestOverlay {
+  const { options, positionals } = parseArgsWith<GenerateCommandOptions>(
+    buildGenerateTaskCommand(task),
+    args,
+  )
+  return overlayFromParsed(task, positionals, options, ctx, opts)
 }
 
 // ---------------------------------------------------------------------------
@@ -1394,21 +1377,6 @@ function looksLikeGenRef(arg: string): boolean {
   return first.includes(".") || first.includes(":") || first === "localhost"
 }
 
-/** Extract the fetch-time flag (--plain-http) that is not a task field. */
-function extractPlainHttp(args: string[]): { rest: string[]; plainHttp: boolean } {
-  const rest: string[] = []
-  let plainHttp = false
-  for (const arg of args) {
-    if (arg === undefined) continue
-    if (arg === "--plain-http") {
-      plainHttp = true
-      continue
-    }
-    rest.push(arg)
-  }
-  return { rest, plainHttp }
-}
-
 async function loadGenImage(
   ref: string,
   opts: { plainHttp: boolean; configPath?: string | undefined },
@@ -1487,14 +1455,11 @@ async function materializePackageMedia(
 
 async function runGeneratePackage(
   ref: string,
-  rest: string[],
+  positionals: string[],
+  options: GenerateCommandOptions,
   opts: { configPath?: string | undefined } = {},
 ): Promise<void> {
-  if (rest.includes("--help") || rest.includes("-h")) {
-    console.log(GENERATE_PACKAGE_USAGE)
-    return
-  }
-  const { rest: taskArgs, plainHttp } = extractPlainHttp(rest)
+  const plainHttp = options.plainHttp === true
 
   const image = await loadGenImage(ref, { plainHttp, configPath: opts.configPath })
   if (image.manifest.config.mediaType !== GEN_CONFIG_MEDIA_TYPE) {
@@ -1509,7 +1474,7 @@ async function runGeneratePackage(
   }
   const recipe = parseGenConfigBlob(configBlob, ref).gen
 
-  const overlay = parseGenerateArgs(recipe.task, taskArgs, providerContext(opts), {
+  const overlay = overlayFromParsed(recipe.task, positionals, options, providerContext(opts), {
     packageMode: true,
   })
   const req = mergeRequest({ ...recipe, task: recipe.task }, overlay)
@@ -1547,30 +1512,75 @@ export interface GenerateRunOptions {
   configPath?: string | undefined
 }
 
-export async function runGenerateFromArgs(
-  args: string[],
-  opts: GenerateRunOptions = {},
-): Promise<void> {
-  const head = args[0]
-  if (head === undefined || head === "--help" || head === "-h") {
-    console.log(GENERATE_USAGE)
-    return
-  }
-  if (looksLikeGenRef(head)) {
-    return runGeneratePackage(head, args.slice(1), opts)
-  }
-  const task = head as GenTaskName
-  const spec = TASKS[task]
-  if (spec === undefined) {
-    fail(`unknown generate task '${task}' (expected ${TASK_LIST}, or a gen package ref)`)
-  }
-  const rest = args.slice(1)
-  if (rest.includes("--help") || rest.includes("-h")) {
-    console.log(spec.usage)
-    return
+const TASK_DESCRIPTIONS: Record<GenTaskName, string> = {
+  text2text: "Text chat completion (text in, text out)",
+  image2text: "Ask a question about image(s)",
+  video2text: "Ask a question about video(s)",
+  text2image: "Generate an image from text",
+  image2image: "Generate an image from an image and text",
+  text2video: "Generate a video from text",
+  image2video: "Generate a video from an image and text",
+  frames2video: "Generate a video from first and last frames",
+  embed: "Embed text as vectors",
+  resume: "Resume polling a saved video task",
+}
+
+/**
+ * The `generate` command tree: one subcommand per task plus a parent handler
+ * for the `generate <ref>` package mode and unknown tasks.
+ */
+export function buildGenerateCommand(): Command {
+  const gen = new Command("generate")
+    .usage("<task>")
+    .description(
+      "Generate media by task (text2image, image2image, text2video, ...) or run a gen package ref",
+    )
+  // Options after the first operand belong to the task subcommand (or to the
+  // `generate <ref>` handler, which re-parses them); only --config-dir is
+  // consumed here.
+  gen.enablePositionalOptions()
+  addGlobalOptions(gen)
+  gen.allowExcessArguments(true)
+  // Trailing flags after a `<ref>` (or a non-task operand) land in `unknown`;
+  // allow them through so the parent handler can re-parse them.
+  gen.allowUnknownOption()
+
+  for (const task of Object.keys(TASKS) as GenTaskName[]) {
+    const cmd = gen.command(task).description(TASK_DESCRIPTIONS[task])
+    addGenerateOptions(cmd)
+    addGlobalOptions(cmd)
+    cmd.argument("[args...]")
+    cmd.addHelpText("after", `\n${TASKS[task].usage}`)
+    cmd.action(async (args: string[], options: GenerateCommandOptions, command: Command) => {
+      const opts = configOpts(command, options.configDir)
+      const overlay = overlayFromParsed(task, args, options, providerContext(opts), {})
+      await runGenerateRequest(mergeRequest({ task }, overlay), opts)
+    })
   }
 
-  const overlay = parseGenerateArgs(task, rest, providerContext(opts))
-  const req = mergeRequest({ task }, overlay)
-  await runGenerateRequest(req, opts)
+  gen.action(async (options: { configDir?: string }, command: Command) => {
+    const args = command.args
+    if (args.length === 0) {
+      command.help()
+      return
+    }
+    const head = args[0] as string
+    if (looksLikeGenRef(head)) {
+      // The trailing operands include the task flags; parse them here.
+      const { options: taskOpts, positionals } = parseArgsWith<GenerateCommandOptions>(
+        buildGenerateTaskCommand("ref"),
+        args.slice(1),
+      )
+      await runGeneratePackage(
+        head,
+        positionals,
+        taskOpts,
+        configOpts(command, taskOpts.configDir, options.configDir),
+      )
+      return
+    }
+    fail(`unknown generate task '${head}' (expected ${TASK_LIST}, or a gen package ref)`)
+  })
+
+  return gen
 }

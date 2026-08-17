@@ -1,5 +1,8 @@
 import { existsSync } from "node:fs"
 import { readdir } from "node:fs/promises"
+import { join } from "node:path"
+
+import { type Command, CommanderError } from "commander"
 
 export async function ensureOutputDirEmpty(outputDir: string): Promise<void> {
   if (existsSync(outputDir)) {
@@ -29,12 +32,6 @@ export async function resolvePassword(
   return password
 }
 
-export interface CliParseOptions {
-  values?: Record<string, string>
-  flags?: Record<string, string>
-  repeats?: ReadonlySet<string>
-}
-
 const DURATION_UNITS: Record<string, number> = {
   ms: 1,
   s: 1000,
@@ -60,64 +57,53 @@ export function parseKvValue(raw: string): unknown {
   }
 }
 
-export interface CliParseResult {
-  values: Record<string, string | string[]>
-  flags: Record<string, boolean>
-  positionals: string[]
+export function collectValue(value: string, previous: string[] = []): string[] {
+  return [...previous, value]
 }
 
-function consumeValue(
-  values: Record<string, string | string[]>,
-  key: string,
-  value: string,
-  repeatable: boolean,
-): void {
-  if (!repeatable) {
-    values[key] = value
-    return
+/**
+ * Parse raw CLI args with a commander Command. Used by the parse* helpers and
+ * by unit tests; commander's own parse errors (unknown option, missing
+ * argument, ...) are converted to plain Errors so callers format them
+ * uniformly. The command must not have an action attached.
+ */
+export function parseArgsWith<T extends object = Record<string, unknown>>(
+  cmd: Command,
+  args: string[],
+): { options: T; positionals: string[] } {
+  try {
+    cmd.exitOverride()
+    cmd.parse(args, { from: "user" })
+  } catch (e) {
+    if (e instanceof CommanderError) throw new Error(e.message)
+    throw e
   }
-  const existing = values[key]
-  values[key] = Array.isArray(existing) ? [...existing, value] : [value]
+  return { options: cmd.opts() as T, positionals: cmd.args }
 }
 
-export function parseCliArgs(args: string[], opts: CliParseOptions): CliParseResult {
-  const values: Record<string, string | string[]> = {}
-  const flags: Record<string, boolean> = {}
-  const positionals: string[] = []
-  const valueKeys = opts.values ?? {}
-  const flagKeys = opts.flags ?? {}
-  const repeats = opts.repeats ?? new Set<string>()
+export function addGlobalOptions(cmd: Command): Command {
+  return cmd.option(
+    "--config-dir <dir>",
+    "Use <dir>/config.json instead of ~/.openmmcli/config.json (takes precedence over OPENMMCLI_CONFIG_DIR)",
+  )
+}
 
-  let i = 0
-  while (i < args.length) {
-    const arg = args[i]
-    if (arg === undefined) {
-      i++
-      continue
-    }
+/**
+ * The {configPath?} bag for run functions: first non-undefined candidate dir
+ * wins, else the --config-dir captured by an ancestor command (the program).
+ */
+export function configOpts(
+  command: Command,
+  ...candidates: (string | undefined)[]
+): { configPath?: string } {
+  const dir = candidates.find((d) => d !== undefined) ?? parentConfigDir(command)
+  return dir === undefined ? {} : { configPath: join(dir, "config.json") }
+}
 
-    const valueKey = valueKeys[arg]
-    if (valueKey !== undefined) {
-      const v = args[++i]
-      if (v !== undefined) {
-        consumeValue(values, valueKey, v, repeats.has(arg))
-      }
-      i++
-      continue
-    }
-
-    const flagKey = flagKeys[arg]
-    if (flagKey !== undefined) {
-      flags[flagKey] = true
-      i++
-      continue
-    }
-
-    if (!arg.startsWith("-")) {
-      positionals.push(arg)
-    }
-    i++
+function parentConfigDir(command: Command): string | undefined {
+  for (let cmd: Command | null = command.parent; cmd !== null; cmd = cmd.parent) {
+    const dir = cmd.getOptionValue("configDir")
+    if (typeof dir === "string") return dir
   }
-
-  return { values, flags, positionals }
+  return undefined
 }

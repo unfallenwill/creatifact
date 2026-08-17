@@ -9,6 +9,7 @@ import {
 
 export { saveLayout }
 
+import { Command } from "commander"
 import {
   loadConfig,
   type OpenmmCliConfig,
@@ -16,7 +17,7 @@ import {
   resolveRegistryCredentials,
 } from "./config"
 import { getAuthHeaders, toCredentials } from "./push"
-import { ensureOutputDirEmpty, parseCliArgs, resolvePassword } from "./util"
+import { addGlobalOptions, ensureOutputDirEmpty, parseArgsWith, resolvePassword } from "./util"
 
 export interface ImageFetchOptions {
   plainHttp: boolean
@@ -129,16 +130,42 @@ export interface PullOptions {
   config?: OpenmmCliConfig
 }
 
-const PULL_STR_OPTS: Record<string, string> = {
-  "--output": "output",
-  "-o": "output",
-  "--username": "username",
-  "--password": "password",
+export interface PullCommandOptions {
+  output?: string
+  username?: string
+  password?: string
+  plainHttp?: boolean
+  passwordStdin?: boolean
+  configDir?: string
 }
 
-const PULL_BOOL_FLAGS: Record<string, string> = {
-  "--plain-http": "plainHttp",
-  "--password-stdin": "passwordStdin",
+export function buildPullCommand(): Command {
+  const cmd = new Command("pull")
+    .description("Pull an OCI image layout from a registry")
+    .argument("[ref]", "Source reference (e.g. localhost:5000/myrepo:1.0)")
+    .option("-o, --output <dir>", "Output OCI layout directory (default: ./oci-layout)")
+    .option(
+      "--username <user>",
+      "Registry username (falls back to config, see: openmmcli auth login)",
+    )
+    .option("--password <pw>", "Registry password (prefer --password-stdin)")
+    .option("--password-stdin", "Read password from stdin")
+    .option("--plain-http", "Use HTTP instead of HTTPS (or set insecure via config)")
+  return addGlobalOptions(cmd)
+}
+
+export function pullArgsFromOptions(
+  ref: string | undefined,
+  o: PullCommandOptions,
+): ParsedPullArgs {
+  return {
+    ref,
+    output: o.output,
+    username: o.username,
+    password: o.password,
+    plainHttp: o.plainHttp === true,
+    passwordStdin: o.passwordStdin === true,
+  }
 }
 
 export interface ParsedPullArgs {
@@ -151,35 +178,9 @@ export interface ParsedPullArgs {
 }
 
 export function parsePullArgs(args: string[]): ParsedPullArgs {
-  const parsed = parseCliArgs(args, { values: PULL_STR_OPTS, flags: PULL_BOOL_FLAGS })
-  return {
-    ref: parsed.positionals[0],
-    output: singleValue(parsed.values["output"]),
-    username: singleValue(parsed.values["username"]),
-    password: singleValue(parsed.values["password"]),
-    plainHttp: parsed.flags["plainHttp"] === true,
-    passwordStdin: parsed.flags["passwordStdin"] === true,
-  }
+  const { options, positionals } = parseArgsWith<PullCommandOptions>(buildPullCommand(), args)
+  return pullArgsFromOptions(positionals[0], options)
 }
-
-function singleValue(value: string | string[] | undefined): string | undefined {
-  return typeof value === "string" ? value : undefined
-}
-
-export const PULL_USAGE = `Usage: openmmcli package pull <registry>/<repo>:<tag> [options]
-
-Pull an OCI image layout from a registry.
-
-Arguments:
-  <registry>/<repo>:<tag>  Source reference (e.g. localhost:5000/myrepo:1.0)
-
-Options:
-  -o, --output <dir>     Output OCI layout directory (default: ./oci-layout)
-  --username <user>      Registry username (falls back to config, see: openmmcli auth login)
-  --password <pw>        Registry password (prefer --password-stdin)
-  --password-stdin       Read password from stdin
-  --plain-http           Use HTTP instead of HTTPS (or set insecure via config)
-  -h, --help             Show this help message`
 
 export async function runPull(options: PullOptions): Promise<void> {
   const outputDir = options.output || "./oci-layout"
@@ -208,8 +209,13 @@ export async function runPullFromArgs(
   args: string[],
   opts?: { configPath?: string },
 ): Promise<void> {
-  const parsed = parsePullArgs(args)
+  await runPullFromParsed(parsePullArgs(args), opts)
+}
 
+export async function runPullFromParsed(
+  parsed: ParsedPullArgs,
+  opts?: { configPath?: string },
+): Promise<void> {
   if (!parsed.ref) {
     throw new Error("pull requires a <registry>/<repo>:<tag> argument")
   }

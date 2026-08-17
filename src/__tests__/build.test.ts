@@ -84,9 +84,9 @@ test("parseBuildArgs parses all flags", () => {
   expect(result.plainHttp).toBe(true)
 })
 
-test("parseBuildArgs handles missing values and unknown flags", () => {
-  expect(parseBuildArgs(["--dir"]).dir).toBeUndefined()
-  expect(parseBuildArgs(["--unknown", "--dir", "x"]).dir).toBe("x")
+test("parseBuildArgs rejects missing values and unknown flags", () => {
+  expect(() => parseBuildArgs(["--dir"])).toThrow(/--dir/)
+  expect(() => parseBuildArgs(["--unknown", "--dir", "x"])).toThrow(/unknown option/)
 })
 
 test("mergeOptions requires tag from CLI only", () => {

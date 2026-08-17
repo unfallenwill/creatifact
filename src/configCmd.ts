@@ -1,3 +1,5 @@
+import { Command } from "commander"
+
 import {
   configPath,
   deleteConfig,
@@ -7,35 +9,20 @@ import {
   saveConfig,
   setConfigValue,
 } from "./config"
-import { parseCliArgs } from "./util"
-
-export const CONFIG_USAGE = `Usage: openmmcli config <action> [args]
-
-Manage the openmmcli config file (~/.openmmcli/config.json by default,
-overridable via OPENMMCLI_CONFIG_DIR).
-
-Actions:
-  path                  Print the config file path
-  list                  Print the config with secret values masked
-  get <key>             Print a value (dotted key, e.g. auths.localhost:5000.username)
-  set <key> <value>     Set a value (value parsed as JSON if valid, else string;
-                        credentials belong to \`openmmcli auth login\`, not \`config set\`)
-  reset                 Delete the config file
-  -h, --help            Show this help message`
+import { addGlobalOptions, configOpts } from "./util"
 
 export function parseConfigArgs(args: string[]): {
   action: string | undefined
   rest: string[]
 } {
-  const parsed = parseCliArgs(args, {})
-  return { action: parsed.positionals[0], rest: parsed.positionals.slice(1) }
+  return { action: args[0], rest: args.slice(1) }
 }
 
-export async function runConfigFromArgs(
-  args: string[],
+export function runConfigAction(
+  action: string,
+  rest: string[],
   opts: { configPath?: string } = {},
-): Promise<void> {
-  const { action, rest } = parseConfigArgs(args)
+): void {
   const file = opts.configPath ?? configPath()
 
   switch (action) {
@@ -80,11 +67,80 @@ export async function runConfigFromArgs(
 
     default:
       throw new Error(
-        action === undefined
+        action === ""
           ? "config requires an action: path, list, get, set, reset"
           : `unknown config action: ${action}`,
       )
   }
+}
+
+export async function runConfigFromArgs(
+  args: string[],
+  opts: { configPath?: string } = {},
+): Promise<void> {
+  const { action, rest } = parseConfigArgs(args)
+  runConfigAction(action ?? "", rest, opts)
+}
+
+export function buildConfigCommand(): Command {
+  const config = new Command("config")
+    .usage("<action>")
+    .description(
+      "Manage the openmmcli config file (~/.openmmcli/config.json by default, overridable via OPENMMCLI_CONFIG_DIR)",
+    )
+  addGlobalOptions(config)
+  config.allowExcessArguments(true)
+
+  config
+    .command("path")
+    .description("Print the config file path")
+    .action((options, command) =>
+      runConfigAction("path", [], configOpts(command, options.configDir)),
+    )
+  config
+    .command("list")
+    .description("Print the config with secret values masked")
+    .action((options, command) =>
+      runConfigAction("list", [], configOpts(command, options.configDir)),
+    )
+  config
+    .command("get")
+    .description("Print a value (dotted key, e.g. auths.localhost:5000.username)")
+    .argument("[key]")
+    .action((key: string | undefined, options, command) =>
+      runConfigAction(
+        "get",
+        key === undefined ? [] : [key],
+        configOpts(command, options.configDir),
+      ),
+    )
+  config
+    .command("set")
+    .description(
+      "Set a value (value parsed as JSON if valid, else string; credentials belong to `openmmcli auth login`, not `config set`)",
+    )
+    .argument("[key]")
+    .argument("[value]")
+    .action((key: string | undefined, value: string | undefined, options, command) => {
+      const rest = [key, value].filter((v): v is string => v !== undefined)
+      runConfigAction("set", rest, configOpts(command, options.configDir))
+    })
+  config
+    .command("reset")
+    .description("Delete the config file")
+    .action((options, command) =>
+      runConfigAction("reset", [], configOpts(command, options.configDir)),
+    )
+
+  config.action((_opts, command) => {
+    const action = command.args[0]
+    if (action === undefined) {
+      command.help()
+      return
+    }
+    throw new Error(`unknown config action: ${action}`)
+  })
+  return config
 }
 
 function expectNoArgs(rest: string[], action: string): void {

@@ -1,98 +1,155 @@
 #!/usr/bin/env node
 
 import { readFileSync } from "node:fs"
-import { join } from "node:path"
 
-import { BUILD_USAGE, runBuildFromArgs } from "./build"
-import { CONFIG_USAGE, runConfigFromArgs } from "./configCmd"
-import { FILE_USAGE, runFileFromArgs } from "./fileCmd"
-import { runGenerateFromArgs } from "./generate"
-import { LOGIN_USAGE, LOGOUT_USAGE, runLoginFromArgs, runLogoutFromArgs } from "./login"
-import { MODELS_USAGE, runModelsFromArgs } from "./models"
-import { PULL_USAGE, runPullFromArgs } from "./pull"
-import { PUSH_USAGE, runPushFromArgs } from "./push"
+import { Command } from "commander"
 
-const MAIN_USAGE = `Usage:
-  openmmcli -f <file>.json [options]     Run a command described by a JSON file
-  openmmcli <command> [args]
+import {
+  type BuildCommandOptions,
+  buildArgsFromOptions,
+  buildBuildCommand,
+  runBuildFromParsed,
+} from "./build"
+import { buildConfigCommand } from "./configCmd"
+import { runFileFromArgs } from "./fileCmd"
+import { buildGenerateCommand } from "./generate"
+import { buildAuthCommand } from "./login"
+import {
+  buildModelsCommand,
+  type ModelsCommandOptions,
+  modelsArgsFromOptions,
+  runModelsFromParsed,
+} from "./models"
+import {
+  buildPullCommand,
+  type PullCommandOptions,
+  pullArgsFromOptions,
+  runPullFromParsed,
+} from "./pull"
+import {
+  buildPushCommand,
+  type PushCommandOptions,
+  pushArgsFromOptions,
+  runPushFromParsed,
+} from "./push"
+import { addGlobalOptions, configOpts } from "./util"
 
-A lightweight CLI for building, pushing, and pulling OCI image layouts,
+const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+  version: string
+}
+
+const program = new Command()
+  .name("openmmcli")
+  .description(`A lightweight CLI for building, pushing, and pulling OCI image layouts,
 plus AI media generation via provider models.
 
-Commands:
-  generate  Generate media by task (gen is an alias)
-            (generate text2image|image2image|text2video|... | generate <ref>)
-  package   Build, push, and pull OCI image layouts (pkg is an alias)
-            (package build|push|pull)
-  auth      Save or remove registry credentials (auth login|logout)
-  config    Manage the openmmcli config file
-  models    List providers and their verified models
+  openmmcli -f <file>.json [options]     Run a command described by a JSON file
+  openmmcli <command> [args]`)
+  .version(pkg.version)
+  .enablePositionalOptions()
+  .allowExcessArguments(true)
 
-Run \`openmmcli <command> --help\` for command details.
+addGlobalOptions(program)
 
-Global options:
-  --config-dir <dir>    Use <dir>/config.json instead of ~/.openmmcli/config.json
-                        (takes precedence over OPENMMCLI_CONFIG_DIR)`
+// --- -f <file>.json: run the command described by a JSON file ---
+program
+  .command("-f <file> [args...]")
+  .usage("<file>.json [options] [-- generate flags]")
+  .description("Run a command described by a JSON file")
+  .allowExcessArguments(true)
+  .passThroughOptions(true)
+  .action(async (file: string, args: string[], _opts, command: Command) => {
+    const { rest, configDir } = extractConfigDir(args)
+    await runFileFromArgs([file, ...rest], configOpts(command, configDir))
+  })
 
-const PACKAGE_USAGE = `Usage: openmmcli package <action> [args]
+// --- package / pkg: build | push | pull ---
+function buildPackageCommand(): Command {
+  const pkg = new Command("package")
+    .usage("<action>")
+    .description("Build, push, and pull OCI image layouts")
+  addGlobalOptions(pkg)
+  pkg.allowExcessArguments(true)
 
-Build, push, and pull OCI image layouts.
+  pkg.addCommand(
+    buildBuildCommand().action(async (options: BuildCommandOptions, command: Command) => {
+      await runBuildFromParsed(
+        buildArgsFromOptions(options),
+        configOpts(command, options.configDir),
+      )
+    }),
+  )
+  pkg.addCommand(
+    buildPushCommand().action(
+      async (ref: string | undefined, options: PushCommandOptions, command: Command) => {
+        await runPushFromParsed(
+          pushArgsFromOptions(ref, options),
+          configOpts(command, options.configDir),
+        )
+      },
+    ),
+  )
+  pkg.addCommand(
+    buildPullCommand().action(
+      async (ref: string | undefined, options: PullCommandOptions, command: Command) => {
+        await runPullFromParsed(
+          pullArgsFromOptions(ref, options),
+          configOpts(command, options.configDir),
+        )
+      },
+    ),
+  )
 
-Actions:
-  build    Build an OCI image layout from a build manifest
-  push     Push an OCI image layout to a registry
-  pull     Pull an OCI image layout from a registry
+  pkg.action((_options, command) => {
+    const action = command.args[0]
+    if (action === undefined) {
+      command.help()
+      return
+    }
+    throw new Error(`unknown package action '${action}' (expected build, push, pull)`)
+  })
+  return pkg
+}
 
-Run \`openmmcli package <action> --help\` for action details.`
+program.addCommand(buildPackageCommand().alias("pkg"))
 
-const AUTH_USAGE = `Usage: openmmcli auth <action> [args]
+// --- auth: login | logout ---
+program.addCommand(buildAuthCommand())
 
-Manage registry credentials stored in the openmmcli config file.
+// --- config: path | list | get | set | reset ---
+program.addCommand(buildConfigCommand())
 
-Actions:
-  login    Save registry credentials to the config file
-  logout   Remove saved registry credentials
+// --- models ---
+program.addCommand(
+  buildModelsCommand().action(
+    async (provider: string | undefined, options: ModelsCommandOptions, command: Command) => {
+      await runModelsFromParsed(
+        modelsArgsFromOptions(provider, options),
+        configOpts(command, options.configDir),
+      )
+    },
+  ),
+)
 
-Run \`openmmcli auth <action> --help\` for action details.`
+// --- generate / gen ---
+program.addCommand(buildGenerateCommand().alias("gen"))
 
-if (process.argv.includes("--version")) {
-  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
-    version: string
+// --- bare invocation / unknown top-level command ---
+program.action((_options, command) => {
+  const unknown = command.args[0]
+  if (unknown === undefined) {
+    command.help()
+    return
   }
-  console.log(pkg.version)
-  process.exit(0)
-}
+  console.error(`unknown command: ${unknown}`)
+  command.outputHelp({ error: true })
+  process.exit(1)
+})
 
-interface GlobalRunOptions {
-  configPath?: string
-}
-
-interface SubcommandSpec {
-  name: string
-  usage: string
-  run: (args: string[], opts: GlobalRunOptions) => Promise<void>
-}
-
-const PACKAGE_ACTIONS: Record<string, { usage: string; run: SubcommandSpec["run"] }> = {
-  build: { usage: BUILD_USAGE, run: (a, o) => runBuildFromArgs(a, o) },
-  push: { usage: PUSH_USAGE, run: (a, o) => runPushFromArgs(a, o) },
-  pull: { usage: PULL_USAGE, run: (a, o) => runPullFromArgs(a, o) },
-}
-
-const AUTH_ACTIONS: Record<string, { usage: string; run: SubcommandSpec["run"] }> = {
-  login: { usage: LOGIN_USAGE, run: (a, o) => runLoginFromArgs(a, o) },
-  logout: { usage: LOGOUT_USAGE, run: (a, o) => runLogoutFromArgs(a, o) },
-}
-
-const TOP_LEVEL: Record<string, SubcommandSpec> = {
-  config: { name: "config", usage: CONFIG_USAGE, run: (a, o) => runConfigFromArgs(a, o) },
-  models: { name: "models", usage: MODELS_USAGE, run: (a, o) => runModelsFromArgs(a, o) },
-}
-
-/** Strip the global `--config-dir <dir>` flag; returns remaining args and the resolved config file path. */
-function extractGlobalOptions(args: string[]): { rest: string[]; configPath?: string } {
+/** Strip a --config-dir <dir> from -f passthrough args (they bypass commander options). */
+function extractConfigDir(args: string[]): { rest: string[]; configDir?: string } {
   const rest: string[] = []
-  let configPath: string | undefined
+  let configDir: string | undefined
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
     if (arg === undefined) continue
@@ -102,92 +159,18 @@ function extractGlobalOptions(args: string[]): { rest: string[]; configPath?: st
         throw new Error("--config-dir requires a directory")
       }
       i++
-      configPath = join(dir, "config.json")
+      configDir = dir
       continue
     }
     rest.push(arg)
   }
-  return configPath === undefined ? { rest } : { rest, configPath }
+  return configDir === undefined ? { rest } : { rest, configDir }
 }
 
-/** Run a grouped command (package/auth): dispatch on the action, honoring --help. */
-async function runGrouped(
-  group: string,
-  actions: typeof PACKAGE_ACTIONS,
-  groupUsage: string,
-  args: string[],
-  opts: GlobalRunOptions,
-): Promise<void> {
-  const action = args[0]
-  if (action === undefined || action === "--help" || action === "-h") {
-    console.log(groupUsage)
-    return
-  }
-  const spec = actions[action]
-  if (spec === undefined) {
-    throw new Error(
-      `unknown ${group} action '${action}' (expected ${Object.keys(actions).join(", ")})`,
-    )
-  }
-  const rest = args.slice(1)
-  if (rest.includes("--help") || rest.includes("-h")) {
-    console.log(spec.usage)
-    return
-  }
-  await spec.run(rest, opts)
-}
-
-const head = process.argv[2]
-
-if (head === undefined || head === "help" || head === "--help" || head === "-h") {
-  console.log(MAIN_USAGE)
-  process.exit(0)
-}
-
-try {
-  const { rest, configPath } = extractGlobalOptions(process.argv.slice(3))
-  const opts: GlobalRunOptions = configPath === undefined ? {} : { configPath }
-
-  if (head === "-f") {
-    if (rest.includes("--help") || rest.includes("-h")) {
-      console.log(FILE_USAGE)
-      process.exit(0)
-    }
-    await runFileFromArgs(rest, opts)
-    process.exit(0)
-  }
-
-  if (head === "generate" || head === "gen") {
-    await runGenerateFromArgs(rest, opts)
-    process.exit(0)
-  }
-
-  if (head === "package" || head === "pkg") {
-    await runGrouped("package", PACKAGE_ACTIONS, PACKAGE_USAGE, rest, opts)
-    process.exit(0)
-  }
-
-  if (head === "auth") {
-    await runGrouped("auth", AUTH_ACTIONS, AUTH_USAGE, rest, opts)
-    process.exit(0)
-  }
-
-  const spec = TOP_LEVEL[head]
-  if (spec === undefined) {
-    console.error(`unknown command: ${head}`)
-    console.error(MAIN_USAGE)
+program.parseAsync(process.argv).then(
+  () => process.exit(0),
+  (e: unknown) => {
+    console.error(`error: ${e instanceof Error ? e.message : String(e)}`)
     process.exit(1)
-  }
-  if (rest.includes("--help") || rest.includes("-h")) {
-    console.log(spec.usage)
-    process.exit(0)
-  }
-  await spec.run(rest, opts)
-  process.exit(0)
-} catch (e) {
-  if (e instanceof Error) {
-    console.error(`error: ${e.message}`)
-    process.exit(1)
-  }
-  throw e
-}
+  },
+)

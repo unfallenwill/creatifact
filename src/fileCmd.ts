@@ -17,36 +17,6 @@ import { listConfiguredProviderIds } from "./providers"
 import { runPullFromArgs } from "./pull"
 import { runPushFromArgs } from "./push"
 
-export const FILE_USAGE = `Usage: openmmcli -f <file>.json [options] [-- generate flags]
-
-Run the command described by a JSON file. The file must be an object with a
-"command" field selecting what to do; the remaining fields map to that
-command's arguments. Commands mirror the CLI subcommand tree:
-
-  generate.text2text / generate.image2text / generate.video2text
-  generate.text2image / generate.image2image
-  generate.text2video / generate.image2video / generate.frames2video
-  generate.embed / generate.resume
-  package.build / package.push / package.pull
-  auth.login / auth.logout
-  config.path / config.list / config.get / config.set / config.reset
-  models
-
-For generate.* commands, flags after the file override the file's fields
-(command line wins):
-
-  openmmcli -f req.json --prompt "a red crane" --opt size=2048x2048
-
-Examples:
-  {"command":"generate.image2image","provider":"zhipu","prompt":"a crane",
-   "images":["https://…/cat.png"],"options":{"size":"1024x1024"}}
-  {"command":"generate.text2video","provider":"ark","prompt":"…","noWait":true}
-  {"command":"package.build","tag":"org/app:1.0.0","file":"./openmm-build.json"}
-  {"command":"auth.login","registry":"localhost:5000","username":"u","password":"p"}
-
-Global options:
-  --config-dir <dir>    Use <dir>/config.json instead of ~/.openmmcli/config.json`
-
 type Fields = Record<string, unknown>
 
 function asString(value: unknown, field: string): string {

@@ -52,7 +52,7 @@ describe("cli — integration", () => {
   it("package --help and auth --help list actions", () => {
     const pkg = run(["package", "--help"])
     expect(pkg.code).toBe(0)
-    expect(pkg.stdout).toContain("Usage: openmmcli package <action>")
+    expect(pkg.stdout).toContain("Usage: openmmcli package|pkg <action>")
     expect(pkg.stdout).toContain("build")
 
     const auth = run(["auth", "--help"])
@@ -919,7 +919,7 @@ describe("cli generate — integration", () => {
   it("generate --help prints usage and each task has help", () => {
     const gen = run(["generate", "--help"])
     expect(gen.code).toBe(0)
-    expect(gen.stdout).toContain("Usage: openmmcli generate <task>")
+    expect(gen.stdout).toContain("Usage: openmmcli generate|gen <task>")
     expect(gen.stdout).toContain("image2image")
     expect(gen.stdout).toContain("frames2video")
 
@@ -1131,7 +1131,8 @@ describe("cli generate — integration", () => {
 
       const missing = run(["models", "--config-dir"])
       expect(missing.code).toBe(1)
-      expect(missing.stderr).toContain("--config-dir requires a directory")
+      expect(missing.stderr).toContain("--config-dir")
+      expect(missing.stderr).toContain("argument missing")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

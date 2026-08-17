@@ -8,7 +8,8 @@ import { parseRef, readOciLayout } from "./oci"
 
 export { parseRef, readOciLayout }
 
-import { parseCliArgs, resolvePassword } from "./util"
+import { Command } from "commander"
+import { addGlobalOptions, parseArgsWith, resolvePassword } from "./util"
 
 export async function checkBlobExists(
   baseUrl: string,
@@ -217,15 +218,42 @@ export interface PushOptions {
   config?: OpenmmCliConfig
 }
 
-const VALUE_OPTS: Record<string, string> = {
-  "--layout": "layout",
-  "--username": "username",
-  "--password": "password",
+export interface PushCommandOptions {
+  layout?: string
+  username?: string
+  password?: string
+  passwordStdin?: boolean
+  plainHttp?: boolean
+  configDir?: string
 }
 
-const BOOL_FLAGS: Record<string, string> = {
-  "--password-stdin": "passwordStdin",
-  "--plain-http": "plainHttp",
+export function buildPushCommand(): Command {
+  const cmd = new Command("push")
+    .description("Push an OCI image layout to a registry")
+    .argument("[ref]", "Destination reference; if omitted, uses ref from index.json")
+    .option("--layout <dir>", "OCI layout directory (default: ./oci-layout)")
+    .option(
+      "--username <user>",
+      "Registry username (falls back to config, see: openmmcli auth login)",
+    )
+    .option("--password <pw>", "Registry password (prefer --password-stdin)")
+    .option("--password-stdin", "Read password from stdin")
+    .option("--plain-http", "Use HTTP instead of HTTPS (or set insecure via config)")
+  return addGlobalOptions(cmd)
+}
+
+export function pushArgsFromOptions(
+  ref: string | undefined,
+  o: PushCommandOptions,
+): ParsedPushArgs {
+  return {
+    ref,
+    layout: o.layout,
+    username: o.username,
+    password: o.password,
+    passwordStdin: o.passwordStdin === true,
+    plainHttp: o.plainHttp === true,
+  }
 }
 
 export interface ParsedPushArgs {
@@ -238,36 +266,9 @@ export interface ParsedPushArgs {
 }
 
 export function parsePushArgs(args: string[]): ParsedPushArgs {
-  const parsed = parseCliArgs(args, { values: VALUE_OPTS, flags: BOOL_FLAGS })
-  return {
-    ref: parsed.positionals[0],
-    layout: singleValue(parsed.values["layout"]),
-    username: singleValue(parsed.values["username"]),
-    password: singleValue(parsed.values["password"]),
-    passwordStdin: parsed.flags["passwordStdin"] === true,
-    plainHttp: parsed.flags["plainHttp"] === true,
-  }
+  const { options, positionals } = parseArgsWith<PushCommandOptions>(buildPushCommand(), args)
+  return pushArgsFromOptions(positionals[0], options)
 }
-
-function singleValue(value: string | string[] | undefined): string | undefined {
-  return typeof value === "string" ? value : undefined
-}
-
-export const PUSH_USAGE = `Usage: openmmcli package push <registry>/<repo>:<tag> [options]
-
-Push an OCI image layout to a registry.
-
-Arguments:
-  <registry>/<repo>:<tag>  Destination reference (e.g. localhost:5000/myrepo:1.0)
-                           If omitted, uses ref from index.json
-
-Options:
-  --layout <dir>        OCI layout directory (default: ./oci-layout)
-  --username <user>     Registry username (falls back to config, see: openmmcli auth login)
-  --password <pw>       Registry password (prefer --password-stdin)
-  --password-stdin      Read password from stdin
-  --plain-http          Use HTTP instead of HTTPS (or set insecure via config)
-  -h, --help            Show this help message`
 
 export async function runPush(options: PushOptions): Promise<void> {
   const layoutDir = options.layout || "./oci-layout"
@@ -324,8 +325,13 @@ export async function runPushFromArgs(
   args: string[],
   opts?: { configPath?: string },
 ): Promise<void> {
-  const parsed = parsePushArgs(args)
+  await runPushFromParsed(parsePushArgs(args), opts)
+}
 
+export async function runPushFromParsed(
+  parsed: ParsedPushArgs,
+  opts?: { configPath?: string },
+): Promise<void> {
   await runPush({
     ref: parsed.ref,
     layout: parsed.layout ?? "./oci-layout",

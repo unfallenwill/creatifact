@@ -1,6 +1,9 @@
 import { existsSync } from "node:fs"
 import { mkdir, readdir, stat } from "node:fs/promises"
 import { isAbsolute, join } from "node:path"
+
+import { Command } from "commander"
+
 import { loadConfig, type OpenmmCliConfig } from "./config"
 import { GEN_CONFIG_MEDIA_TYPE, GEN_SCHEMA_VERSION, type GenSpec } from "./genPackage"
 import { createLayerFromView, createLayerTarball, mergeImageLayers, selectPaths } from "./layers"
@@ -17,26 +20,71 @@ import {
   writeOciLayout,
 } from "./oci"
 import { fetchImage, type ImageFetchOptions } from "./pull"
-import { ensureOutputDirEmpty, parseCliArgs, resolvePassword } from "./util"
+import {
+  addGlobalOptions,
+  collectValue,
+  ensureOutputDirEmpty,
+  parseArgsWith,
+  resolvePassword,
+} from "./util"
 
 export type { OCIDescriptor, OCIManifest } from "./oci"
 
-export const BUILD_USAGE = `Usage: openmmcli package build [options]
+export interface BuildCommandOptions {
+  tag?: string
+  dir?: string
+  file?: string
+  output?: string
+  annotation?: string[]
+  username?: string
+  password?: string
+  passwordStdin?: boolean
+  plainHttp?: boolean
+  configDir?: string
+}
 
-Build an OCI image layout from a build manifest (default: ./openmm-build.json).
+export function buildBuildCommand(): Command {
+  const cmd = new Command("build")
+    .description("Build an OCI image layout from a build manifest (default: ./openmm-build.json)")
+    .option("-t, --tag <repo:tag>", "Image reference, e.g. org/myapp:1.0.0 (required)")
+    .option(
+      "--dir <path>",
+      'Local directory to pack as the top layer (overrides "assets" in the manifest)',
+    )
+    .option("-f, --file <path>", "Build manifest path (default: ./openmm-build.json)")
+    .option("-o, --output <dir>", "Output OCI layout directory (default: ./oci-layout)")
+    .option(
+      "--annotation <k=v>",
+      "Add manifest annotation (repeatable, overrides manifest)",
+      collectValue,
+    )
+    .option("--username <user>", "Registry username for from/copy sources")
+    .option("--password <pw>", "Registry password (prefer --password-stdin)")
+    .option("--password-stdin", "Read password from stdin")
+    .option("--plain-http", "Use HTTP for registry sources (local registries)")
+  return addGlobalOptions(cmd)
+}
 
-Options:
-  -t, --tag <repo:tag>   Image reference, e.g. org/myapp:1.0.0 (required)
-      --dir <path>       Local directory to pack as the top layer
-                         (overrides "assets" in the manifest)
-  -f, --file <path>      Build manifest path (default: ./openmm-build.json)
-  -o, --output <dir>     Output OCI layout directory (default: ./oci-layout)
-      --annotation k=v   Add manifest annotation (repeatable, overrides manifest)
-      --username <user>  Registry username for from/copy sources
-      --password <pw>    Registry password (prefer --password-stdin)
-      --password-stdin   Read password from stdin
-      --plain-http       Use HTTP for registry sources (local registries)
-  -h, --help             Show this help message`
+export function buildArgsFromOptions(o: BuildCommandOptions): ParsedArgs {
+  const annotations: Record<string, string> = {}
+  for (const item of o.annotation ?? []) {
+    const eq = item.indexOf("=")
+    if (eq > 0) {
+      annotations[item.slice(0, eq)] = item.slice(eq + 1)
+    }
+  }
+  return {
+    ...(o.dir === undefined ? {} : { dir: o.dir }),
+    ...(o.tag === undefined ? {} : { tag: o.tag }),
+    ...(o.output === undefined ? {} : { output: o.output }),
+    ...(o.file === undefined ? {} : { file: o.file }),
+    annotations,
+    ...(o.username === undefined ? {} : { username: o.username }),
+    ...(o.password === undefined ? {} : { password: o.password }),
+    passwordStdin: o.passwordStdin === true,
+    plainHttp: o.plainHttp === true,
+  }
+}
 
 export interface BuildOptions {
   tag: string
@@ -64,64 +112,9 @@ export interface ParsedArgs {
   plainHttp: boolean
 }
 
-const VALUE_OPTS: Record<string, string> = {
-  "--dir": "dir",
-  "--tag": "tag",
-  "-t": "tag",
-  "--output": "output",
-  "-o": "output",
-  "--file": "file",
-  "-f": "file",
-  "--username": "username",
-  "--password": "password",
-  "--annotation": "annotation",
-}
-
-const BOOL_FLAGS: Record<string, string> = {
-  "--password-stdin": "passwordStdin",
-  "--plain-http": "plainHttp",
-}
-
 export function parseBuildArgs(args: string[]): ParsedArgs {
-  const parsed = parseCliArgs(args, {
-    values: VALUE_OPTS,
-    flags: BOOL_FLAGS,
-    repeats: new Set(["--annotation"]),
-  })
-
-  const annotations: Record<string, string> = {}
-  const rawAnnotations = parsed.values["annotation"]
-  const annotationList = Array.isArray(rawAnnotations) ? rawAnnotations : [rawAnnotations]
-  for (const item of annotationList) {
-    if (item === undefined) continue
-    const eq = item.indexOf("=")
-    if (eq > 0) {
-      annotations[item.slice(0, eq)] = item.slice(eq + 1)
-    }
-  }
-
-  const result: ParsedArgs = {
-    annotations,
-    passwordStdin: parsed.flags["passwordStdin"] === true,
-    plainHttp: parsed.flags["plainHttp"] === true,
-  }
-  const dir = singleValue(parsed.values["dir"])
-  if (dir !== undefined) result.dir = dir
-  const tag = singleValue(parsed.values["tag"])
-  if (tag !== undefined) result.tag = tag
-  const output = singleValue(parsed.values["output"])
-  if (output !== undefined) result.output = output
-  const file = singleValue(parsed.values["file"])
-  if (file !== undefined) result.file = file
-  const username = singleValue(parsed.values["username"])
-  if (username !== undefined) result.username = username
-  const password = singleValue(parsed.values["password"])
-  if (password !== undefined) result.password = password
-  return result
-}
-
-function singleValue(value: string | string[] | undefined): string | undefined {
-  return typeof value === "string" ? value : undefined
+  const { options } = parseArgsWith<BuildCommandOptions>(buildBuildCommand(), args)
+  return buildArgsFromOptions(options)
 }
 
 export function mergeOptions(cli: ParsedArgs, manifestFile: BuildManifestFile): BuildOptions {
@@ -281,12 +274,10 @@ export async function runBuild(options: BuildOptions): Promise<void> {
   console.log(`Built ${options.tag} → ${options.output}`)
 }
 
-export async function runBuildFromArgs(
-  args: string[],
+export async function runBuildFromParsed(
+  cliOpts: ParsedArgs,
   opts?: { configPath?: string },
 ): Promise<void> {
-  const cliOpts = parseBuildArgs(args)
-
   const manifestPath = cliOpts.file ?? "./openmm-build.json"
   const loaded = await loadBuildManifest(manifestPath)
 
@@ -304,6 +295,13 @@ export async function runBuildFromArgs(
   }))
 
   await runBuild(options)
+}
+
+export async function runBuildFromArgs(
+  args: string[],
+  opts?: { configPath?: string },
+): Promise<void> {
+  await runBuildFromParsed(parseBuildArgs(args), opts)
 }
 
 function resolveLocalDir(assetsDir: string | undefined, baseDir: string): string | undefined {
