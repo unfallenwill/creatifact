@@ -253,7 +253,7 @@ function singleValue(value: string | string[] | undefined): string | undefined {
   return typeof value === "string" ? value : undefined
 }
 
-export const PUSH_USAGE = `Usage: openmmcli push <registry>/<repo>:<tag> [options]
+export const PUSH_USAGE = `Usage: openmmcli package push <registry>/<repo>:<tag> [options]
 
 Push an OCI image layout to a registry.
 
@@ -263,7 +263,7 @@ Arguments:
 
 Options:
   --layout <dir>        OCI layout directory (default: ./oci-layout)
-  --username <user>     Registry username (falls back to config, see: openmmcli login)
+  --username <user>     Registry username (falls back to config, see: openmmcli auth login)
   --password <pw>       Registry password (prefer --password-stdin)
   --password-stdin      Read password from stdin
   --plain-http          Use HTTP instead of HTTPS (or set insecure via config)

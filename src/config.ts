@@ -142,6 +142,16 @@ export function getRegistryEntry(
   return config.auths?.[normalizeRegistry(registry)]
 }
 
+/** Default gen provider: config key `defaults.gen.provider` (e.g. "zhipu"). */
+export function defaultGenProvider(config: OpenmmCliConfig): string | undefined {
+  const defaults = config["defaults"]
+  if (typeof defaults !== "object" || defaults === null) return undefined
+  const gen = (defaults as Record<string, unknown>)["gen"]
+  if (typeof gen !== "object" || gen === null) return undefined
+  const provider = (gen as Record<string, unknown>)["provider"]
+  return typeof provider === "string" && provider !== "" ? provider : undefined
+}
+
 /**
  * Credential resolution order:
  *   1. complete CLI pair (--username AND --password/--password-stdin)

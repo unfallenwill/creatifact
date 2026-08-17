@@ -3,7 +3,7 @@ import { isCancel, password as passwordPrompt, text } from "@clack/prompts"
 import { encodeAuth, isValidRegistry, loadConfig, normalizeRegistry, saveConfig } from "./config"
 import { parseCliArgs, resolvePassword } from "./util"
 
-export const LOGIN_USAGE = `Usage: openmmcli login <registry> [options]
+export const LOGIN_USAGE = `Usage: openmmcli auth login <registry> [options]
 
 Save registry credentials to the openmmcli config file.
 
@@ -19,7 +19,7 @@ Options:
 Credentials are stored base64-encoded in "auths" inside the config file
 (same format as ~/.docker/config.json), never in shell history.`
 
-export const LOGOUT_USAGE = `Usage: openmmcli logout <registry>
+export const LOGOUT_USAGE = `Usage: openmmcli auth logout <registry>
 
 Remove saved credentials for a registry from the config file.
 
@@ -115,7 +115,9 @@ export async function runLoginFromArgs(args: string[], opts?: RunOpts): Promise<
   const parsed = parseLoginArgs(args)
 
   if (!parsed.registry) {
-    throw new Error("login requires a <registry> argument, e.g. openmmcli login localhost:5000")
+    throw new Error(
+      "login requires a <registry> argument, e.g. openmmcli auth login localhost:5000",
+    )
   }
 
   const username = parsed.username ?? (await promptUsername())
@@ -167,7 +169,9 @@ export async function runLogoutFromArgs(args: string[], opts?: RunOpts): Promise
   const parsed = parseLogoutArgs(args)
 
   if (!parsed.registry) {
-    throw new Error("logout requires a <registry> argument, e.g. openmmcli logout localhost:5000")
+    throw new Error(
+      "logout requires a <registry> argument, e.g. openmmcli auth logout localhost:5000",
+    )
   }
 
   const removed = await runLogout(parsed.registry, opts)

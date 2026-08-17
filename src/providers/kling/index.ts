@@ -18,7 +18,7 @@ import {
 import { guardFrameSupport } from "../core/validate"
 import { classifyKlingError } from "./error-map"
 import { signKlingJwt } from "./jwt"
-import { KLING_MODELS } from "./models"
+import { KLING_DEFAULT_MODELS, KLING_MODELS } from "./models"
 
 const DEFAULT_BASE_URL = "https://api-beijing.klingai.com"
 const IMAGE_POLL_TIMEOUT_MS = 300_000
@@ -320,6 +320,7 @@ export function createKlingProvider(
   return {
     id: "kling",
     models: KLING_MODELS,
+    defaultModels: KLING_DEFAULT_MODELS,
     videoGenerate,
     imageGenerate,
   }

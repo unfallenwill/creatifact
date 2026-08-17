@@ -104,3 +104,36 @@ test("loadBuildManifest propagates invalid JSON errors", async () => {
   await expect(loadBuildManifest(filePath)).rejects.toThrow()
   await rm(tmp, { recursive: true })
 })
+
+test("gen field is validated and normalized", () => {
+  const result = parse({
+    gen: {
+      lane: "image",
+      provider: "zhipu",
+      model: "cogview-3-flash",
+      prompt: "a crane",
+      options: { size: "1024x1024" },
+      input: "a.png",
+    },
+  })
+  expect(result.gen).toEqual({
+    lane: "image",
+    provider: "zhipu",
+    model: "cogview-3-flash",
+    prompt: "a crane",
+    options: { size: "1024x1024" },
+    input: ["a.png"],
+  })
+})
+
+test("gen field rejects missing lane and unknown lane", () => {
+  expect(() => parse({ gen: { provider: "zhipu" } })).toThrow("gen.lane")
+  expect(() => parse({ gen: { lane: "resume" } })).toThrow("gen.lane")
+  expect(() => parse({ gen: "nope" })).toThrow("gen ")
+})
+
+test("gen field rejects bad options and input", () => {
+  expect(() => parse({ gen: { lane: "image", options: [] } })).toThrow("gen.options")
+  expect(() => parse({ gen: { lane: "image", input: [] } })).toThrow("gen.input")
+  expect(() => parse({ gen: { lane: "image", provider: "" } })).toThrow("gen.provider")
+})

@@ -11,13 +11,14 @@ import {
   type JobStatus,
   type Provider,
   ProviderError,
+  type TextGenerateApi,
   type UnderstandApi,
   type Usage,
   type VideoGenerateApi,
 } from "../core/types"
 import { guardFrameSupport } from "../core/validate"
 import { classifyArkError } from "./error-map"
-import { ARK_MODELS } from "./models"
+import { ARK_DEFAULT_MODELS, ARK_MODELS } from "./models"
 
 const DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 /** 带内联帧(data URI 可达 50MB+)的提交与同步图像生成,30s 默认超时偏紧。 */
@@ -55,6 +56,7 @@ export interface ArkProviderConfig {
 
 /** The concrete shape createArkProvider returns — every capability is present. */
 export type ArkProvider = Provider & {
+  textGenerate: TextGenerateApi<ArkChatOptions>
   videoGenerate: VideoGenerateApi<ArkVideoOptions>
   videoUnderstand: UnderstandApi<ArkChatOptions>
   imageGenerate: ImageGenerateApi<ArkImageOptions>
@@ -274,9 +276,31 @@ export function createArkProvider(
     },
   }
 
+  /** 文本对话: POST /chat/completions(OpenAI 兼容)。 */
+  const textGenerate: TextGenerateApi<ArkChatOptions> = {
+    async create(req) {
+      const messages: Array<Record<string, unknown>> = []
+      if (req.system !== undefined) {
+        messages.push({ role: "system", content: req.system })
+      }
+      messages.push({ role: "user", content: req.prompt })
+      const resp = await client.post<ArkChatResponse>("/chat/completions", {
+        model: req.model,
+        messages,
+        ...(req.options ?? {}),
+      })
+      return {
+        text: resp.choices?.[0]?.message?.content ?? "",
+        usage: toUsage(resp.usage),
+      }
+    },
+  }
+
   return {
     id: "ark",
     models: ARK_MODELS,
+    defaultModels: ARK_DEFAULT_MODELS,
+    textGenerate,
     videoGenerate,
     videoUnderstand: understandApi("video_url"),
     imageGenerate,

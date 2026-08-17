@@ -1,4 +1,10 @@
-import type { VerifiedModel } from "../core/types"
+import type { Capability, VerifiedModel } from "../core/types"
+
+export const ZHIPU_DEFAULT_MODELS: Partial<Record<Capability, string>> = {
+  "text.generate": "glm-4-flash",
+  "image.generate": "cogview-3-flash",
+  "video.generate": "cogvideox-flash",
+}
 
 /**
  * 视频 oneOf 分支（请求体形状）与模型 ID 的映射。
@@ -27,6 +33,24 @@ export const ZHIPU_VIDEO_MODEL_MODES: Record<ZhipuModelId, ZhipuVideoMode> = {
 }
 
 export const ZHIPU_MODELS: VerifiedModel[] = [
+  {
+    id: "glm-4-flash",
+    capabilities: { "text.generate": {} },
+    lastVerified: "2026-08",
+    note: "免费档文本对话;chat/completions",
+  },
+  {
+    id: "glm-4.5-air",
+    capabilities: { "text.generate": {} },
+    lastVerified: "2026-08",
+    note: "高性价比文本对话",
+  },
+  {
+    id: "glm-4.6",
+    capabilities: { "text.generate": {} },
+    lastVerified: "2026-08",
+    note: "旗舰文本对话;以控制台开通为准",
+  },
   {
     id: "cogvideox-3",
     capabilities: {

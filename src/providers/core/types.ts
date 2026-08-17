@@ -1,4 +1,5 @@
 export type Capability =
+  | "text.generate"
   | "video.generate"
   | "video.understand"
   | "image.generate"
@@ -117,6 +118,22 @@ export interface UnderstandResult {
   usage?: Usage | undefined
 }
 
+export interface TextGenerateApi<Opts> {
+  create(req: TextGenerateRequest<Opts>, ctx?: CallContext): Promise<TextGenerateResult>
+}
+
+export interface TextGenerateRequest<Opts> {
+  model: string
+  prompt: string
+  system?: string | undefined
+  options?: Opts
+}
+
+export interface TextGenerateResult {
+  text: string
+  usage?: Usage | undefined
+}
+
 export interface EmbedApi<Opts> {
   create(req: EmbedRequest<Opts>): Promise<EmbedResult>
 }
@@ -155,6 +172,9 @@ export interface VerifiedModel {
 export interface Provider {
   readonly id: string
   readonly models: VerifiedModel[]
+  /** Default model per capability; consulted when the CLI target omits the model. */
+  defaultModels?: Partial<Record<Capability, string>>
+  textGenerate?: TextGenerateApi<unknown>
   videoGenerate?: VideoGenerateApi<unknown>
   videoUnderstand?: UnderstandApi<unknown>
   imageGenerate?: ImageGenerateApi<unknown>
@@ -163,6 +183,7 @@ export interface Provider {
 }
 
 const METHOD_CAPABILITIES: ReadonlyArray<readonly [keyof Provider, Capability]> = [
+  ["textGenerate", "text.generate"],
   ["videoGenerate", "video.generate"],
   ["videoUnderstand", "video.understand"],
   ["imageGenerate", "image.generate"],

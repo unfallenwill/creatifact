@@ -2,6 +2,7 @@ import { existsSync } from "node:fs"
 import { mkdir, readdir, stat } from "node:fs/promises"
 import { isAbsolute, join } from "node:path"
 import { loadConfig, type OpenmmCliConfig } from "./config"
+import { GEN_CONFIG_MEDIA_TYPE, GEN_SCHEMA_VERSION, type GenSpec } from "./genPackage"
 import { createLayerFromView, createLayerTarball, mergeImageLayers, selectPaths } from "./layers"
 import { type BuildManifestFile, type CopyEntry, loadBuildManifest } from "./manifest"
 import {
@@ -20,7 +21,7 @@ import { ensureOutputDirEmpty, parseCliArgs, resolvePassword } from "./util"
 
 export type { OCIDescriptor, OCIManifest } from "./oci"
 
-export const BUILD_USAGE = `Usage: openmmcli build [options]
+export const BUILD_USAGE = `Usage: openmmcli package build [options]
 
 Build an OCI image layout from a build manifest (default: ./openmm-build.json).
 
@@ -44,6 +45,7 @@ export interface BuildOptions {
   annotations: Record<string, string>
   from: string[]
   copy: CopyEntry[]
+  gen?: GenSpec
   plainHttp: boolean
   username: string | undefined
   password: string | undefined
@@ -131,7 +133,7 @@ export function mergeOptions(cli: ParsedArgs, manifestFile: BuildManifestFile): 
     throw new Error(`--tag must be in format 'repo:tag', got: ${tag}`)
   }
 
-  return {
+  const options: BuildOptions = {
     tag,
     assetsDir: cli.dir ?? manifestFile.assets,
     output: cli.output ?? "./oci-layout",
@@ -142,6 +144,8 @@ export function mergeOptions(cli: ParsedArgs, manifestFile: BuildManifestFile): 
     username: cli.username,
     password: cli.password,
   }
+  if (manifestFile.gen !== undefined) options.gen = manifestFile.gen
+  return options
 }
 
 export async function resolveImageSource(
@@ -257,7 +261,16 @@ export async function runBuild(options: BuildOptions): Promise<void> {
     layers.push(await createLayerTarball(options.assetsDir, blobsDir))
   }
 
-  const configDescriptor = await writeBlob(Buffer.from("{}"), blobsDir, EMPTY_CONFIG_MEDIA_TYPE)
+  const configDescriptor =
+    options.gen === undefined
+      ? await writeBlob(Buffer.from("{}"), blobsDir, EMPTY_CONFIG_MEDIA_TYPE)
+      : await writeBlob(
+          Buffer.from(
+            JSON.stringify({ schemaVersion: GEN_SCHEMA_VERSION, gen: options.gen }, null, 2),
+          ),
+          blobsDir,
+          GEN_CONFIG_MEDIA_TYPE,
+        )
 
   const manifest = buildManifest(configDescriptor, layers, options.annotations)
   const manifestBuffer = Buffer.from(JSON.stringify(manifest))

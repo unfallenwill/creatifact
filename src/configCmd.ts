@@ -19,7 +19,7 @@ Actions:
   list                  Print the config with secret values masked
   get <key>             Print a value (dotted key, e.g. auths.localhost:5000.username)
   set <key> <value>     Set a value (value parsed as JSON if valid, else string;
-                        credentials belong to \`openmmcli login\`, not \`config set\`)
+                        credentials belong to \`openmmcli auth login\`, not \`config set\`)
   reset                 Delete the config file
   -h, --help            Show this help message`
 

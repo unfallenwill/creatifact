@@ -200,3 +200,36 @@ test("ark rejects lastFrame for models whose metadata says lastFrame: false", as
   ).resolves.toMatchObject({ providerId: "ark" })
   mock.restore()
 })
+
+// text generation
+
+test("ark text generate posts chat/completions and returns text with usage", async () => {
+  const mock = mockFetch([
+    () =>
+      jsonResponse(200, {
+        choices: [{ message: { content: "hello back" } }],
+        usage: { total_tokens: 5 },
+      }),
+  ])
+  const ark = createArkProvider(settings)
+
+  const result = await ark.textGenerate.create({
+    model: "doubao-seed-1-6-250615",
+    prompt: "hi",
+    system: "be brief",
+  })
+
+  expect(result.text).toBe("hello back")
+  expect(result.usage).toEqual({ native: { total_tokens: 5 } })
+  const first = at(mock.recorded, 0)
+  expect(first.url).toBe("https://ark.cn-beijing.volces.com/api/v3/chat/completions")
+  expect(headersOf(first)["authorization"]).toBe("Bearer test-key")
+  expect(bodyOf(first)).toEqual({
+    model: "doubao-seed-1-6-250615",
+    messages: [
+      { role: "system", content: "be brief" },
+      { role: "user", content: "hi" },
+    ],
+  })
+  mock.restore()
+})

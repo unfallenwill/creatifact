@@ -376,9 +376,12 @@ test("classifyZhipuError maps business codes and http fallbacks", () => {
 
 // model catalog sanity
 
-test("zhipu models cover documented video and image ids", () => {
+test("zhipu models cover documented text, video and image ids", () => {
   const ids = ZHIPU_MODELS.map((m) => m.id)
   expect(ids).toEqual([
+    "glm-4-flash",
+    "glm-4.5-air",
+    "glm-4.6",
     "cogvideox-3",
     "cogvideox-2",
     "cogvideox-flash",
@@ -393,4 +396,38 @@ test("zhipu models cover documented video and image ids", () => {
     "cogview-4",
     "cogview-3-flash",
   ])
+})
+
+// text generation
+
+test("zhipu text generate posts chat/completions with system+user messages", async () => {
+  const mock = mockFetch([
+    () =>
+      jsonResponse(200, {
+        choices: [{ message: { content: "hi there" } }],
+        usage: { total_tokens: 3 },
+      }),
+  ])
+  const zhipu = createZhipuProvider(settings)
+
+  const result = await zhipu.textGenerate.create({
+    model: "glm-4-flash",
+    prompt: "hello",
+    system: "be brief",
+    options: { temperature: 0.7 },
+  })
+
+  expect(result.text).toBe("hi there")
+  const first = at(mock.recorded, 0)
+  expect(first.url).toBe("https://open.bigmodel.cn/api/paas/v4/chat/completions")
+  expect(headersOf(first)["authorization"]).toBe("Bearer test-key")
+  expect(bodyOf(first)).toEqual({
+    model: "glm-4-flash",
+    messages: [
+      { role: "system", content: "be brief" },
+      { role: "user", content: "hello" },
+    ],
+    temperature: 0.7,
+  })
+  mock.restore()
 })

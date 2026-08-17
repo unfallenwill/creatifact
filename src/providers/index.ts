@@ -44,6 +44,9 @@ export {
   type ModelSupport,
   type Provider,
   ProviderError,
+  type TextGenerateApi,
+  type TextGenerateRequest,
+  type TextGenerateResult,
   type UnderstandApi,
   type UnderstandMessage,
   type UnderstandRequest,
@@ -65,7 +68,12 @@ export type {
 export { createMiniMaxProvider } from "./minimax"
 export type { PluginError, ProviderFactory, ProviderPluginModule } from "./plugins"
 export { assertPluginProvider, loadProviderFactory } from "./plugins"
-export type { ZhipuImageOptions, ZhipuProviderConfig, ZhipuVideoOptions } from "./zhipu"
+export type {
+  ZhipuChatOptions,
+  ZhipuImageOptions,
+  ZhipuProviderConfig,
+  ZhipuVideoOptions,
+} from "./zhipu"
 export { createZhipuProvider } from "./zhipu"
 
 // Adding a new provider = one directory + one line here. Nothing in core

@@ -138,7 +138,7 @@ export function assertPluginProvider(id: string, provider: Provider): void {
   if (capabilitiesOf(provider).length === 0) {
     throw new PluginError(
       id,
-      "provider implements none of the capability APIs (videoGenerate, videoUnderstand, imageGenerate, imageUnderstand, embed)",
+      "provider implements none of the capability APIs (textGenerate, videoGenerate, videoUnderstand, imageGenerate, imageUnderstand, embed)",
     )
   }
 }

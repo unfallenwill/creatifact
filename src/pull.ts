@@ -166,7 +166,7 @@ function singleValue(value: string | string[] | undefined): string | undefined {
   return typeof value === "string" ? value : undefined
 }
 
-export const PULL_USAGE = `Usage: openmmcli pull <registry>/<repo>:<tag> [options]
+export const PULL_USAGE = `Usage: openmmcli package pull <registry>/<repo>:<tag> [options]
 
 Pull an OCI image layout from a registry.
 
@@ -175,7 +175,7 @@ Arguments:
 
 Options:
   -o, --output <dir>     Output OCI layout directory (default: ./oci-layout)
-  --username <user>      Registry username (falls back to config, see: openmmcli login)
+  --username <user>      Registry username (falls back to config, see: openmmcli auth login)
   --password <pw>        Registry password (prefer --password-stdin)
   --password-stdin       Read password from stdin
   --plain-http           Use HTTP instead of HTTPS (or set insecure via config)

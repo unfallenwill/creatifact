@@ -1,4 +1,9 @@
-import type { VerifiedModel } from "../core/types"
+import type { Capability, VerifiedModel } from "../core/types"
+
+export const KLING_DEFAULT_MODELS: Partial<Record<Capability, string>> = {
+  "image.generate": "kolors",
+  "video.generate": "kling-3.0-turbo",
+}
 
 export const KLING_MODELS: VerifiedModel[] = [
   {

@@ -15,6 +15,7 @@ import {
 import { guardFrameSupport } from "../core/validate"
 import { classifyMinimaxError } from "./error-map"
 import {
+  MINIMAX_DEFAULT_MODELS,
   MINIMAX_MODELS,
   MINIMAX_VIDEO_MODEL_MODES,
   type MiniMaxModelId,
@@ -442,6 +443,7 @@ export function createMiniMaxProvider(
   return {
     id: "minimax",
     models: MINIMAX_MODELS,
+    defaultModels: MINIMAX_DEFAULT_MODELS,
     videoGenerate,
     imageGenerate,
   }

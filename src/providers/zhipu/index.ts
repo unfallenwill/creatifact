@@ -13,12 +13,14 @@ import {
   type JobStatus,
   type Provider,
   ProviderError,
+  type TextGenerateApi,
   type VideoGenerateApi,
   type VideoGenerateRequest,
 } from "../core/types"
 import { guardFrameSupport } from "../core/validate"
 import { classifyZhipuError } from "./error-map"
 import {
+  ZHIPU_DEFAULT_MODELS,
   ZHIPU_MODELS,
   ZHIPU_VIDEO_MODEL_MODES,
   type ZhipuModelId,
@@ -51,6 +53,13 @@ export interface ZhipuVideoOptions {
   [key: string]: unknown
 }
 
+export interface ZhipuChatOptions {
+  temperature?: number
+  top_p?: number
+  max_tokens?: number
+  [key: string]: unknown
+}
+
 export interface ZhipuImageOptions {
   quality?: "hd" | "standard"
   size?: string
@@ -75,6 +84,7 @@ export interface ZhipuProviderConfig {
 
 /** The concrete shape createZhipuProvider returns. */
 export type ZhipuProvider = Provider & {
+  textGenerate: TextGenerateApi<ZhipuChatOptions>
   videoGenerate: VideoGenerateApi<ZhipuVideoOptions>
   imageGenerate: ImageGenerateApi<ZhipuImageOptions>
 }
@@ -99,6 +109,11 @@ interface ZhipuImageSyncResponse {
   created?: number
   data?: Array<{ url?: string }>
   content_filter?: Array<{ role?: string; level?: number }>
+}
+
+interface ZhipuChatResponse {
+  choices?: Array<{ message?: { content?: string } }>
+  usage?: Record<string, unknown>
 }
 
 const MODE_LABEL: Record<ZhipuVideoMode, string> = {
@@ -339,9 +354,26 @@ export function createZhipuProvider(
     },
   }
 
+  /** 文本对话: POST /chat/completions(OpenAI 兼容)。 */
+  const textGenerate: TextGenerateApi<ZhipuChatOptions> = {
+    async create(req) {
+      const messages: Array<{ role: string; content: string }> = []
+      if (req.system !== undefined) messages.push({ role: "system", content: req.system })
+      messages.push({ role: "user", content: req.prompt })
+      const resp = await client.post<ZhipuChatResponse>("/chat/completions", {
+        model: req.model,
+        messages,
+        ...(req.options ?? {}),
+      })
+      return { text: resp.choices?.[0]?.message?.content ?? "" }
+    },
+  }
+
   return {
     id: "zhipu",
     models: ZHIPU_MODELS,
+    defaultModels: ZHIPU_DEFAULT_MODELS,
+    textGenerate,
     videoGenerate,
     imageGenerate,
   }

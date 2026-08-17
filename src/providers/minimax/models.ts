@@ -1,4 +1,9 @@
-import type { VerifiedModel } from "../core/types"
+import type { Capability, VerifiedModel } from "../core/types"
+
+export const MINIMAX_DEFAULT_MODELS: Partial<Record<Capability, string>> = {
+  "image.generate": "image-01",
+  "video.generate": "MiniMax-H3",
+}
 
 export type MiniMaxVideoMode = "v2" | "t2v" | "i2v" | "fl2v" | "s2v"
 

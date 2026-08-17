@@ -128,6 +128,12 @@ test("mergeOptions defaults output and empty lists", () => {
   expect(opts.copy).toEqual([])
 })
 
+test("mergeOptions forwards gen from manifest", () => {
+  const opts = mergeOptions({ ...emptyCli(), tag: "x:1" }, { gen: { lane: "image" } })
+  expect(opts.gen).toEqual({ lane: "image" })
+  expect(mergeOptions({ ...emptyCli(), tag: "x:1" }, {}).gen).toBeUndefined()
+})
+
 test("mergeOptions forwards auth options", () => {
   const opts = mergeOptions(
     { ...emptyCli(), tag: "x:1", username: "u", password: "p", plainHttp: true },
@@ -241,6 +247,49 @@ test("runBuild produces an empty image with no sources", async () => {
   )
   expect(manifest.layers).toEqual([])
   expect(manifest.config.mediaType).toBe("application/vnd.oci.empty.v1+json")
+
+  await rm(tmp, { recursive: true })
+})
+
+test("runBuild writes a gen recipe into the config blob", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "build-test-"))
+  const outputDir = join(tmp, "out")
+
+  await runBuild({
+    tag: "org/gen:1.0.0",
+    assetsDir: undefined,
+    output: outputDir,
+    annotations: {},
+    from: [],
+    copy: [],
+    gen: {
+      lane: "image",
+      provider: "zhipu",
+      model: "cogview-3-flash",
+      options: { size: "1024x1024" },
+    },
+    plainHttp: false,
+    username: undefined,
+    password: undefined,
+  })
+
+  const index = JSON.parse(await readFile(join(outputDir, "index.json"), "utf8"))
+  const manifest = JSON.parse(
+    await readFile(join(outputDir, "blobs", "sha256", index.manifests[0].digest.slice(7)), "utf8"),
+  )
+  expect(manifest.config.mediaType).toBe("application/vnd.openmm.gen.v1+json")
+  const config = JSON.parse(
+    await readFile(join(outputDir, "blobs", "sha256", manifest.config.digest.slice(7)), "utf8"),
+  )
+  expect(config).toEqual({
+    schemaVersion: 1,
+    gen: {
+      lane: "image",
+      provider: "zhipu",
+      model: "cogview-3-flash",
+      options: { size: "1024x1024" },
+    },
+  })
 
   await rm(tmp, { recursive: true })
 })

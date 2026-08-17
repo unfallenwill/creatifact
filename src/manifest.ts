@@ -1,5 +1,8 @@
 import { readFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
+import { type GenSpec, validateGenSpec } from "./genPackage"
+
+export type { GenSpec }
 
 export interface CopyEntry {
   from: string
@@ -11,6 +14,7 @@ export interface BuildManifestFile {
   from?: string | string[]
   copy?: CopyEntry[]
   assets?: string
+  gen?: GenSpec
 }
 
 export interface LoadedManifest {
@@ -98,7 +102,7 @@ export function validateBuildManifest(raw: unknown, filePath: string): BuildMani
     fail(filePath, "top level", "must be a JSON object")
   }
 
-  const knownKeys = new Set(["annotations", "from", "copy", "assets", ...LEGACY_FIELDS])
+  const knownKeys = new Set(["annotations", "from", "copy", "assets", "gen", ...LEGACY_FIELDS])
   for (const key of Object.keys(raw)) {
     if (!knownKeys.has(key)) {
       console.warn(`${filePath}: unknown field '${key}' is ignored`)
@@ -121,6 +125,8 @@ export function validateBuildManifest(raw: unknown, filePath: string): BuildMani
   if (copy !== undefined) result.copy = copy
   const assets = validateAssets(raw["assets"], filePath)
   if (assets !== undefined) result.assets = assets
+  const gen = raw["gen"]
+  if (gen !== undefined) result.gen = validateGenSpec(gen, filePath)
   return result
 }
 
