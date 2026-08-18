@@ -225,7 +225,13 @@ async function copyLayer(
   return createLayerFromView(selected, selectedOpaque, blobsDir)
 }
 
-export async function runBuild(options: BuildOptions): Promise<void> {
+export interface BuildResult {
+  digest: string
+  outputDir: string
+  tag: string
+}
+
+export async function runBuild(options: BuildOptions): Promise<BuildResult> {
   await ensureOutputDirEmpty(options.output)
 
   const blobsDir = join(options.output, "blobs", "sha256")
@@ -269,12 +275,13 @@ export async function runBuild(options: BuildOptions): Promise<void> {
   await writeOciLayout(options.output, manifestDescriptor, options.tag)
 
   console.log(`Built ${options.tag} → ${options.output}`)
+  return { digest: manifestDescriptor.digest, outputDir: options.output, tag: options.tag }
 }
 
 export async function runBuildFromParsed(
   cliOpts: ParsedArgs,
   opts?: { configPath?: string },
-): Promise<void> {
+): Promise<BuildResult> {
   const manifestPath = cliOpts.file ?? "./openmm-build.json"
   const loaded = await loadBuildManifest(manifestPath)
 
@@ -291,14 +298,14 @@ export async function runBuildFromParsed(
     from: resolveLocalSpec(entry.from, loaded.baseDir),
   }))
 
-  await runBuild(options)
+  return runBuild(options)
 }
 
 export async function runBuildFromArgs(
   args: string[],
   opts?: { configPath?: string },
-): Promise<void> {
-  await runBuildFromParsed(parseBuildArgs(args), opts)
+): Promise<BuildResult> {
+  return runBuildFromParsed(parseBuildArgs(args), opts)
 }
 
 function resolveLocalDir(assetsDir: string | undefined, baseDir: string): string | undefined {

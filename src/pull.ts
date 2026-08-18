@@ -182,7 +182,12 @@ export function parsePullArgs(args: string[]): ParsedPullArgs {
   return pullArgsFromOptions(positionals[0], options)
 }
 
-export async function runPull(options: PullOptions): Promise<void> {
+export interface PullResult {
+  outputDir: string
+  digest: string
+}
+
+export async function runPull(options: PullOptions): Promise<PullResult> {
   const outputDir = options.output || "./oci-layout"
 
   await ensureOutputDirEmpty(outputDir)
@@ -202,24 +207,25 @@ export async function runPull(options: PullOptions): Promise<void> {
     ref: options.ref,
   })
   console.log(`Pulled ${options.ref} → ${outputDir}`)
+  return { outputDir, digest: image.manifestDescriptor.digest }
 }
 
 export async function runPullFromArgs(
   args: string[],
   opts?: { configPath?: string },
-): Promise<void> {
-  await runPullFromParsed(parsePullArgs(args), opts)
+): Promise<PullResult> {
+  return runPullFromParsed(parsePullArgs(args), opts)
 }
 
 export async function runPullFromParsed(
   parsed: ParsedPullArgs,
   opts?: { configPath?: string },
-): Promise<void> {
+): Promise<PullResult> {
   if (!parsed.ref) {
     throw new Error("pull requires a <registry>/<repo>:<tag> argument")
   }
 
-  await runPull({
+  return runPull({
     ref: parsed.ref,
     output: parsed.output ?? "./oci-layout",
     plainHttp: parsed.plainHttp,

@@ -241,7 +241,7 @@ export interface ResultPackageOptions {
  * layer, and a config blob records the effective gen spec + result metadata
  * so anyone can see exactly how the image/video was produced.
  */
-export async function buildResultPackage(opts: ResultPackageOptions): Promise<void> {
+export async function buildResultPackage(opts: ResultPackageOptions): Promise<{ digest: string }> {
   await ensureOutputDirEmpty(opts.outputDir)
 
   const blobsDir = join(opts.outputDir, "blobs", "sha256")
@@ -309,4 +309,5 @@ export async function buildResultPackage(opts: ResultPackageOptions): Promise<vo
   )
 
   await writeOciLayout(opts.outputDir, manifestDescriptor, opts.tag)
+  return { digest: manifestDescriptor.digest }
 }

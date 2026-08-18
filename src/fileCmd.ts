@@ -3,6 +3,7 @@ import { runBuildFromArgs } from "./build"
 import { defaultGenProvider, loadConfig } from "./config"
 import { runConfigFromArgs } from "./configCmd"
 import {
+  type GenerateResult,
   type GenRequest,
   type GenTaskName,
   mergeRequest,
@@ -240,7 +241,7 @@ async function runFileGenerate(
   fields: Fields,
   args: string[],
   opts: FileRunOptions,
-): Promise<void> {
+): Promise<GenerateResult> {
   const task = command.slice("generate.".length) as GenTaskName
   if (TASKS[task] === undefined) {
     throw new Error(`unknown generate task '${task}' in command '${command}'`)
@@ -260,16 +261,20 @@ export async function runFileFromArgs(args: string[], opts: FileRunOptions = {})
   const { command, fields } = readRequestFile(file)
 
   if (command.startsWith("generate.")) {
-    return runFileGenerate(command, fields, args.slice(1), opts)
+    await runFileGenerate(command, fields, args.slice(1), opts)
+    return
   }
 
   switch (command) {
     case "package.build":
-      return runBuildFromArgs(buildArgv(fields), opts)
+      await runBuildFromArgs(buildArgv(fields), opts)
+      return
     case "package.push":
-      return runPushFromArgs(registryArgv(fields, "package.push"), opts)
+      await runPushFromArgs(registryArgv(fields, "package.push"), opts)
+      return
     case "package.pull":
-      return runPullFromArgs(registryArgv(fields, "package.pull"), opts)
+      await runPullFromArgs(registryArgv(fields, "package.pull"), opts)
+      return
     case "auth.login":
       return runLoginFromArgs(registryArgv(fields, "auth.login"), opts)
     case "auth.logout":

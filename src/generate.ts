@@ -869,7 +869,7 @@ function parseHandle(raw: string): JobHandle {
 async function runResumeTask(
   req: GenRequest,
   opts: { configPath?: string | undefined },
-): Promise<void> {
+): Promise<GenerateResult> {
   let raw: string | undefined
   if (req.handle !== undefined) {
     raw = req.handle.startsWith("{") ? req.handle : readFileSync(req.handle, "utf8")
@@ -932,6 +932,10 @@ async function runResumeTask(
     )
   } else {
     printArtifacts(final.artifacts, { outputDir: req.output })
+  }
+  return {
+    artifacts: final.artifacts,
+    ...(req.output === undefined ? {} : { outputDir: req.output }),
   }
 }
 
@@ -1009,6 +1013,13 @@ function printPackagedResult(
   console.error(`Built ${packageRef} → ${packageDir}`)
 }
 
+export interface GenerateResult {
+  artifacts?: Artifact[]
+  outputDir?: string
+  tag?: string
+  digest?: string
+}
+
 /** Execute a validated request: run the task and package media results. */
 async function executeAndPackage(opts: {
   req: GenRequest
@@ -1016,7 +1027,7 @@ async function executeAndPackage(opts: {
   provider: Provider
   model: string
   fromRef?: string
-}): Promise<void> {
+}): Promise<GenerateResult> {
   const { req, runReq, provider, model } = opts
   const controller = new AbortController()
   const onSignal = () => controller.abort()
@@ -1026,16 +1037,16 @@ async function executeAndPackage(opts: {
   try {
     const ctx: ExecCtx = { req: runReq, provider, model, signal: controller.signal }
     const result = await executeTask(ctx)
-    if (result === null) return
+    if (result === null) return {}
 
     if (req.noPack === true || !TASKS[req.task].media) {
       printResult(req, provider.id, result)
-      return
+      return { artifacts: result.artifacts }
     }
 
     const outputDir = req.output ?? "./oci-layout"
     const resultTag = req.tag ?? "gen-output:latest"
-    await buildResultPackage({
+    const pkg = await buildResultPackage({
       outputDir,
       tag: resultTag,
       ...(opts.fromRef === undefined ? {} : { fromRef: opts.fromRef }),
@@ -1044,6 +1055,7 @@ async function executeAndPackage(opts: {
       usage: result.usage,
     })
     printPackagedResult(req, provider.id, result, resultTag, outputDir)
+    return { artifacts: result.artifacts, outputDir, tag: resultTag, digest: pkg.digest }
   } finally {
     process.off("SIGINT", onSignal)
     process.off("SIGTERM", onSignal)
@@ -1054,12 +1066,12 @@ async function executeAndPackage(opts: {
 export async function runGenerateRequest(
   req: GenRequest,
   opts: GenerateRunOptions = {},
-): Promise<void> {
+): Promise<GenerateResult> {
   validateRequest(req)
   if (req.task === "resume") return runResumeTask(req, opts)
   rejectPkgRefsOutsidePackageMode(req)
   const { provider, model } = await resolveProviderForTask(req, opts)
-  await executeAndPackage({ req, runReq: req, provider, model })
+  return executeAndPackage({ req, runReq: req, provider, model })
 }
 
 // ---------------------------------------------------------------------------
@@ -1123,7 +1135,7 @@ async function runGeneratePackage(
   positionals: string[],
   options: GenerateCommandOptions,
   opts: { configPath?: string | undefined } = {},
-): Promise<void> {
+): Promise<GenerateResult> {
   const plainHttp = options.plainHttp === true
 
   const image = await loadGenImage(ref, { plainHttp, configPath: opts.configPath }, fetchImage)
@@ -1151,7 +1163,7 @@ async function runGeneratePackage(
   const { req: runReq, cleanup } = await materializePackageMedia(req, image)
 
   try {
-    await executeAndPackage({ req, runReq, provider, model, fromRef: ref })
+    return await executeAndPackage({ req, runReq, provider, model, fromRef: ref })
   } finally {
     cleanup()
   }

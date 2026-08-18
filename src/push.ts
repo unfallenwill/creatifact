@@ -257,7 +257,12 @@ export function parsePushArgs(args: string[]): ParsedPushArgs {
   return pushArgsFromOptions(positionals[0], options)
 }
 
-export async function runPush(options: PushOptions): Promise<void> {
+export interface PushResult {
+  digest: string
+  tag: string
+}
+
+export async function runPush(options: PushOptions): Promise<PushResult> {
   const layoutDir = options.layout || "./oci-layout"
 
   const layout = await readOciLayout(layoutDir)
@@ -306,20 +311,21 @@ export async function runPush(options: PushOptions): Promise<void> {
     authHeaders,
   )
   console.log(`Pushed ${effectiveRef}`)
+  return { digest: layout.manifestDescriptor.digest, tag: effectiveRef }
 }
 
 export async function runPushFromArgs(
   args: string[],
   opts?: { configPath?: string },
-): Promise<void> {
-  await runPushFromParsed(parsePushArgs(args), opts)
+): Promise<PushResult> {
+  return runPushFromParsed(parsePushArgs(args), opts)
 }
 
 export async function runPushFromParsed(
   parsed: ParsedPushArgs,
   opts?: { configPath?: string },
-): Promise<void> {
-  await runPush({
+): Promise<PushResult> {
+  return runPush({
     ref: parsed.ref,
     layout: parsed.layout ?? "./oci-layout",
     plainHttp: parsed.plainHttp,
