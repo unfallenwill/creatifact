@@ -4,34 +4,15 @@ import { readFileSync } from "node:fs"
 
 import { Command } from "commander"
 
-import {
-  type BuildCommandOptions,
-  buildArgsFromOptions,
-  buildBuildCommand,
-  runBuildFromParsed,
-} from "./build"
+import { buildArgsFromOptions, buildBuildCommand, type BuildCommandOptions } from "./build"
 import { buildConfigCommand } from "./configCmd"
+import { executeCommand } from "./execute"
 import { runFileFromArgs } from "./fileCmd"
 import { buildGenerateCommand } from "./generate"
 import { buildAuthCommand } from "./login"
-import {
-  buildModelsCommand,
-  type ModelsCommandOptions,
-  modelsArgsFromOptions,
-  runModelsFromParsed,
-} from "./models"
-import {
-  buildPullCommand,
-  type PullCommandOptions,
-  pullArgsFromOptions,
-  runPullFromParsed,
-} from "./pull"
-import {
-  buildPushCommand,
-  type PushCommandOptions,
-  pushArgsFromOptions,
-  runPushFromParsed,
-} from "./push"
+import { buildModelsCommand, type ModelsCommandOptions, modelsArgsFromOptions } from "./models"
+import { buildPullCommand, type PullCommandOptions, pullArgsFromOptions } from "./pull"
+import { buildPushCommand, type PushCommandOptions, pushArgsFromOptions } from "./push"
 import { addGlobalOptions, configOpts } from "./util"
 
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
@@ -73,8 +54,8 @@ function buildPackageCommand(): Command {
 
   pkg.addCommand(
     buildBuildCommand().action(async (options: BuildCommandOptions, command: Command) => {
-      await runBuildFromParsed(
-        buildArgsFromOptions(options),
+      await executeCommand(
+        { kind: "build", req: buildArgsFromOptions(options) },
         configOpts(command, options.configDir),
       )
     }),
@@ -82,8 +63,8 @@ function buildPackageCommand(): Command {
   pkg.addCommand(
     buildPushCommand().action(
       async (ref: string | undefined, options: PushCommandOptions, command: Command) => {
-        await runPushFromParsed(
-          pushArgsFromOptions(ref, options),
+        await executeCommand(
+          { kind: "push", req: pushArgsFromOptions(ref, options) },
           configOpts(command, options.configDir),
         )
       },
@@ -92,8 +73,8 @@ function buildPackageCommand(): Command {
   pkg.addCommand(
     buildPullCommand().action(
       async (ref: string | undefined, options: PullCommandOptions, command: Command) => {
-        await runPullFromParsed(
-          pullArgsFromOptions(ref, options),
+        await executeCommand(
+          { kind: "pull", req: pullArgsFromOptions(ref, options) },
           configOpts(command, options.configDir),
         )
       },
@@ -123,8 +104,8 @@ program.addCommand(buildConfigCommand())
 program.addCommand(
   buildModelsCommand().action(
     async (provider: string | undefined, options: ModelsCommandOptions, command: Command) => {
-      await runModelsFromParsed(
-        modelsArgsFromOptions(provider, options),
+      await executeCommand(
+        { kind: "models", req: modelsArgsFromOptions(provider, options) },
         configOpts(command, options.configDir),
       )
     },

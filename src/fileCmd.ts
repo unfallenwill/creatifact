@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs"
-import { runBuildFromArgs } from "./build"
+import type { ParsedArgs as BuildRequest } from "./build"
 import { defaultGenProvider, loadConfig } from "./config"
-import { runConfigFromArgs } from "./configCmd"
 import {
   type GenerateResult,
   type GenRequest,
@@ -12,11 +11,11 @@ import {
   runGenerateRequest,
   TASKS,
 } from "./generate"
-import { runLoginFromArgs, runLogoutFromArgs } from "./login"
-import { runModelsFromArgs } from "./models"
+import { executeCommand } from "./execute"
+import type { ParsedLoginArgs } from "./login"
+import type { ParsedPullArgs } from "./pull"
+import type { ParsedPushArgs } from "./push"
 import { listConfiguredProviderIds } from "./providers"
-import { runPullFromArgs } from "./pull"
-import { runPushFromArgs } from "./push"
 
 type Fields = Record<string, unknown>
 
@@ -136,67 +135,81 @@ function generateRequest(task: GenTaskName, fields: Fields): GenRequest {
   return req
 }
 
-function buildArgv(fields: Fields): string[] {
+function buildRequest(fields: Fields): BuildRequest {
   rejectUnknown(
     fields,
     new Set(["tag", "dir", "file", "output", "annotations", "username", "password", "plainHttp"]),
     "package.build",
   )
-  const argv: string[] = []
-  const tag = asString(fields["tag"], "tag")
-  argv.push("--tag", tag)
-  const dir = asOptionalString(fields["dir"], "dir")
-  if (dir !== undefined) argv.push("--dir", dir)
-  const file = asOptionalString(fields["file"], "file")
-  if (file !== undefined) argv.push("--file", file)
-  const output = asOptionalString(fields["output"], "output")
-  if (output !== undefined) argv.push("--output", output)
-  const annotations = fields["annotations"]
-  if (annotations !== undefined) {
-    for (const [key, value] of Object.entries(asRecord(annotations, "annotations"))) {
-      argv.push("--annotation", `${key}=${String(value)}`)
+  const annotations: Record<string, string> = {}
+  const rawAnnotations = fields["annotations"]
+  if (rawAnnotations !== undefined) {
+    for (const [key, value] of Object.entries(asRecord(rawAnnotations, "annotations"))) {
+      annotations[key] = String(value)
     }
   }
+  const req: BuildRequest = {
+    tag: asString(fields["tag"], "tag"),
+    annotations,
+    passwordStdin: false,
+    plainHttp: asOptionalBool(fields["plainHttp"], "plainHttp") === true,
+  }
+  const dir = asOptionalString(fields["dir"], "dir")
+  if (dir !== undefined) req.dir = dir
+  const file = asOptionalString(fields["file"], "file")
+  if (file !== undefined) req.file = file
+  const output = asOptionalString(fields["output"], "output")
+  if (output !== undefined) req.output = output
   const username = asOptionalString(fields["username"], "username")
-  if (username !== undefined) argv.push("--username", username)
+  if (username !== undefined) req.username = username
   const password = asOptionalString(fields["password"], "password")
-  if (password !== undefined) argv.push("--password", password)
-  if (asOptionalBool(fields["plainHttp"], "plainHttp") === true) argv.push("--plain-http")
-  return argv
+  if (password !== undefined) req.password = password
+  return req
 }
 
-function registryArgv(
-  fields: Fields,
-  command: "package.push" | "package.pull" | "auth.login" | "auth.logout",
-): string[] {
-  const allowed: Record<string, ReadonlySet<string>> = {
-    "package.push": new Set(["ref", "layout", "username", "password", "plainHttp"]),
-    "package.pull": new Set(["ref", "output", "username", "password", "plainHttp"]),
-    "auth.login": new Set(["registry", "username", "password"]),
-    "auth.logout": new Set(["registry"]),
+function pushRequest(fields: Fields): ParsedPushArgs {
+  rejectUnknown(
+    fields,
+    new Set(["ref", "layout", "username", "password", "plainHttp"]),
+    "package.push",
+  )
+  const req: ParsedPushArgs = {
+    ref: asString(fields["ref"], "ref"),
+    layout: asOptionalString(fields["layout"], "layout"),
+    username: asOptionalString(fields["username"], "username"),
+    password: asOptionalString(fields["password"], "password"),
+    passwordStdin: false,
+    plainHttp: asOptionalBool(fields["plainHttp"], "plainHttp") === true,
   }
-  const fieldsAllowed = allowed[command]
-  if (fieldsAllowed === undefined) throw new Error(`unknown command '${command}'`)
-  rejectUnknown(fields, fieldsAllowed, command)
+  return req
+}
 
-  const argv: string[] = []
-  if (command === "auth.login" || command === "auth.logout") {
-    argv.push(asString(fields["registry"], "registry"))
-  } else {
-    argv.push(asString(fields["ref"], "ref"))
-    const layout = asOptionalString(fields["layout"], "layout")
-    if (layout !== undefined) argv.push("--layout", layout)
+function pullRequest(fields: Fields): ParsedPullArgs {
+  rejectUnknown(
+    fields,
+    new Set(["ref", "output", "username", "password", "plainHttp"]),
+    "package.pull",
+  )
+  const req: ParsedPullArgs = {
+    ref: asString(fields["ref"], "ref"),
+    output: asOptionalString(fields["output"], "output"),
+    username: asOptionalString(fields["username"], "username"),
+    password: asOptionalString(fields["password"], "password"),
+    passwordStdin: false,
+    plainHttp: asOptionalBool(fields["plainHttp"], "plainHttp") === true,
   }
-  if (command !== "auth.logout") {
-    const output = asOptionalString(fields["output"], "output")
-    if (output !== undefined) argv.push("--output", output)
-    const username = asOptionalString(fields["username"], "username")
-    if (username !== undefined) argv.push("--username", username)
-    const password = asOptionalString(fields["password"], "password")
-    if (password !== undefined) argv.push("--password", password)
-    if (asOptionalBool(fields["plainHttp"], "plainHttp") === true) argv.push("--plain-http")
+  return req
+}
+
+function loginRequest(fields: Fields): ParsedLoginArgs {
+  rejectUnknown(fields, new Set(["registry", "username", "password"]), "auth.login")
+  const req: ParsedLoginArgs = {
+    registry: asString(fields["registry"], "registry"),
+    username: asOptionalString(fields["username"], "username"),
+    password: asOptionalString(fields["password"], "password"),
+    passwordStdin: false,
   }
-  return argv
+  return req
 }
 
 export interface FileRunOptions {
@@ -267,27 +280,42 @@ export async function runFileFromArgs(args: string[], opts: FileRunOptions = {})
 
   switch (command) {
     case "package.build":
-      await runBuildFromArgs(buildArgv(fields), opts)
+      await executeCommand({ kind: "build", req: buildRequest(fields) }, opts)
       return
     case "package.push":
-      await runPushFromArgs(registryArgv(fields, "package.push"), opts)
+      await executeCommand({ kind: "push", req: pushRequest(fields) }, opts)
       return
     case "package.pull":
-      await runPullFromArgs(registryArgv(fields, "package.pull"), opts)
+      await executeCommand({ kind: "pull", req: pullRequest(fields) }, opts)
       return
     case "auth.login":
-      return runLoginFromArgs(registryArgv(fields, "auth.login"), opts)
-    case "auth.logout":
-      return runLogoutFromArgs(registryArgv(fields, "auth.logout"), opts)
+      await executeCommand({ kind: "login", req: loginRequest(fields) }, opts)
+      return
+    case "auth.logout": {
+      rejectUnknown(fields, new Set(["registry"]), command)
+      await executeCommand(
+        { kind: "logout", req: { registry: asString(fields["registry"], "registry") } },
+        opts,
+      )
+      return
+    }
     case "config.path":
     case "config.list":
     case "config.reset": {
       rejectUnknown(fields, new Set(), command)
-      return runConfigFromArgs([command.slice("config.".length)], opts)
+      await executeCommand(
+        { kind: "config", action: command.slice("config.".length), rest: [] },
+        opts,
+      )
+      return
     }
     case "config.get": {
       rejectUnknown(fields, new Set(["key"]), command)
-      return runConfigFromArgs(["get", asString(fields["key"], "key")], opts)
+      await executeCommand(
+        { kind: "config", action: "get", rest: [asString(fields["key"], "key")] },
+        opts,
+      )
+      return
     }
     case "config.set": {
       rejectUnknown(fields, new Set(["key", "value"]), command)
@@ -295,15 +323,25 @@ export async function runFileFromArgs(args: string[], opts: FileRunOptions = {})
       if (fields["value"] === undefined) {
         throw new Error("command 'config.set' requires field 'value'")
       }
-      return runConfigFromArgs(["set", key, JSON.stringify(fields["value"])], opts)
+      await executeCommand(
+        { kind: "config", action: "set", rest: [key, JSON.stringify(fields["value"])] },
+        opts,
+      )
+      return
     }
     case "models": {
       rejectUnknown(fields, new Set(["provider", "json"]), command)
-      const argv: string[] = []
-      const provider = asOptionalString(fields["provider"], "provider")
-      if (provider !== undefined) argv.push(provider)
-      if (asOptionalBool(fields["json"], "json") === true) argv.push("--json")
-      return runModelsFromArgs(argv, opts)
+      await executeCommand(
+        {
+          kind: "models",
+          req: {
+            provider: asOptionalString(fields["provider"], "provider"),
+            json: asOptionalBool(fields["json"], "json") === true,
+          },
+        },
+        opts,
+      )
+      return
     }
     default:
       throw new Error(
