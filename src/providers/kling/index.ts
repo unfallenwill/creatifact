@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import { readFile, stat } from "node:fs/promises"
 import { MAX_INLINE_BYTES } from "../core/fileref"
 import { createJsonClient, type JsonClient, SLOW_POST_TIMEOUT_MS } from "../core/http"
-import { JobTimeoutError, pollUntil } from "../core/job"
+import { pollToArtifacts } from "../core/job"
 import {
   type Env,
   type FileRef,
@@ -285,7 +285,8 @@ export function createKlingProvider(
       // 否则会去轮询一个不存在的任务直到 300s 超时
       unwrap(submitted)
 
-      const final = await pollUntil(
+      // 轮询端点 /v1/images/generations/{id} 可手动续查超时任务
+      return pollToArtifacts(
         async () => {
           const envelope = await client.get<KlingEnvelope<KlingImageTask>>(
             `/v1/images/generations/${externalId}`,
@@ -297,22 +298,8 @@ export function createKlingProvider(
           intervalMs: config.pollIntervalMs ?? 5000,
           timeoutMs: config.pollTimeoutMs ?? IMAGE_POLL_TIMEOUT_MS,
           signal: ctx?.signal,
+          label: "image generation",
         },
-      ).catch((e: unknown) => {
-        if (e instanceof JobTimeoutError) {
-          // raw 带上任务号:轮询端点 /v1/images/generations/{id} 可手动续查
-          throw new ProviderError("internal", `image generation timed out (task ${externalId})`, {
-            taskId: externalId,
-          })
-        }
-        throw e
-      })
-
-      if (final.state === "done") return { artifacts: final.artifacts }
-      // pollUntil only resolves on done/failed
-      throw new ProviderError(
-        final.error.category,
-        (final.error.raw as string) || "image generation failed",
       )
     },
   }

@@ -1,4 +1,4 @@
-import type { JobHandle, JobStatus } from "./types"
+import { ProviderError, type Artifact, type JobHandle, type JobStatus } from "./types"
 
 export interface PollOptions {
   intervalMs: number
@@ -44,4 +44,34 @@ export async function pollUntil(
       return status
     }
   }
+}
+
+/**
+ * Poll until done/failed and settle into an artifacts result. JobTimeoutError
+ * becomes a ProviderError whose raw carries the task id (callers can resume
+ * via the provider's poll endpoint); a failed status rethrows as a
+ * ProviderError with the provider's error category.
+ */
+export async function pollToArtifacts(
+  poll: (handle: JobHandle) => Promise<JobStatus>,
+  handle: JobHandle,
+  opts: PollOptions & { label: string },
+): Promise<{ artifacts: Artifact[] }> {
+  let final: Extract<JobStatus, { state: "done" | "failed" }>
+  try {
+    final = await pollUntil(poll, handle, opts)
+  } catch (e) {
+    if (e instanceof JobTimeoutError) {
+      throw new ProviderError("internal", `${opts.label} timed out (task ${handle.id})`, {
+        taskId: handle.id,
+      })
+    }
+    throw e
+  }
+  if (final.state === "done") return { artifacts: final.artifacts }
+  throw new ProviderError(
+    final.error.category,
+    `${opts.label} failed (task ${handle.id})`,
+    final.error.raw,
+  )
 }

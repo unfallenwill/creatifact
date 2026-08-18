@@ -1,6 +1,6 @@
 import { mimeOfUrl, toImageUrl } from "../core/fileref"
 import { createJsonClient, type JsonClient, SLOW_POST_TIMEOUT_MS } from "../core/http"
-import { JobTimeoutError, pollUntil } from "../core/job"
+import { pollToArtifacts } from "../core/job"
 import {
   type CallContext,
   type Env,
@@ -302,26 +302,13 @@ export function createZhipuProvider(
       throw new ProviderError("internal", "Zhipu did not return a task id", submitted)
     }
     const handle: JobHandle = { providerId: "zhipu", id: submitted.id }
-    const final = await pollUntil(pollAsyncResult, handle, {
+    // 智谱视频/图像异步任务共用 /async-result/{id} 查询端点,可手动续查超时任务
+    return pollToArtifacts(pollAsyncResult, handle, {
       intervalMs: config.pollIntervalMs ?? 2000,
       timeoutMs: config.pollTimeoutMs ?? 600_000,
       signal: ctx?.signal,
-    }).catch((e: unknown) => {
-      if (e instanceof JobTimeoutError) {
-        // raw 带上任务号:该任务仍可用 videoGenerate.poll(handle) 续查
-        // (智谱视频/图像异步任务共用 /async-result/{id} 查询端点)
-        throw new ProviderError("internal", `image generation timed out (task ${handle.id})`, {
-          taskId: handle.id,
-        })
-      }
-      throw e
+      label: "image generation",
     })
-    if (final.state === "done") return { artifacts: final.artifacts }
-    throw new ProviderError(
-      final.error.category,
-      `image generation failed (task ${handle.id})`,
-      final.error.raw,
-    )
   }
 
   /** 同步端点 /images/generations(glm-image / cogview-4-250304 / cogview-4 / cogview-3-flash)。 */

@@ -42,14 +42,13 @@ export interface Artifact {
 
 export interface Usage {
   native?: Record<string, unknown> | undefined
-  estimatedCostUsd?: number | undefined
 }
 
 export interface JobHandle {
   readonly providerId: string
   readonly id: string
   /** Optional discriminator for providers that expose more than one task API generation. */
-  readonly apiVersion?: "v1" | "v2"
+  readonly apiVersion?: string
 }
 
 export type JobStatus =

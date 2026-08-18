@@ -55,8 +55,7 @@
       "severity": "error",
       "from": { "pathNot": "^src/providers/" },
       "to": {
-        "path": "^src/providers/(ark|kling|minimax|zhipu|core|plugins)/",
-        "pathNot": "^src/providers/core/index[.]ts$"
+        "path": "^src/providers/(ark|kling|minimax|zhipu|core|plugins)/"
       }
     },
     {
