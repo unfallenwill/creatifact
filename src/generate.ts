@@ -7,10 +7,11 @@ import {
   buildResultPackage,
   GEN_CONFIG_MEDIA_TYPE,
   type GenSpec,
+  type LoadedImage,
+  loadGenImage,
+  packageFsView,
   parseGenConfigBlob,
 } from "./genPackage"
-import { type FsView, mergeImageLayers } from "./layers"
-import { type LoadedImage, readOciLayout } from "./oci"
 import {
   type Artifact,
   type Capability,
@@ -1377,35 +1378,6 @@ function looksLikeGenRef(arg: string): boolean {
   return first.includes(".") || first.includes(":") || first === "localhost"
 }
 
-async function loadGenImage(
-  ref: string,
-  opts: { plainHttp: boolean; configPath?: string | undefined },
-): Promise<LoadedImage> {
-  if (ref.startsWith(".") || ref.startsWith("/")) {
-    return readOciLayout(ref)
-  }
-  return fetchImage(ref, {
-    plainHttp: opts.plainHttp,
-    username: undefined,
-    password: undefined,
-    config: loadConfig(opts.configPath),
-  })
-}
-
-/** Merge every layer of a gen package into a single file view. */
-async function packageFsView(image: LoadedImage): Promise<FsView> {
-  const layerBlobs: Buffer[] = []
-  for (const layer of image.manifest.layers) {
-    const blob = image.blobs.get(layer.digest)
-    if (blob === undefined) {
-      fail(`layer blob ${layer.digest} is missing from the package`)
-    }
-    layerBlobs.push(blob)
-  }
-  if (layerBlobs.length === 0) return new Map()
-  return (await mergeImageLayers(layerBlobs)).view
-}
-
 /**
  * Materialize pkg:// media references (images / frames / inputs) into temp
  * files extracted from the package layers. Non-pkg values pass through.
@@ -1461,7 +1433,7 @@ async function runGeneratePackage(
 ): Promise<void> {
   const plainHttp = options.plainHttp === true
 
-  const image = await loadGenImage(ref, { plainHttp, configPath: opts.configPath })
+  const image = await loadGenImage(ref, { plainHttp, configPath: opts.configPath }, fetchImage)
   if (image.manifest.config.mediaType !== GEN_CONFIG_MEDIA_TYPE) {
     fail(
       `${ref}: not a gen package (config mediaType ${image.manifest.config.mediaType}); ` +

@@ -1,0 +1,79 @@
+{
+  "$schema": "./node_modules/dependency-cruiser/schema/configuration.schema.json",
+  "forbidden": [
+    {
+      "name": "no-circular",
+      "comment": "循环依赖",
+      "severity": "error",
+      "from": {},
+      "to": { "circular": true }
+    },
+    {
+      "name": "no-orphans",
+      "comment": "无入口可达的死模块(index.ts 除外)",
+      "severity": "error",
+      "from": {
+        "orphan": true,
+        "pathNot": "^(src/index[.]ts)$"
+      },
+      "to": {}
+    },
+    {
+      "name": "cli-no-deep-oci",
+      "comment": "命令层只能经由 build/push/pull 访问 OCI,不得直接依赖 oci/layers/manifest",
+      "severity": "error",
+      "from": {
+        "path": "^(src/(index|fileCmd|configCmd|login|models|generate)[.]ts)$"
+      },
+      "to": {
+        "path": "^src/(oci|layers|manifest)[.]ts$"
+      }
+    },
+    {
+      "name": "infra-no-cli",
+      "comment": "基础设施层与 OCI 层不得反向依赖命令层",
+      "severity": "error",
+      "from": {
+        "path": "^src/(util|config|oci|layers|manifest|genPackage|providers/)[^.]*[.]ts$"
+      },
+      "to": {
+        "path": "^src/(index|build|push|pull|generate|login|models|configCmd|fileCmd)[.]ts$"
+      }
+    },
+    {
+      "name": "providers-no-cli",
+      "comment": "provider 实现不得依赖命令层与生成流程层",
+      "severity": "error",
+      "from": { "path": "^src/providers/" },
+      "to": {
+        "path": "^src/(index|build|push|pull|generate|login|models|configCmd|fileCmd|genPackage)[.]ts$"
+      }
+    },
+    {
+      "name": "cli-no-provider-internals",
+      "comment": "命令层只能经由 providers/index.ts(barrel)访问 provider",
+      "severity": "error",
+      "from": { "pathNot": "^src/providers/" },
+      "to": {
+        "path": "^src/providers/(ark|kling|minimax|zhipu|core|plugins)/",
+        "pathNot": "^src/providers/core/index[.]ts$"
+      }
+    },
+    {
+      "name": "no-test-to-nothing",
+      "comment": "测试不得绕过被测入口深入内部实现",
+      "severity": "warn",
+      "from": { "path": "^src/__tests__/" },
+      "to": {
+        "path": "^src/providers/(ark|kling|minimax|zhipu)/",
+        "pathNot": "^src/providers/[^/]+/index[.]ts$"
+      }
+    }
+  ],
+  "options": {
+    "doNotFollow": { "path": "node_modules" },
+    "tsConfig": { "fileName": "tsconfig.json" },
+    "enhancedResolveOptions": { "exportsFields": ["exports"], "conditionNames": ["import", "node"] },
+    "reporterOptions": { "text": { "highlightFocused": true } }
+  }
+}

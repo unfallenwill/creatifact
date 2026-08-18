@@ -4,6 +4,7 @@ import {
   configPath,
   deleteConfig,
   getConfigValue,
+  isSecretKey,
   loadConfig,
   maskForPrint,
   saveConfig,
@@ -41,6 +42,10 @@ export function runConfigAction(
       const { found, value } = getConfigValue(loadConfig(file), key)
       if (!found) {
         throw new Error(`config key not found: ${key}`)
+      }
+      if (isSecretKey(key)) {
+        console.log("***")
+        return
       }
       console.log(typeof value === "string" ? value : JSON.stringify(value))
       return

@@ -1,17 +1,23 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { loadConfig } from "./config"
 import type { GenTaskName } from "./generate"
-import { createLayerTarball } from "./layers"
+import { createLayerTarball, type FsView, mergeImageLayers } from "./layers"
 import {
+  type LoadedImage,
   MANIFEST_MEDIA_TYPE,
   type OCIDescriptor,
   type OCIManifest,
+  readOciLayout,
   writeBlob,
   writeOciLayout,
 } from "./oci"
 import type { Artifact, Usage } from "./providers"
+import type { ImageFetchOptions } from "./pull"
 import { ensureOutputDirEmpty } from "./util"
+
+export type { LoadedImage }
 
 /** Media type of the OCI config blob that carries a gen recipe (or a result's provenance). */
 export const GEN_CONFIG_MEDIA_TYPE = "application/vnd.openmm.gen.v1+json"
@@ -183,6 +189,37 @@ export function parseGenConfigBlob(data: Buffer, source: string): GenConfigBlob 
     )
   }
   return { schemaVersion: GEN_SCHEMA_VERSION, gen: validateGenSpec(parsed["gen"], source) }
+}
+
+/** Load a gen package image: a local layout path is read directly, a ref is fetched. */
+export async function loadGenImage(
+  ref: string,
+  opts: { plainHttp: boolean; configPath?: string | undefined },
+  fetchImage: (ref: string, opts: ImageFetchOptions) => Promise<LoadedImage>,
+): Promise<LoadedImage> {
+  if (ref.startsWith(".") || ref.startsWith("/")) {
+    return readOciLayout(ref)
+  }
+  return fetchImage(ref, {
+    plainHttp: opts.plainHttp,
+    username: undefined,
+    password: undefined,
+    config: loadConfig(opts.configPath),
+  })
+}
+
+/** Merge every layer of a gen package into a single file view. */
+export async function packageFsView(image: LoadedImage): Promise<FsView> {
+  const layerBlobs: Buffer[] = []
+  for (const layer of image.manifest.layers) {
+    const blob = image.blobs.get(layer.digest)
+    if (blob === undefined) {
+      throw new Error(`layer blob ${layer.digest} is missing from the package`)
+    }
+    layerBlobs.push(blob)
+  }
+  if (layerBlobs.length === 0) return new Map()
+  return (await mergeImageLayers(layerBlobs)).view
 }
 
 const MIME_EXT: Record<string, string> = {

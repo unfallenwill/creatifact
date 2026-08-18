@@ -234,6 +234,12 @@ const SECRET_KEYS = new Set([
   "accesskey",
 ])
 
+/** True when a dotted config key (e.g. auths.localhost:5000.auth) targets a secret value. */
+export function isSecretKey(dottedKey: string): boolean {
+  const last = dottedKey.split(".").pop() ?? ""
+  return SECRET_KEYS.has(last.toLowerCase())
+}
+
 /** Recursively mask secret-looking values so `config list` output is safe to share. */
 export function maskForPrint(value: unknown): unknown {
   if (Array.isArray(value)) {

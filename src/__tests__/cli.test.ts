@@ -349,6 +349,10 @@ describe("cli config/auth — integration", () => {
       expect(get.code).toBe(0)
       expect(get.stdout.trim()).toBe("testuser")
 
+      const getSecret = run(["config", "get", "auths.localhost:5000.auth"], undefined, env)
+      expect(getSecret.code).toBe(0)
+      expect(getSecret.stdout.trim()).toBe("***")
+
       const list = run(["config", "list"], undefined, env)
       expect(list.code).toBe(0)
       expect(list.stdout).toContain("***")
