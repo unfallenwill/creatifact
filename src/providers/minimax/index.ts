@@ -1,4 +1,4 @@
-import { mimeOfUrl, toUrlRef } from "../core/fileref"
+import { mimeOfUrl, toImageUrl } from "../core/fileref"
 import { createJsonClient, type JsonClient, SLOW_POST_TIMEOUT_MS } from "../core/http"
 import {
   type Env,
@@ -124,7 +124,7 @@ function checkBaseResp(body: { base_resp?: MiniMaxBaseResp }): void {
 
 /** V1 image fields accept a URL or data URI; bare base64 gets an image/png hint. */
 async function toV1ImageUrl(ref: FileRef): Promise<string> {
-  return (await toUrlRef(ref, "base64" in ref ? "image/png" : undefined)).url
+  return toImageUrl(ref)
 }
 
 export function createMiniMaxProvider(
@@ -358,8 +358,8 @@ export function createMiniMaxProvider(
     const { resolution, duration, ratio, ...rest } = req.options
     const content = await buildV2Content(
       req.prompt,
-      req.firstFrame ? (await toUrlRef(req.firstFrame, "image/png")).url : undefined,
-      req.lastFrame ? (await toUrlRef(req.lastFrame, "image/png")).url : undefined,
+      req.firstFrame ? await toImageUrl(req.firstFrame) : undefined,
+      req.lastFrame ? await toImageUrl(req.lastFrame) : undefined,
     )
     const body = await client.post<MiniMaxV2TaskResponse>(
       "/v2/video_generation",
@@ -415,9 +415,7 @@ export function createMiniMaxProvider(
                 subject_reference: [
                   {
                     type: "character",
-                    image_file: (
-                      await toUrlRef(req.image, "base64" in req.image ? "image/png" : undefined)
-                    ).url,
+                    image_file: await toImageUrl(req.image),
                   },
                 ],
               }

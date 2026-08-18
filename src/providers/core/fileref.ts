@@ -45,6 +45,12 @@ function guardSize(bytes: number, source: string): void {
   }
 }
 
+/** Sniff the mime of an existing data URI ("data:image/jpeg;base64,…" → image/jpeg). */
+export function mimeOfDataUrl(url: string): string | undefined {
+  const m = /^data:([^;,]+)/.exec(url)
+  return m?.[1]
+}
+
 /**
  * Normalize any FileRef into a URL the providers accept (plain URL or data
  * URI). `mimeHint` overrides the inferred mime type (default: guessed from
@@ -62,4 +68,13 @@ export async function toUrlRef(ref: FileRef, mimeHint?: string): Promise<{ url: 
   const data = await readFile(ref.localPath)
   const mime = mimeHint ?? mimeFromPath(ref.localPath)
   return { url: `data:${mime};base64,${data.toString("base64")}` }
+}
+
+/**
+ * Normalize an image FileRef to a URL: bare base64 defaults to image/png
+ * (provider convention), local files keep their extension-derived mime.
+ */
+export async function toImageUrl(ref: FileRef): Promise<string> {
+  const hint = isBase64Ref(ref) ? "image/png" : undefined
+  return (await toUrlRef(ref, hint)).url
 }

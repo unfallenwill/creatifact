@@ -1,4 +1,4 @@
-import { toUrlRef } from "../core/fileref"
+import { toImageUrl } from "../core/fileref"
 import { createJsonClient, type JsonClient, SLOW_POST_TIMEOUT_MS } from "../core/http"
 import {
   type EmbedApi,
@@ -121,14 +121,14 @@ export function createArkProvider(
     if (firstFrame) {
       content.push({
         type: "image_url",
-        image_url: { url: (await toUrlRef(firstFrame, "image/png")).url },
+        image_url: { url: await toImageUrl(firstFrame) },
         role: "first_frame",
       })
     }
     if (lastFrame) {
       content.push({
         type: "image_url",
-        image_url: { url: (await toUrlRef(lastFrame, "image/png")).url },
+        image_url: { url: await toImageUrl(lastFrame) },
         role: "last_frame",
       })
     }
@@ -196,7 +196,7 @@ export function createArkProvider(
         prompt: req.prompt,
         response_format: req.options?.responseFormat ?? "url",
       }
-      if (req.image) body["image"] = (await toUrlRef(req.image, "image/png")).url
+      if (req.image) body["image"] = await toImageUrl(req.image)
       if (req.options) {
         const { size, watermark, responseFormat, ...rest } = req.options
         if (size) body["size"] = size
@@ -234,7 +234,7 @@ export function createArkProvider(
                     ? { type: "text", text: part }
                     : {
                         type: fileKind,
-                        [fileKind]: { url: (await toUrlRef(part.file, "image/png")).url },
+                        [fileKind]: { url: await toImageUrl(part.file) },
                       },
                 ),
               ),

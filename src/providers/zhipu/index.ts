@@ -1,4 +1,4 @@
-import { mimeOfUrl, toUrlRef } from "../core/fileref"
+import { mimeOfUrl, toImageUrl } from "../core/fileref"
 import { createJsonClient, type JsonClient, SLOW_POST_TIMEOUT_MS } from "../core/http"
 import { JobTimeoutError, pollUntil } from "../core/job"
 import {
@@ -125,9 +125,9 @@ const MODE_LABEL: Record<ZhipuVideoMode, string> = {
   "vidu-reference": "Vidu reference-to-video",
 }
 
-/** FileRef → 智谱 image_url(URL 原样,本地图/base64 转 data URI,兜底 image/png)。 */
+/** FileRef → 智谱 image_url(URL 原样,本地图按扩展名,base64 兜底 image/png)。 */
 async function toZhipuImageUrl(ref: FileRef): Promise<string> {
-  return (await toUrlRef(ref, "base64" in ref ? "image/png" : undefined)).url
+  return toImageUrl(ref)
 }
 
 /** 智谱产物 URL 无 content-type;按扩展名推断,未知兜底 image/png。 */
@@ -365,7 +365,10 @@ export function createZhipuProvider(
         messages,
         ...(req.options ?? {}),
       })
-      return { text: resp.choices?.[0]?.message?.content ?? "" }
+      return {
+        text: resp.choices?.[0]?.message?.content ?? "",
+        ...(resp.usage === undefined ? {} : { usage: { native: resp.usage } }),
+      }
     },
   }
 
