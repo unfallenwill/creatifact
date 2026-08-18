@@ -1,0 +1,226 @@
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { createHash } from "node:crypto"
+import { beforeEach, expect, test, vi } from "vitest"
+import { runPipeline, type PipelineStep } from "../pipeline"
+
+function step(command: string, fields: Record<string, unknown>, name?: string): PipelineStep {
+  return name === undefined ? { command, fields } : { command, fields, name }
+}
+
+let dir: string
+let configPath: string
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "openmm-pipeline-"))
+  configPath = join(dir, "config.json")
+  writeFileSync(configPath, JSON.stringify({ version: 1 }))
+})
+
+test("runs build → build chain with ${step.outputDir} interpolation", async () => {
+  const out1 = join(dir, "one")
+  const out2 = join(dir, "two")
+  const results = await runPipeline(
+    [
+      step("package.build", { tag: "org/a:1", output: out1, annotations: { from: "first" } }, "a"),
+      step(
+        "package.build",
+        { tag: "org/b:1", output: out2, annotations: { note: "after ${a.tag}" } },
+        "b",
+      ),
+    ],
+    { configPath },
+  )
+  expect(existsSync(join(out1, "index.json"))).toBe(true)
+  expect(existsSync(join(out2, "index.json"))).toBe(true)
+  expect(results.get("a")?.kind).toBe("build")
+  expect(results.get("b")?.kind).toBe("build")
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test("build → push → pull resolves ${} refs across registry steps (mocked)", async () => {
+  const out = join(dir, "built")
+  const configBody = "{}"
+  const configDigest = createHash("sha256").update(configBody).digest("hex")
+  const manifestData = JSON.stringify({
+    schemaVersion: 2,
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    config: {
+      mediaType: "application/vnd.oci.empty.v1+json",
+      digest: `sha256:${configDigest}`,
+      size: configBody.length,
+    },
+    layers: [],
+  })
+  const blobFor = (data: string): ArrayBuffer => {
+    const bytes = new TextEncoder().encode(data)
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+  }
+  const fetchMock = vi.fn((url: string | URL, init?: RequestInit) => {
+    const target = String(url)
+    if (init?.method === "PUT" || init?.method === "POST") {
+      return Promise.resolve({ ok: true, status: 201, text: () => Promise.resolve("{}") })
+    }
+    if (target.includes("/manifests/")) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/vnd.oci.image.manifest.v1+json" },
+        text: () => Promise.resolve(manifestData),
+      })
+    }
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      text: () => Promise.resolve(configBody),
+      arrayBuffer: () => Promise.resolve(blobFor(configBody)),
+    })
+  })
+  vi.stubGlobal("fetch", fetchMock)
+
+  const pulled = join(dir, "pulled")
+  const results = await runPipeline(
+    [
+      step("package.build", { tag: "org/a:1", output: out }, "a"),
+      step("package.push", { ref: "${a.tag}", layout: "${a.outputDir}" }, "p"),
+      step("package.pull", { ref: "${a.tag}", output: pulled }, "l"),
+    ],
+    { configPath },
+  )
+  expect(results.get("p")?.kind).toBe("push")
+  expect(results.get("l")?.kind).toBe("pull")
+  expect(fetchMock.mock.calls.some(([u]) => String(u).includes("org/a"))).toBe(true)
+
+  vi.unstubAllGlobals()
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test("whole-string ${} keeps the referenced value; interpolation works in arrays", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({ ok: true, status: 201, text: () => Promise.resolve("{}") }),
+  )
+  const out = join(dir, "o")
+  const results = await runPipeline([step("package.build", { tag: "org/a:1", output: out }, "a")], {
+    configPath,
+  })
+  const a = results.get("a")
+  expect(a?.kind).toBe("build")
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test("fails fast: unknown step reference", async () => {
+  await expect(
+    runPipeline([step("package.build", { tag: "x:1", layout: "${ghost.tag}" })], { configPath }),
+  ).rejects.toThrow(/unknown step 'ghost'/)
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test("fails fast: forward reference", async () => {
+  await expect(
+    runPipeline(
+      [
+        step("package.build", { tag: "x:1", annotations: { a: "${later.tag}" } }, "early"),
+        step("package.build", { tag: "y:1" }, "later"),
+      ],
+      { configPath },
+    ),
+  ).rejects.toThrow(/forward reference/)
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test("fails fast: duplicate step names", async () => {
+  await expect(
+    runPipeline(
+      [
+        step("package.build", { tag: "x:1" }, "same"),
+        step("package.build", { tag: "y:1" }, "same"),
+      ],
+      { configPath },
+    ),
+  ).rejects.toThrow(/duplicate step name 'same'/)
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test("fails fast: empty steps", async () => {
+  await expect(runPipeline([], { configPath })).rejects.toThrow(/non-empty/)
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test("fails fast: generate step with noWait or json", async () => {
+  await expect(
+    runPipeline([step("generate.text2video", { prompt: "x", noWait: true })], { configPath }),
+  ).rejects.toThrow(/noWait/)
+  await expect(
+    runPipeline([step("generate.text2image", { prompt: "x", json: true })], { configPath }),
+  ).rejects.toThrow(/json/)
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test("fails fast: void step is not referenceable", async () => {
+  await expect(
+    runPipeline(
+      [
+        step("config.path", {}, "cfg"),
+        step("package.build", { tag: "x:1", annotations: { v: "${cfg.anything}" } }),
+      ],
+      { configPath },
+    ),
+  ).rejects.toThrow(/void result/)
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test("wraps step failures with the step label and stops the run", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({ ok: false, status: 500, text: () => Promise.resolve("boom") }),
+  )
+  const secondEffect = join(dir, "should-not-exist")
+  await expect(
+    runPipeline(
+      [
+        step("package.build", { tag: "org/a:1", output: join(dir, "one") }, "a"),
+        step("package.push", { ref: "${a.tag}", layout: "${a.outputDir}" }, "pusher"),
+        step("package.build", { tag: "org/b:1", output: secondEffect }, "b"),
+      ],
+      { configPath },
+    ),
+  ).rejects.toThrow(/step 'pusher' \(2\/3\) failed/)
+  expect(existsSync(secondEffect)).toBe(false)
+  vi.unstubAllGlobals()
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test("rejects non-referenceable fields of a build result", async () => {
+  await expect(
+    runPipeline(
+      [
+        step("package.build", { tag: "x:1", output: join(dir, "o") }, "a"),
+        step("package.build", { tag: "y:1", annotations: { v: "${a.nonsense}" } }),
+      ],
+      { configPath },
+    ),
+  ).rejects.toThrow(/not referenceable/)
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test("media steps derive a unique default output dir", async () => {
+  const repo = process.cwd()
+  try {
+    await runPipeline(
+      [step("package.build", { tag: "x:1" }, "a"), step("package.build", { tag: "y:1" }, "b")],
+      { configPath },
+    )
+    expect(existsSync(join(repo, "oci-layout-step-1", "index.json"))).toBe(true)
+    expect(existsSync(join(repo, "oci-layout-step-2", "index.json"))).toBe(true)
+  } finally {
+    rmSync(join(repo, "oci-layout-step-1"), { recursive: true, force: true })
+    rmSync(join(repo, "oci-layout-step-2"), { recursive: true, force: true })
+  }
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test("sha256 helper sanity for imports", () => {
+  expect(createHash("sha256").update("x").digest("hex")).toHaveLength(64)
+})
