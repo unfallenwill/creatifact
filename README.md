@@ -68,6 +68,33 @@ commands, flags after the file override the file's fields (CLI wins):
 openmmcli -f request.json --prompt "a red crane" --opt size=2048x2048
 ```
 
+### Pipelines (`steps`)
+
+A request file may instead carry a `steps` array: steps run sequentially, the
+run stops at the first failure, and each step may reference earlier results
+with `${name.field}` placeholders:
+
+```json
+{
+  "steps": [
+    { "name": "gen", "command": "generate.text2image", "provider": "zhipu", "prompt": "a crane" },
+    { "name": "edit", "command": "generate.image2image", "provider": "zhipu",
+      "prompt": "make it red", "images": ["${gen.artifacts[0].url}"] },
+    { "command": "package.push", "ref": "${gen.tag}", "layout": "${gen.outputDir}" }
+  ]
+}
+```
+
+Referenceable fields per command: `build` → `tag`/`digest`/`outputDir`,
+`push` → `tag`/`digest`, `pull` → `outputDir`/`digest`, `generate` →
+`tag`/`digest`/`outputDir`/`artifacts[N].url`/`artifacts[N].base64`. A whole
+string like `"${gen.tag}"` keeps the referenced value; references inside a
+larger string interpolate. `steps` and `command` are mutually exclusive; CLI
+flags after the file are not supported in pipeline mode; `generate` steps may
+not use `noWait` or `json`. Media steps without an explicit `output` write to
+`oci-layout-step-<n>` so they never collide inside one pipeline. Progress
+lines go to stderr; each command's own output is unchanged.
+
 ## Commands
 
 ### `generate`

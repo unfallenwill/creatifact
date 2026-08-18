@@ -137,3 +137,4 @@ dist
 
 # firecrawl search cache
 .firecrawl/
+oci-layout-step-*/

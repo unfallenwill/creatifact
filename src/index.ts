@@ -36,7 +36,9 @@ addGlobalOptions(program)
 program
   .command("-f <file> [args...]")
   .usage("<file>.json [options] [-- generate flags]")
-  .description("Run a command described by a JSON file")
+  .description(
+    "Run a command (or a steps pipeline) described by a JSON file. Pipeline files use {steps:[{name?, command, ...fields}]} and run sequentially with ${step.field} references to earlier results",
+  )
   .allowExcessArguments(true)
   .passThroughOptions(true)
   .action(async (file: string, args: string[], _opts, command: Command) => {

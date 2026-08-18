@@ -206,17 +206,17 @@ test("rejects non-referenceable fields of a build result", async () => {
 })
 
 test("media steps derive a unique default output dir", async () => {
-  const repo = process.cwd()
+  const prevCwd = process.cwd()
+  process.chdir(dir)
   try {
     await runPipeline(
       [step("package.build", { tag: "x:1" }, "a"), step("package.build", { tag: "y:1" }, "b")],
       { configPath },
     )
-    expect(existsSync(join(repo, "oci-layout-step-1", "index.json"))).toBe(true)
-    expect(existsSync(join(repo, "oci-layout-step-2", "index.json"))).toBe(true)
+    expect(existsSync(join(dir, "oci-layout-step-1", "index.json"))).toBe(true)
+    expect(existsSync(join(dir, "oci-layout-step-2", "index.json"))).toBe(true)
   } finally {
-    rmSync(join(repo, "oci-layout-step-1"), { recursive: true, force: true })
-    rmSync(join(repo, "oci-layout-step-2"), { recursive: true, force: true })
+    process.chdir(prevCwd)
   }
   rmSync(dir, { recursive: true, force: true })
 })

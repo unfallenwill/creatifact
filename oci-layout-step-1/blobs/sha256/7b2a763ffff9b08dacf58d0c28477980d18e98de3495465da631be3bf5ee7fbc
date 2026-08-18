@@ -1,1 +1,0 @@
-{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.openmm.gen.v1+json","digest":"sha256:3a63617a71e5a8543345ca886662e83c93e85a1258027e0d7841b8cd35ca5484","size":321},"layers":[],"annotations":{"org.openmm.gen.task":"text2image","org.openmm.gen.provider":"demo","org.openmm.gen.model":"demo-image"}}

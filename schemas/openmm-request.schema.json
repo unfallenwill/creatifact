@@ -2,10 +2,30 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/unfallenwill/openmmcli/main/schemas/openmm-request.schema.json",
   "title": "openmmcli request file",
-  "description": "Describes one openmmcli command to run via `openmmcli -f <file>.json`. The 'command' field selects the command; the remaining fields map to its arguments. For generate.* commands, command-line flags after the file override the file's fields.",
+  "description": "Describes one openmmcli command (or a `steps` pipeline) to run via `openmmcli -f <file>.json`. Single-command form: the 'command' field selects the command; the remaining fields map to its arguments, and command-line flags after the file override generate.* fields. Pipeline form: a `steps` array runs sequentially, fails fast, and resolves `${step.field}` references to earlier steps' results (tag/digest/outputDir/artifacts[N].url).",
   "type": "object",
-  "required": ["command"],
+  "oneOf": [
+    { "required": ["command"] },
+    { "required": ["steps"] }
+  ],
   "properties": {
+    "steps": {
+      "description": "Pipeline form: steps run sequentially; each step is a single-command object plus an optional `name` used in `${name.field}` references.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["command"],
+        "properties": {
+          "name": {
+            "description": "Step name for ${name.field} references; must be unique.",
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": true
+      }
+    },
     "command": {
       "description": "Which command to run.",
       "enum": [

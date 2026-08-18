@@ -44,6 +44,7 @@ test("generate-related schema properties are all known registry fields", () => {
   const generateFields = new Set([
     ...allFields,
     "command",
+    "steps",
     "$schema",
     // shared with non-generate commands
     "file",
@@ -66,6 +67,20 @@ test("generate-related schema properties are all known registry fields", () => {
   for (const prop of Object.keys(REQUEST_SCHEMA.properties)) {
     expect(generateFields.has(prop)).toBe(true)
   }
+})
+
+test("steps pipeline form is declared with unique-name step items", () => {
+  const steps = REQUEST_SCHEMA.properties["steps"] as {
+    type: string
+    minItems: number
+    items: { required: string[]; properties: Record<string, unknown> }
+  }
+  expect(steps.type).toBe("array")
+  expect(steps.minItems).toBe(1)
+  expect(steps.items.required).toEqual(["command"])
+  expect(steps.items.properties["name"]).toBeDefined()
+  const oneOf = (REQUEST_SCHEMA as unknown as { oneOf?: { required: string[] }[] }).oneOf
+  expect(oneOf).toEqual([{ required: ["command"] }, { required: ["steps"] }])
 })
 
 test("build schema gen fields match the recipe spec", () => {
