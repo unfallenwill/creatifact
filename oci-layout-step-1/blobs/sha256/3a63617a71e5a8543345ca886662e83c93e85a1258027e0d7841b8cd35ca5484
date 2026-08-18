@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "gen": {
+    "task": "text2image",
+    "provider": "demo",
+    "model": "demo-image",
+    "prompt": "a crane"
+  },
+  "result": {
+    "createdAt": "2026-08-18T08:18:33.205Z",
+    "artifacts": [
+      {
+        "url": "https://cdn.test/out.png",
+        "mimeType": "image/png"
+      }
+    ]
+  }
+}

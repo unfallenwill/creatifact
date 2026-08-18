@@ -1328,4 +1328,77 @@ describe("cli -f file-driven — integration", () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it("runs a steps pipeline: text2image → image2image with artifact refs", () => {
+    const { env, dir, recordPath } = demoEnv()
+    const pipelinePath = path.join(dir, "pipeline.json")
+    writeFileSync(
+      pipelinePath,
+      JSON.stringify({
+        steps: [
+          {
+            name: "s1",
+            command: "generate.text2image",
+            provider: "demo/demo-image",
+            prompt: "a crane",
+          },
+          {
+            name: "s2",
+            command: "generate.image2image",
+            provider: "demo/demo-image",
+            prompt: "make it red",
+            images: ["${s1.artifacts[0].url}"],
+          },
+        ],
+      }),
+    )
+    try {
+      const r = run(["-f", pipelinePath], undefined, env)
+      expect(r.code).toBe(0)
+      expect(r.stderr).toContain("[1/2] s1 · generate.text2image")
+      expect(r.stderr).toContain("[2/2] s2 · generate.image2image")
+
+      const requests = readFileSync(recordPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+      expect(requests).toHaveLength(2)
+      expect(requests[1]?.["image"]).toEqual({ url: "https://cdn.test/out.png" })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects steps files: command+steps mix, flag overlay, forward refs", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "openmmcli-steps-err-"))
+    try {
+      const mixed = path.join(dir, "mixed.json")
+      writeFileSync(mixed, JSON.stringify({ command: "models", steps: [{ command: "models" }] }))
+      const r1 = run(["-f", mixed])
+      expect(r1.code).toBe(1)
+      expect(r1.stderr).toContain("cannot have both 'command' and 'steps'")
+
+      const overlay = path.join(dir, "overlay.json")
+      writeFileSync(overlay, JSON.stringify({ steps: [{ command: "models" }] }))
+      const r2 = run(["-f", overlay, "--json"])
+      expect(r2.code).toBe(1)
+      expect(r2.stderr).toContain("flags are not supported with a steps file")
+
+      const forward = path.join(dir, "forward.json")
+      writeFileSync(
+        forward,
+        JSON.stringify({
+          steps: [
+            { name: "a", command: "models" },
+            { command: "models", fields: { v: "${later.x}" } },
+          ],
+        }),
+      )
+      const r3 = run(["-f", forward])
+      expect(r3.code).toBe(1)
+      expect(r3.stderr).toContain("unknown step 'later'")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

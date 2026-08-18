@@ -2,10 +2,11 @@ import { readFileSync } from "node:fs"
 import type { ParsedArgs as BuildRequest } from "./build"
 import type { CommandRequest } from "./execute"
 import type { GenRequest, GenTaskName } from "./generate"
-import { requestFieldsForTask, TASKS } from "./tasks"
+import type { PipelineStep } from "./pipeline"
 import type { ParsedLoginArgs } from "./login"
 import type { ParsedPullArgs } from "./pull"
 import type { ParsedPushArgs } from "./push"
+import { requestFieldsForTask, TASKS } from "./tasks"
 
 export type Fields = Record<string, unknown>
 
@@ -199,8 +200,10 @@ export function loginRequest(fields: Fields): ParsedLoginArgs {
   }
 }
 
-/** Parse a request file's contents into (command, fields). */
-export function readRequestFile(file: string): { command: string; fields: Fields } {
+/** Parse a request file's contents into either a single command or steps. */
+export function readRequestFile(
+  file: string,
+): { command: string; fields: Fields } | { steps: PipelineStep[] } {
   let raw: string
   try {
     raw = readFileSync(file, "utf8")
@@ -216,11 +219,34 @@ export function readRequestFile(file: string): { command: string; fields: Fields
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error(`'${file}' must contain a JSON object`)
   }
-  const command = asString((parsed as Fields)["command"], "command")
-  const fields: Fields = { ...(parsed as Fields) }
-  delete fields["command"]
-  delete fields["$schema"]
-  return { command, fields }
+  const root = { ...(parsed as Fields) }
+  delete root["$schema"]
+
+  if (root["steps"] !== undefined) {
+    if (root["command"] !== undefined) {
+      throw new Error(`'${file}' cannot have both 'command' and 'steps'`)
+    }
+    if (!Array.isArray(root["steps"])) {
+      throw new Error(`'steps' in '${file}' must be an array`)
+    }
+    const steps: PipelineStep[] = root["steps"].map((raw, i) => {
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+        throw new Error(`steps[${i}] in '${file}' must be an object`)
+      }
+      const entry = { ...(raw as Fields) }
+      const command = asString(entry["command"], `steps[${i}].command`)
+      delete entry["command"]
+      const name =
+        entry["name"] === undefined ? undefined : asString(entry["name"], `steps[${i}].name`)
+      if (name !== undefined) delete entry["name"]
+      return name === undefined ? { command, fields: entry } : { command, fields: entry, name }
+    })
+    return { steps }
+  }
+
+  const command = asString(root["command"], "command")
+  delete root["command"]
+  return { command, fields: root }
 }
 
 /**

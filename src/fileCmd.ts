@@ -8,6 +8,7 @@ import {
   runGenerateRequest,
   TASKS,
 } from "./generate"
+import { runPipeline } from "./pipeline"
 import { listConfiguredProviderIds } from "./providers"
 import {
   commandRequestFromFields,
@@ -51,8 +52,17 @@ export async function runFileFromArgs(args: string[], opts: FileRunOptions = {})
   if (file === undefined || file === "") {
     throw new Error("-f requires a JSON file path, e.g. openmmcli -f request.json")
   }
-  const { command, fields } = readRequestFile(file)
+  const parsed = readRequestFile(file)
 
+  if ("steps" in parsed) {
+    if (args.length > 1) {
+      throw new Error("command-line flags are not supported with a steps file")
+    }
+    await runPipeline(parsed.steps, opts)
+    return
+  }
+
+  const { command, fields } = parsed
   if (command.startsWith("generate.")) {
     await runFileGenerate(command, fields, args.slice(1), opts)
     return
