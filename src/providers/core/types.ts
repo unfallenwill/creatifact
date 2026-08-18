@@ -184,7 +184,7 @@ export interface Provider {
   embed?: EmbedApi<unknown>
 }
 
-const METHOD_CAPABILITIES: ReadonlyArray<readonly [keyof Provider, Capability]> = [
+export const METHOD_CAPABILITIES: ReadonlyArray<readonly [keyof Provider, Capability]> = [
   ["textGenerate", "text.generate"],
   ["videoGenerate", "video.generate"],
   ["videoUnderstand", "video.understand"],

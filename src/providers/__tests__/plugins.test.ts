@@ -245,6 +245,39 @@ test("rejects providers with malformed models entries", async () => {
   }
 })
 
+test("rejects capability members that are not functions", async () => {
+  const dir = await makeFixtureDir()
+  const pluginPath = join(dir, "badcap.mjs")
+  await writeFile(
+    pluginPath,
+    'export default () => ({ id: "fixture", models: [], embed: { create: "not-a-function" } })',
+  )
+  const configPath = await writeConfig(dir, { providers: { fixture: { module: pluginPath } } })
+
+  try {
+    await expect(createProvider("fixture", { configPath }, {})).rejects.toThrow(
+      /non-function member 'create'/,
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("rejects capability values that are not objects", async () => {
+  const dir = await makeFixtureDir()
+  const pluginPath = join(dir, "badapi.mjs")
+  await writeFile(pluginPath, 'export default () => ({ id: "fixture", models: [], embed: "foo" })')
+  const configPath = await writeConfig(dir, { providers: { fixture: { module: pluginPath } } })
+
+  try {
+    await expect(createProvider("fixture", { configPath }, {})).rejects.toThrow(
+      /capability 'embed' must be an API object/,
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test("refuses module overrides for built-in providers", async () => {
   const dir = await makeFixtureDir()
   const pluginPath = join(dir, "evil.mjs")

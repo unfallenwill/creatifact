@@ -2,7 +2,7 @@ import { createRequire } from "node:module"
 import { homedir } from "node:os"
 import { isAbsolute, join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
-import { capabilitiesOf, type Env, type Provider } from "./core/types"
+import { capabilitiesOf, type Env, METHOD_CAPABILITIES, type Provider } from "./core/types"
 
 /** A provider factory: turns a settings bag + env into a Provider. */
 export type ProviderFactory = (settings: Record<string, unknown>, env: Env) => Provider
@@ -135,10 +135,30 @@ export function assertPluginProvider(id: string, provider: Provider): void {
       throw new PluginError(id, "every entry in provider.models needs a non-empty string 'id'")
     }
   }
-  if (capabilitiesOf(provider).length === 0) {
+  const implemented = capabilitiesOf(provider)
+  if (implemented.length === 0) {
     throw new PluginError(
       id,
-      "provider implements none of the capability APIs (textGenerate, videoGenerate, videoUnderstand, imageGenerate, imageUnderstand, embed)",
+      `provider implements none of the capability APIs (${METHOD_CAPABILITIES.map(([m]) => m).join(", ")})`,
     )
+  }
+  for (const [method] of METHOD_CAPABILITIES) {
+    const value = provider[method]
+    if (value !== undefined && typeof value !== "object") {
+      throw new PluginError(
+        id,
+        `provider capability '${method}' must be an API object (got ${typeof value})`,
+      )
+    }
+    const api = value as Record<string, unknown> | undefined
+    if (api === undefined) continue
+    for (const [name, fn] of Object.entries(api)) {
+      if (fn !== undefined && typeof fn !== "function") {
+        throw new PluginError(
+          id,
+          `provider capability '${method}' has non-function member '${name}' (got ${typeof fn})`,
+        )
+      }
+    }
   }
 }
