@@ -1,12 +1,16 @@
 import {
+  encodeBasicAuth,
+  type Credentials,
   loadConfig,
   type OpenmmCliConfig,
   resolvePlainHttp,
   resolveRegistryCredentials,
+  toCredentials,
 } from "./config"
 import { parseRef, readOciLayout } from "./oci"
 
 export { parseRef, readOciLayout }
+export { encodeBasicAuth, type Credentials, toCredentials } from "./config"
 
 import { Command } from "commander"
 import { addGlobalOptions, parseArgsWith, resolvePassword } from "./util"
@@ -120,23 +124,6 @@ export function overrideScope(wwwAuthenticate: string, scope: string): string {
   }
   parts.push(`scope="${scope}"`)
   return parts.join(",")
-}
-
-export interface Credentials {
-  username: string
-  password: string
-}
-
-export function toCredentials(
-  username: string | undefined,
-  password: string | undefined,
-): Credentials | undefined {
-  return username && password ? { username, password } : undefined
-}
-
-function encodeBasicAuth(creds: Credentials): string {
-  const encoded = Buffer.from(`${creds.username}:${creds.password}`).toString("base64")
-  return `Basic ${encoded}`
 }
 
 async function fetchBearerToken(

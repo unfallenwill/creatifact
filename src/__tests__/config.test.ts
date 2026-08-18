@@ -8,6 +8,7 @@ import {
   decodeAuth,
   deleteConfig,
   encodeAuth,
+  encodeBasicAuth,
   getConfigValue,
   isValidRegistry,
   loadConfig,
@@ -17,6 +18,7 @@ import {
   resolveRegistryCredentials,
   saveConfig,
   setConfigValue,
+  toCredentials,
 } from "../config"
 
 function tmpConfigPath(): string {
@@ -198,4 +200,13 @@ test("maskForPrint hides secret-looking values, keeps the rest", () => {
   expect(providers["ark"]?.["apiKey"]).toBe("***")
   expect(providers["ark"]?.["baseUrl"]).toBe("https://x")
   expect(masked["version"]).toBe(1)
+})
+
+test("toCredentials requires a complete pair; encodeBasicAuth reuses encodeAuth", () => {
+  expect(toCredentials("u", undefined)).toBeUndefined()
+  expect(toCredentials(undefined, "p")).toBeUndefined()
+  expect(toCredentials("u", "p")).toEqual({ username: "u", password: "p" })
+  expect(encodeBasicAuth({ username: "u", password: "p" })).toBe(
+    `Basic ${Buffer.from("u:p").toString("base64")}`,
+  )
 })

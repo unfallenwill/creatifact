@@ -126,6 +126,22 @@ export function encodeAuth(username: string, password: string): string {
   return Buffer.from(`${username}:${password}`).toString("base64")
 }
 
+export interface Credentials {
+  username: string
+  password: string
+}
+
+export function toCredentials(
+  username: string | undefined,
+  password: string | undefined,
+): Credentials | undefined {
+  return username && password ? { username, password } : undefined
+}
+
+export function encodeBasicAuth(creds: Credentials): string {
+  return `Basic ${encodeAuth(creds.username, creds.password)}`
+}
+
 export function decodeAuth(auth: string): { username: string; password: string } {
   const decoded = Buffer.from(auth, "base64").toString("utf8")
   const idx = decoded.indexOf(":")
