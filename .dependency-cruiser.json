@@ -23,7 +23,7 @@
       "comment": "命令层只能经由 build/push/pull 访问 OCI,不得直接依赖 oci/layers/manifest",
       "severity": "error",
       "from": {
-        "path": "^(src/(index|fileCmd|configCmd|login|models|generate)[.]ts)$"
+        "path": "^(src/(index|fileCmd|configCmd|login|models|generate|execute)[.]ts)$"
       },
       "to": {
         "path": "^src/(oci|layers|manifest)[.]ts$"
@@ -37,7 +37,7 @@
         "path": "^src/(util|config|oci|layers|manifest|genPackage|tasks|refs|providers/)[^.]*[.]ts$"
       },
       "to": {
-        "path": "^src/(index|build|push|pull|generate|login|models|configCmd|fileCmd)[.]ts$"
+        "path": "^src/(index|execute|build|push|pull|generate|login|models|configCmd|fileCmd)[.]ts$"
       }
     },
     {
@@ -46,7 +46,7 @@
       "severity": "error",
       "from": { "path": "^src/providers/" },
       "to": {
-        "path": "^src/(index|build|push|pull|generate|login|models|configCmd|fileCmd|genPackage)[.]ts$"
+        "path": "^src/(index|execute|build|push|pull|generate|login|models|configCmd|fileCmd|genPackage)[.]ts$"
       }
     },
     {
