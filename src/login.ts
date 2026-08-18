@@ -2,7 +2,14 @@ import { isCancel, password as passwordPrompt, text } from "@clack/prompts"
 
 import { Command } from "commander"
 
-import { encodeAuth, isValidRegistry, loadConfig, normalizeRegistry, saveConfig } from "./config"
+import {
+  encodeAuth,
+  isValidRegistry,
+  loadConfig,
+  normalizeRegistry,
+  type RegistryAuthEntry,
+  saveConfig,
+} from "./config"
 import { addGlobalOptions, configOpts, parseArgsWith, resolvePassword } from "./util"
 
 interface RunOpts {
@@ -34,7 +41,7 @@ export async function runLogin(
   console.log(`Login succeeded (${normalized})`)
 }
 
-/** Core logout: remove the registry entry entirely. Returns false if absent. */
+/** Core logout: drop credentials but keep the entry's insecure flag. Returns false if absent. */
 export async function runLogout(registry: string, opts?: RunOpts): Promise<boolean> {
   const normalized = normalizeRegistry(registry)
   if (!isValidRegistry(registry)) {
@@ -44,10 +51,16 @@ export async function runLogout(registry: string, opts?: RunOpts): Promise<boole
   }
 
   const config = loadConfig(opts?.configPath)
-  if (config.auths?.[normalized] === undefined) {
+  const entry = config.auths?.[normalized]
+  if (entry === undefined) {
     return false
   }
-  delete config.auths[normalized]
+  const auths = config.auths as Record<string, RegistryAuthEntry>
+  if (entry.insecure === true) {
+    auths[normalized] = { insecure: true }
+  } else {
+    delete auths[normalized]
+  }
   saveConfig(config, opts?.configPath)
   console.log(`Removed login credentials for ${normalized}`)
   return true

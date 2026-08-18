@@ -75,17 +75,24 @@ test("runLoginFromArgs requires a registry argument", async () => {
   await expect(runLoginFromArgs(["-u", "x", "--password", "y"])).rejects.toThrow(/registry/)
 })
 
-test("runLogout removes the registry entry and keeps other sections", async () => {
+test("runLogout removes credentials but keeps the insecure flag", async () => {
   const path = tmpConfigPath()
   await runLogin("reg.io", "u", "p", { configPath: path })
   await runLogin("other.io", "u2", "p2", { configPath: path })
+  const before = readConfig(path)
+  ;(before["auths"] as Record<string, unknown>)["reg.io"] = {
+    auth: "dXpw",
+    username: "u",
+    insecure: true,
+  }
+  writeFileSync(path, JSON.stringify(before))
 
   const removed = await runLogout("reg.io", { configPath: path })
   expect(removed).toBe(true)
 
   const config = readConfig(path)
-  const auths = config["auths"] as Record<string, unknown>
-  expect(auths["reg.io"]).toBeUndefined()
+  const auths = config["auths"] as Record<string, { insecure?: boolean; auth?: string }>
+  expect(auths["reg.io"]).toEqual({ insecure: true })
   expect(auths["other.io"]).toBeDefined()
 })
 
