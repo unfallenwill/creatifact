@@ -20,6 +20,7 @@ import {
   writeOciLayout,
 } from "./oci"
 import { fetchImage, type ImageFetchOptions } from "./pull"
+import { isLocalRef } from "./refs"
 import {
   addGlobalOptions,
   collectValue,
@@ -147,7 +148,7 @@ export async function resolveImageSource(
   auth: ImageFetchOptions,
 ): Promise<LoadedImage> {
   const localPath = isAbsolute(spec) ? spec : join(baseDir, spec)
-  if (isLocalSpec(spec) || (existsSync(localPath) && (await stat(localPath)).isDirectory())) {
+  if (isLocalRef(spec) || (existsSync(localPath) && (await stat(localPath)).isDirectory())) {
     if (!existsSync(localPath)) {
       throw new Error(`local layout '${spec}' not found`)
     }
@@ -155,10 +156,6 @@ export async function resolveImageSource(
   }
 
   return fetchImage(spec, auth)
-}
-
-function isLocalSpec(spec: string): boolean {
-  return spec.startsWith(".") || spec.startsWith("/")
 }
 
 async function validateAssetsDir(dir: string): Promise<void> {
@@ -310,6 +307,6 @@ function resolveLocalDir(assetsDir: string | undefined, baseDir: string): string
 }
 
 function resolveLocalSpec(spec: string, baseDir: string): string {
-  if (!isLocalSpec(spec)) return spec
+  if (!isLocalRef(spec)) return spec
   return isAbsolute(spec) ? spec : join(baseDir, spec)
 }

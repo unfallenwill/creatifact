@@ -27,6 +27,7 @@ import {
   type Usage,
 } from "./providers"
 import { fetchImage } from "./pull"
+import { isLocalRef, looksLikeRegistryRef } from "./refs"
 import {
   addGlobalOptions,
   collectValue,
@@ -1043,11 +1044,8 @@ export async function runGenerateRequest(
 
 /** True when the first positional is a package ref rather than a task. */
 function looksLikeGenRef(arg: string): boolean {
-  if (arg.startsWith(".") || arg.startsWith("/")) return true
-  const slash = arg.indexOf("/")
-  if (slash <= 0) return false
-  const first = arg.slice(0, slash)
-  return first.includes(".") || first.includes(":") || first === "localhost"
+  if (isLocalRef(arg)) return true
+  return looksLikeRegistryRef(arg)
 }
 
 /**

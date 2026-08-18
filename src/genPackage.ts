@@ -14,6 +14,7 @@ import {
 } from "./oci"
 import type { Artifact, Usage } from "./providers"
 import type { ImageFetchOptions } from "./pull"
+import { isLocalRef } from "./refs"
 import { TASKS, type GenTaskName } from "./tasks"
 import { ensureOutputDirEmpty } from "./util"
 
@@ -188,7 +189,7 @@ export async function loadGenImage(
   opts: { plainHttp: boolean; configPath?: string | undefined },
   fetchImage: (ref: string, opts: ImageFetchOptions) => Promise<LoadedImage>,
 ): Promise<LoadedImage> {
-  if (ref.startsWith(".") || ref.startsWith("/")) {
+  if (isLocalRef(ref)) {
     return readOciLayout(ref)
   }
   return fetchImage(ref, {
