@@ -34,7 +34,7 @@
       "comment": "基础设施层与 OCI 层不得反向依赖命令层",
       "severity": "error",
       "from": {
-        "path": "^src/(util|config|oci|layers|manifest|genPackage|providers/)[^.]*[.]ts$"
+        "path": "^src/(util|config|oci|layers|manifest|genPackage|tasks|refs|providers/)[^.]*[.]ts$"
       },
       "to": {
         "path": "^src/(index|build|push|pull|generate|login|models|configCmd|fileCmd)[.]ts$"

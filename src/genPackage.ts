@@ -2,7 +2,6 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { loadConfig } from "./config"
-import type { GenTaskName } from "./generate"
 import { createLayerTarball, type FsView, mergeImageLayers } from "./layers"
 import {
   type LoadedImage,
@@ -15,6 +14,7 @@ import {
 } from "./oci"
 import type { Artifact, Usage } from "./providers"
 import type { ImageFetchOptions } from "./pull"
+import { TASKS, type GenTaskName } from "./tasks"
 import { ensureOutputDirEmpty } from "./util"
 
 export type { LoadedImage }
@@ -23,17 +23,8 @@ export type { LoadedImage }
 export const GEN_CONFIG_MEDIA_TYPE = "application/vnd.openmm.gen.v1+json"
 export const GEN_SCHEMA_VERSION = 1
 
-const GEN_TASKS = new Set([
-  "text2text",
-  "image2text",
-  "video2text",
-  "text2image",
-  "image2image",
-  "text2video",
-  "image2video",
-  "frames2video",
-  "embed",
-])
+/** Gen recipes cannot be the `resume` control command. */
+const GEN_TASKS = new Set(Object.keys(TASKS).filter((t) => t !== "resume"))
 
 /**
  * A generation recipe baked into a package by `openmmcli package build`.
