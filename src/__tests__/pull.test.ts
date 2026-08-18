@@ -210,7 +210,13 @@ test("saveLayout writes complete OCI layout from manifest + blobs", async () => 
     [layerDigest, Buffer.from(layerData)],
   ])
 
-  await saveLayout(tmp, manifest, manifestData, manifestDigest, blobs, "test:1.0")
+  await saveLayout(tmp, {
+    manifest,
+    manifestData,
+    manifestDigest,
+    blobs,
+    ref: "test:1.0",
+  })
 
   expect(existsSync(join(tmp, "oci-layout"))).toBe(true)
   expect(existsSync(join(tmp, "index.json"))).toBe(true)

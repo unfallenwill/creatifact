@@ -194,14 +194,13 @@ export async function runPull(options: PullOptions): Promise<void> {
     ...(options.config === undefined ? {} : { config: options.config }),
   })
 
-  await saveLayout(
-    outputDir,
-    image.manifest,
-    image.manifestBuffer.toString("utf8"),
-    image.manifestDescriptor.digest,
-    image.blobs,
-    options.ref,
-  )
+  await saveLayout(outputDir, {
+    manifest: image.manifest,
+    manifestData: image.manifestBuffer.toString("utf8"),
+    manifestDigest: image.manifestDescriptor.digest,
+    blobs: image.blobs,
+    ref: options.ref,
+  })
   console.log(`Pulled ${options.ref} → ${outputDir}`)
 }
 

@@ -139,14 +139,16 @@ export async function readOciLayout(layoutDir: string): Promise<LoadedImage> {
   }
 }
 
-export async function saveLayout(
-  outputDir: string,
-  manifest: OCIManifest,
-  manifestData: string,
-  manifestDigest: string,
-  blobs: Map<string, Buffer>,
-  ref: string,
-): Promise<void> {
+export interface SaveLayoutInput {
+  manifest: OCIManifest
+  manifestData: string
+  manifestDigest: string
+  blobs: Map<string, Buffer>
+  ref: string
+}
+
+export async function saveLayout(outputDir: string, layout: SaveLayoutInput): Promise<void> {
+  const { manifest, manifestData, manifestDigest, blobs, ref } = layout
   const blobsDir = join(outputDir, "blobs", "sha256")
   await mkdir(blobsDir, { recursive: true })
 
