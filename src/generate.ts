@@ -681,15 +681,18 @@ export function printArtifacts(
 }
 
 async function runTextTask(ctx: ExecCtx): Promise<void> {
-  const { req, provider, model } = ctx
+  const { req, provider, model, signal } = ctx
   const api = provider.textGenerate
   if (api === undefined) fail(`provider '${provider.id}' implements no text generation`)
-  const result = await api.create({
-    model,
-    prompt: req.prompt ?? "",
-    ...(req.system === undefined ? {} : { system: req.system }),
-    options: req.options ?? {},
-  })
+  const result = await api.create(
+    {
+      model,
+      prompt: req.prompt ?? "",
+      ...(req.system === undefined ? {} : { system: req.system }),
+      options: req.options ?? {},
+    },
+    { signal },
+  )
   if (req.json) {
     console.log(
       JSON.stringify(
@@ -704,7 +707,7 @@ async function runTextTask(ctx: ExecCtx): Promise<void> {
 }
 
 async function runUnderstandTask(ctx: ExecCtx): Promise<void> {
-  const { req, provider, model } = ctx
+  const { req, provider, model, signal } = ctx
   const api = req.task === "image2text" ? provider.imageUnderstand : provider.videoUnderstand
   const kind = req.task === "image2text" ? "image" : "video"
   if (api === undefined) fail(`provider '${provider.id}' implements no ${kind} understanding`)
@@ -712,11 +715,14 @@ async function runUnderstandTask(ctx: ExecCtx): Promise<void> {
     req.prompt ?? `Describe this ${kind}.`,
     ...(req.inputs ?? []).map(toContentPart),
   ]
-  const result = await api.create({
-    model,
-    messages: [{ role: "user", content }],
-    options: req.options ?? {},
-  })
+  const result = await api.create(
+    {
+      model,
+      messages: [{ role: "user", content }],
+      options: req.options ?? {},
+    },
+    { signal },
+  )
   if (req.json) {
     console.log(
       JSON.stringify(
@@ -731,10 +737,13 @@ async function runUnderstandTask(ctx: ExecCtx): Promise<void> {
 }
 
 async function runEmbedTask(ctx: ExecCtx): Promise<void> {
-  const { req, provider, model } = ctx
+  const { req, provider, model, signal } = ctx
   const api = provider.embed
   if (api === undefined) fail(`provider '${provider.id}' implements no embeddings`)
-  const result = await api.create({ model, inputs: req.inputs ?? [], options: req.options ?? {} })
+  const result = await api.create(
+    { model, inputs: req.inputs ?? [], options: req.options ?? {} },
+    { signal },
+  )
   if (req.json) {
     console.log(
       JSON.stringify({ provider: provider.id, model, capability: "embed", ...result }, null, 2),
@@ -769,13 +778,16 @@ async function runVideoTask(ctx: ExecCtx): Promise<MediaRunResult | null> {
   const first = req.task === "frames2video" ? req.firstFrame : (req.images ?? [])[0]
   const last = req.task === "frames2video" ? req.lastFrame : undefined
 
-  const handle = await api.submit({
-    model,
-    prompt: req.prompt ?? "",
-    options: req.options ?? {},
-    ...(first !== undefined ? { firstFrame: toFileRef(first, "--first-frame/--image") } : {}),
-    ...(last !== undefined ? { lastFrame: toFileRef(last, "--last-frame") } : {}),
-  })
+  const handle = await api.submit(
+    {
+      model,
+      prompt: req.prompt ?? "",
+      options: req.options ?? {},
+      ...(first !== undefined ? { firstFrame: toFileRef(first, "--first-frame/--image") } : {}),
+      ...(last !== undefined ? { lastFrame: toFileRef(last, "--last-frame") } : {}),
+    },
+    { signal },
+  )
   if (req.noWait === true) {
     console.log(JSON.stringify(handle))
     return null
@@ -785,7 +797,7 @@ async function runVideoTask(ctx: ExecCtx): Promise<MediaRunResult | null> {
   const intervalMs = req.interval === undefined ? 5000 : parseDurationMs(req.interval, "--interval")
 
   const startedAt = Date.now()
-  const final = await pollUntil((h) => api.poll(h), handle, {
+  const final = await pollUntil((h) => api.poll(h, { signal }), handle, {
     intervalMs,
     timeoutMs,
     signal,
@@ -882,20 +894,26 @@ async function runResumeTask(
   const intervalMs = req.interval === undefined ? 5000 : parseDurationMs(req.interval, "--interval")
 
   const startedAt = Date.now()
-  const final = await pollUntil((h) => api.poll(h), handle, {
-    intervalMs,
-    timeoutMs,
-    signal: controller.signal,
-    onStatus: (s) =>
-      console.error(
-        `polling... ${s.state}${s.state === "running" && s.progress !== undefined ? ` ${s.progress}%` : ""} (${Math.round((Date.now() - startedAt) / 1000)}s)`,
-      ),
-  }).catch((e: unknown) => {
-    if (controller.signal.aborted || e instanceof JobTimeoutError) {
-      throw new Error(`${(e as Error).message}; task handle: ${JSON.stringify(handle)}`)
-    }
-    throw e
-  })
+  let final: Awaited<ReturnType<typeof pollUntil>>
+  try {
+    final = await pollUntil((h) => api.poll(h, { signal: controller.signal }), handle, {
+      intervalMs,
+      timeoutMs,
+      signal: controller.signal,
+      onStatus: (s) =>
+        console.error(
+          `polling... ${s.state}${s.state === "running" && s.progress !== undefined ? ` ${s.progress}%` : ""} (${Math.round((Date.now() - startedAt) / 1000)}s)`,
+        ),
+    }).catch((e: unknown) => {
+      if (controller.signal.aborted || e instanceof JobTimeoutError) {
+        throw new Error(`${(e as Error).message}; task handle: ${JSON.stringify(handle)}`)
+      }
+      throw e
+    })
+  } finally {
+    process.off("SIGINT", onSignal)
+    process.off("SIGTERM", onSignal)
+  }
 
   if (final.state === "failed") {
     throw new ProviderError(
@@ -1005,26 +1023,31 @@ async function executeAndPackage(opts: {
   process.on("SIGINT", onSignal)
   process.on("SIGTERM", onSignal)
 
-  const ctx: ExecCtx = { req: runReq, provider, model, signal: controller.signal }
-  const result = await executeTask(ctx)
-  if (result === null) return
+  try {
+    const ctx: ExecCtx = { req: runReq, provider, model, signal: controller.signal }
+    const result = await executeTask(ctx)
+    if (result === null) return
 
-  if (req.noPack === true || !TASKS[req.task].media) {
-    printResult(req, provider.id, result)
-    return
+    if (req.noPack === true || !TASKS[req.task].media) {
+      printResult(req, provider.id, result)
+      return
+    }
+
+    const outputDir = req.output ?? "./oci-layout"
+    const resultTag = req.tag ?? "gen-output:latest"
+    await buildResultPackage({
+      outputDir,
+      tag: resultTag,
+      ...(opts.fromRef === undefined ? {} : { fromRef: opts.fromRef }),
+      artifacts: result.artifacts,
+      spec: effectiveGenSpec(req, provider.id, model),
+      usage: result.usage,
+    })
+    printPackagedResult(req, provider.id, result, resultTag, outputDir)
+  } finally {
+    process.off("SIGINT", onSignal)
+    process.off("SIGTERM", onSignal)
   }
-
-  const outputDir = req.output ?? "./oci-layout"
-  const resultTag = req.tag ?? "gen-output:latest"
-  await buildResultPackage({
-    outputDir,
-    tag: resultTag,
-    ...(opts.fromRef === undefined ? {} : { fromRef: opts.fromRef }),
-    artifacts: result.artifacts,
-    spec: effectiveGenSpec(req, provider.id, model),
-    usage: result.usage,
-  })
-  printPackagedResult(req, provider.id, result, resultTag, outputDir)
 }
 
 /** Run a request built programmatically (CLI args, `-f` files, callers). */

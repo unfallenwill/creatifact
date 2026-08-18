@@ -13,6 +13,8 @@ export interface RequestJsonOptions {
   /** Explicit retry count. Omit for the method-aware safe default. */
   retries?: number
   classifyError?: ClassifyError
+  /** Caller cancellation; merged with the per-request timeout signal. */
+  signal?: AbortSignal | undefined
 }
 
 export function defaultClassifyError(status: number, body: unknown): ErrorCategory {
@@ -70,13 +72,14 @@ type AttemptResult<T> =
   | { ok: false; error: ProviderError; retryable: boolean; retryAfterMs?: number | undefined }
 
 async function attemptOnce<T>(url: string, opts: RequestJsonOptions): Promise<AttemptResult<T>> {
+  const timeout = AbortSignal.timeout(opts.timeoutMs ?? 30_000)
   const init: RequestInit = {
     method: opts.method ?? "GET",
     headers: {
       "content-type": "application/json",
       ...opts.headers,
     },
-    signal: AbortSignal.timeout(opts.timeoutMs ?? 30_000),
+    signal: opts.signal === undefined ? timeout : AbortSignal.any([opts.signal, timeout]),
   }
   if (opts.body !== undefined) {
     init.body = JSON.stringify(opts.body)
@@ -151,6 +154,9 @@ export async function requestJson<T>(url: string, opts: RequestJsonOptions = {})
   let lastRetryAfterMs: number | undefined
 
   for (let attempt = 0; attempt <= retries; attempt++) {
+    if (opts.signal?.aborted) {
+      throw new ProviderError("internal", "request aborted", opts.signal.reason)
+    }
     if (attempt > 0) {
       // Exponential backoff with jitter (50-100%) so concurrent clients
       // hammered by the same 429 don't retry in lockstep.

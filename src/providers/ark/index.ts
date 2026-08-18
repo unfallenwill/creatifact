@@ -146,7 +146,7 @@ export function createArkProvider(
   }
 
   const videoGenerate: VideoGenerateApi<ArkVideoOptions> = {
-    async submit(req) {
+    async submit(req, ctx) {
       guardFrameSupport(ARK_MODELS, req)
       const content = await buildVideoContent(req.prompt, req.firstFrame, req.lastFrame)
       const body: Record<string, unknown> = { model: req.model, content }
@@ -155,13 +155,16 @@ export function createArkProvider(
       }
       const resp = await client.post<ArkTaskResponse>("/contents/generations/tasks", body, {
         timeoutMs: SLOW_POST_TIMEOUT_MS,
+        signal: ctx?.signal,
       })
       return { providerId: "ark", id: resp.id }
     },
 
-    async poll(handle: JobHandle): Promise<JobStatus> {
+    async poll(handle: JobHandle, ctx): Promise<JobStatus> {
       guardHandle("ark", handle)
-      const task = await client.get<ArkTaskResponse>(`/contents/generations/tasks/${handle.id}`)
+      const task = await client.get<ArkTaskResponse>(`/contents/generations/tasks/${handle.id}`, {
+        signal: ctx?.signal,
+      })
       if (task.status === "queued") return { state: "pending" }
       if (task.status === "running") return { state: "running" }
       if (task.status === "failed" || task.status === "cancelled" || task.status === "expired") {
@@ -190,7 +193,7 @@ export function createArkProvider(
   }
 
   const imageGenerate: ImageGenerateApi<ArkImageOptions> = {
-    async create(req) {
+    async create(req, ctx) {
       const body: Record<string, unknown> = {
         model: req.model,
         prompt: req.prompt,
@@ -205,6 +208,7 @@ export function createArkProvider(
       }
       const resp = await client.post<ArkImageResponse>("/images/generations", body, {
         timeoutMs: SLOW_POST_TIMEOUT_MS,
+        signal: ctx?.signal,
       })
       return {
         artifacts: (resp.data ?? []).map((item) => ({
@@ -245,12 +249,16 @@ export function createArkProvider(
 
   function understandApi(fileKind: "image_url" | "video_url"): UnderstandApi<ArkChatOptions> {
     return {
-      async create(req) {
-        const resp = await client.post<ArkChatResponse>("/chat/completions", {
-          model: req.model,
-          messages: await toChatMessages(req.messages, fileKind),
-          ...(req.options ?? {}),
-        })
+      async create(req, ctx) {
+        const resp = await client.post<ArkChatResponse>(
+          "/chat/completions",
+          {
+            model: req.model,
+            messages: await toChatMessages(req.messages, fileKind),
+            ...(req.options ?? {}),
+          },
+          { signal: ctx?.signal },
+        )
         return {
           text: resp.choices?.[0]?.message?.content ?? "",
           usage: toUsage(resp.usage),
@@ -260,13 +268,17 @@ export function createArkProvider(
   }
 
   const embed: EmbedApi<ArkEmbedOptions> = {
-    async create(req) {
+    async create(req, ctx) {
       // 文本 embeddings 无 dimensions 参数(仅 multimodal 端点有),options 透传兜底
-      const resp = await client.post<ArkEmbedResponse>("/embeddings", {
-        model: req.model,
-        input: req.inputs,
-        ...(req.options ?? {}),
-      })
+      const resp = await client.post<ArkEmbedResponse>(
+        "/embeddings",
+        {
+          model: req.model,
+          input: req.inputs,
+          ...(req.options ?? {}),
+        },
+        { signal: ctx?.signal },
+      )
       const vectors = (resp.data ?? []).map((item) => item.embedding ?? [])
       return {
         vectors,
@@ -278,17 +290,21 @@ export function createArkProvider(
 
   /** 文本对话: POST /chat/completions(OpenAI 兼容)。 */
   const textGenerate: TextGenerateApi<ArkChatOptions> = {
-    async create(req) {
+    async create(req, ctx) {
       const messages: Array<Record<string, unknown>> = []
       if (req.system !== undefined) {
         messages.push({ role: "system", content: req.system })
       }
       messages.push({ role: "user", content: req.prompt })
-      const resp = await client.post<ArkChatResponse>("/chat/completions", {
-        model: req.model,
-        messages,
-        ...(req.options ?? {}),
-      })
+      const resp = await client.post<ArkChatResponse>(
+        "/chat/completions",
+        {
+          model: req.model,
+          messages,
+          ...(req.options ?? {}),
+        },
+        { signal: ctx?.signal },
+      )
       return {
         text: resp.choices?.[0]?.message?.content ?? "",
         usage: toUsage(resp.usage),

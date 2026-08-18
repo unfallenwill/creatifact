@@ -223,7 +223,7 @@ export function createKlingProvider(
   }
 
   const videoGenerate: VideoGenerateApi<KlingVideoOptions> = {
-    async submit(req) {
+    async submit(req, ctx) {
       // API 层事实:新接口没有尾帧入参(对所有模型,含未知 id)
       if (req.lastFrame) {
         throw new ProviderError(
@@ -242,16 +242,17 @@ export function createKlingProvider(
       const envelope = await client.post<KlingEnvelope<KlingNewTask>>(
         path,
         buildVideoBody(req.options, contents, externalId),
-        { timeoutMs: SLOW_POST_TIMEOUT_MS },
+        { timeoutMs: SLOW_POST_TIMEOUT_MS, signal: ctx?.signal },
       )
       unwrap(envelope)
       return { providerId: "kling", id: externalId }
     },
 
-    async poll(handle: JobHandle): Promise<JobStatus> {
+    async poll(handle: JobHandle, ctx): Promise<JobStatus> {
       guardHandle("kling", handle)
       const envelope = await client.get<KlingEnvelope<KlingNewTask[]>>(
         `/tasks?external_task_ids=${handle.id}`,
+        { signal: ctx?.signal },
       )
       const task = unwrap<KlingNewTask[]>(envelope)?.[0]
       if (!task) return { state: "pending" }

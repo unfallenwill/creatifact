@@ -58,8 +58,8 @@ export type JobStatus =
   | { state: "failed"; error: { category: ErrorCategory; raw?: unknown } }
 
 export interface VideoGenerateApi<Opts> {
-  submit(req: VideoGenerateRequest<Opts>): Promise<JobHandle>
-  poll(handle: JobHandle): Promise<JobStatus>
+  submit(req: VideoGenerateRequest<Opts>, ctx?: CallContext): Promise<JobHandle>
+  poll(handle: JobHandle, ctx?: CallContext): Promise<JobStatus>
   /** Cancel a queued task / delete a finished one, when the provider supports it. */
   cancel?(handle: JobHandle): Promise<void>
 }
@@ -103,7 +103,7 @@ export interface UnderstandMessage {
 }
 
 export interface UnderstandApi<Opts> {
-  create(req: UnderstandRequest<Opts>): Promise<UnderstandResult>
+  create(req: UnderstandRequest<Opts>, ctx?: CallContext): Promise<UnderstandResult>
 }
 
 export interface UnderstandRequest<Opts> {
@@ -134,7 +134,7 @@ export interface TextGenerateResult {
 }
 
 export interface EmbedApi<Opts> {
-  create(req: EmbedRequest<Opts>): Promise<EmbedResult>
+  create(req: EmbedRequest<Opts>, ctx?: CallContext): Promise<EmbedResult>
 }
 
 export interface EmbedRequest<Opts> {

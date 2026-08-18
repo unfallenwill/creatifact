@@ -248,7 +248,7 @@ export function createZhipuProvider(
   }
 
   const videoGenerate: VideoGenerateApi<ZhipuVideoOptions> = {
-    async submit(req) {
+    async submit(req, ctx) {
       guardFrameSupport(ZHIPU_MODELS, req)
       // 运行时模型 id 来自用户输入;未知 id 落到 cogvideox3 分支(历史默认)。
       const mode = ZHIPU_VIDEO_MODEL_MODES[req.model as ZhipuModelId] ?? "cogvideox3"
@@ -264,6 +264,7 @@ export function createZhipuProvider(
 
       const resp = await client.post<ZhipuAsyncCreateResponse>("/videos/generations", body, {
         timeoutMs: SLOW_POST_TIMEOUT_MS,
+        signal: ctx?.signal,
       })
       if (!resp.id) {
         throw new ProviderError("internal", "Zhipu did not return a task id", resp)

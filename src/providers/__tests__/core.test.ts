@@ -113,6 +113,25 @@ test("requestJson does not retry POST submits by default (billable)", async () =
   mock.restore()
 })
 
+test("requestJson stops retrying once the caller aborts", async () => {
+  const controller = new AbortController()
+  const mock = mockFetch([
+    () => jsonResponse(429, { error: "rate" }),
+    () => {
+      controller.abort()
+      return jsonResponse(429, { error: "rate" })
+    },
+    () => jsonResponse(200, { ok: true }),
+  ])
+
+  await expect(
+    requestJson("https://example.test/x", { retries: 5, signal: controller.signal }),
+  ).rejects.toMatchObject({ message: "request aborted" })
+  expect(mock.recorded.length).toBe(2) // third attempt never starts
+
+  mock.restore()
+})
+
 test("requestJson classify hook takes precedence", async () => {
   const mock = mockFetch([() => jsonResponse(400, { code: "SensitiveContentDetected" })])
 

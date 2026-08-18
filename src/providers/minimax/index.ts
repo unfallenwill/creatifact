@@ -1,6 +1,7 @@
 import { mimeOfUrl, toImageUrl } from "../core/fileref"
 import { createJsonClient, type JsonClient, SLOW_POST_TIMEOUT_MS } from "../core/http"
 import {
+  type CallContext,
   type Env,
   type FileRef,
   guardHandle,
@@ -232,6 +233,7 @@ export function createMiniMaxProvider(
   async function submitV1(
     req: VideoGenerateRequest<MiniMaxVideoOptions>,
     mode: MiniMaxVideoMode,
+    ctx?: CallContext,
   ): Promise<JobHandle> {
     const body: Record<string, unknown> = {
       model: req.model,
@@ -261,6 +263,7 @@ export function createMiniMaxProvider(
 
     const resp = await client.post<MiniMaxV1CreateResponse>("/v1/video_generation", body, {
       timeoutMs: SLOW_POST_TIMEOUT_MS,
+      signal: ctx?.signal,
     })
     checkBaseResp(resp)
     if (!resp.task_id) {
@@ -345,7 +348,10 @@ export function createMiniMaxProvider(
     }
   }
 
-  async function submitV2(req: VideoGenerateRequest<MiniMaxVideoOptions>): Promise<JobHandle> {
+  async function submitV2(
+    req: VideoGenerateRequest<MiniMaxVideoOptions>,
+    ctx?: CallContext,
+  ): Promise<JobHandle> {
     if (!req.options?.resolution || req.options?.duration === undefined) {
       throw new ProviderError(
         "invalid",
@@ -371,7 +377,7 @@ export function createMiniMaxProvider(
         ...(ratio ? { ratio } : {}),
         ...rest,
       },
-      { timeoutMs: SLOW_POST_TIMEOUT_MS },
+      { timeoutMs: SLOW_POST_TIMEOUT_MS, signal: ctx?.signal },
     )
     if (!body.task_id) {
       throw new ProviderError("internal", "MiniMax did not return task_id", body)
@@ -380,10 +386,10 @@ export function createMiniMaxProvider(
   }
 
   const videoGenerate: VideoGenerateApi<MiniMaxVideoOptions> = {
-    async submit(req) {
+    async submit(req, ctx) {
       guardFrameSupport(MINIMAX_MODELS, req)
       const mode = modeForRequest(req)
-      return mode === "v2" ? submitV2(req) : submitV1(req, mode)
+      return mode === "v2" ? submitV2(req, ctx) : submitV1(req, mode, ctx)
     },
 
     // V2: DELETE /v2/video_generation/{task_id} (V1 has no cancel endpoint)
