@@ -127,7 +127,7 @@ export interface PullOptions {
   plainHttp: boolean
   username: string | undefined
   password: string | undefined
-  config?: OpenmmCliConfig
+  configPath?: string | undefined
 }
 
 export interface PullCommandOptions {
@@ -196,7 +196,7 @@ export async function runPull(options: PullOptions): Promise<PullResult> {
     plainHttp: options.plainHttp,
     username: options.username,
     password: options.password,
-    ...(options.config === undefined ? {} : { config: options.config }),
+    config: loadConfig(options.configPath),
   })
 
   await saveLayout(outputDir, {
@@ -231,6 +231,6 @@ export async function runPullFromParsed(
     plainHttp: parsed.plainHttp,
     username: parsed.username,
     password: await resolvePassword(parsed.password, parsed.passwordStdin),
-    config: loadConfig(opts?.configPath),
+    configPath: opts?.configPath,
   })
 }

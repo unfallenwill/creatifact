@@ -2,7 +2,6 @@ import {
   encodeBasicAuth,
   type Credentials,
   loadConfig,
-  type OpenmmCliConfig,
   resolvePlainHttp,
   resolveRegistryCredentials,
   toCredentials,
@@ -202,7 +201,7 @@ export interface PushOptions {
   plainHttp: boolean
   username: string | undefined
   password: string | undefined
-  config?: OpenmmCliConfig
+  configPath?: string | undefined
 }
 
 export interface PushCommandOptions {
@@ -273,7 +272,7 @@ export async function runPush(options: PushOptions): Promise<PushResult> {
   }
 
   const parsed = parseRef(effectiveRef)
-  const config = options.config ?? {}
+  const config = loadConfig(options.configPath)
   const credentials = resolveRegistryCredentials(
     parsed.registry,
     options.username,
@@ -331,6 +330,6 @@ export async function runPushFromParsed(
     plainHttp: parsed.plainHttp,
     username: parsed.username,
     password: await resolvePassword(parsed.password, parsed.passwordStdin),
-    config: loadConfig(opts?.configPath),
+    configPath: opts?.configPath,
   })
 }

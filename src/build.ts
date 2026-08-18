@@ -4,7 +4,7 @@ import { isAbsolute, join } from "node:path"
 
 import { Command } from "commander"
 
-import { loadConfig, type OpenmmCliConfig } from "./config"
+import { loadConfig } from "./config"
 import { GEN_CONFIG_MEDIA_TYPE, GEN_SCHEMA_VERSION, type GenSpec } from "./genPackage"
 import { createLayerFromView, createLayerTarball, mergeImageLayers, selectPaths } from "./layers"
 import { type BuildManifestFile, type CopyEntry, loadBuildManifest } from "./manifest"
@@ -98,7 +98,7 @@ export interface BuildOptions {
   plainHttp: boolean
   username: string | undefined
   password: string | undefined
-  config?: OpenmmCliConfig
+  configPath?: string | undefined
 }
 
 export interface ParsedArgs {
@@ -241,7 +241,7 @@ export async function runBuild(options: BuildOptions): Promise<BuildResult> {
     plainHttp: options.plainHttp,
     username: options.username,
     password: options.password,
-    ...(options.config === undefined ? {} : { config: options.config }),
+    config: loadConfig(options.configPath),
   }
 
   const inherited = await Promise.all(
@@ -290,7 +290,7 @@ export async function runBuildFromParsed(
     { ...cliOpts, ...(password === undefined ? {} : { password }) },
     loaded.file,
   )
-  options.config = loadConfig(opts?.configPath)
+  options.configPath = opts?.configPath
   options.assetsDir = resolveLocalDir(options.assetsDir, loaded.baseDir)
   options.from = options.from.map((spec) => resolveLocalSpec(spec, loaded.baseDir))
   options.copy = options.copy.map((entry) => ({
