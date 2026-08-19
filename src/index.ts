@@ -3,11 +3,12 @@
 import { readFileSync } from "node:fs"
 
 import { Command } from "commander"
-import pc from "picocolors"
+
 import { type BuildCommandOptions, buildArgsFromOptions, buildBuildCommand } from "./build"
 import { buildConfigCommand } from "./configCmd"
 import { executeCommand } from "./execute"
 import { runFileFromArgs } from "./fileCmd"
+import { pc } from "./format"
 import { buildGenerateCommand } from "./generate"
 import { buildAuthCommand } from "./login"
 import { buildModelsCommand, type ModelsCommandOptions, modelsArgsFromOptions } from "./models"

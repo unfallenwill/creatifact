@@ -2,9 +2,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Command } from "commander"
-import pc from "picocolors"
+
 import { defaultGenProvider, envForConfigPath, loadConfig, storeDir } from "./config"
-import { displayWidth } from "./format"
+import { displayWidth, pc } from "./format"
 import {
   buildResultPackage,
   GEN_CONFIG_MEDIA_TYPE,

@@ -1,8 +1,7 @@
 import { Command } from "commander"
-import pc from "picocolors"
 
 import { loadConfig } from "./config"
-import { displayWidth } from "./format"
+import { displayWidth, pc } from "./format"
 import { listConfiguredProviderIds, listProviderCatalog, type VerifiedModel } from "./providers"
 import { tasksForModel } from "./tasks"
 import { addGlobalOptions, parseArgsWith } from "./util"

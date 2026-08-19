@@ -2,6 +2,7 @@ import { execSync, spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import * as path from "node:path"
+import { stripAnsi } from "../format"
 
 const CLI = path.resolve("dist/index.mjs")
 
@@ -23,7 +24,11 @@ function run(args: string[], input?: string, env?: Record<string, string>): RunR
     ...(input === undefined ? {} : { input }),
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
-    ...(env === undefined ? {} : { env: { ...process.env, ...env } }),
+    // NO_COLOR pins most assertions to the contracted plain-text form so the
+    // suite never depends on the host's ambient color heuristics (CI=true,
+    // win32, a user's FORCE_COLOR). The color path itself is covered
+    // explicitly by the dual-mode test below.
+    ...(env === undefined ? {} : { env: { ...process.env, NO_COLOR: "1", ...env } }),
   })
   return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", code: result.status }
 }
@@ -360,6 +365,36 @@ describe("cli models — custom declarations", () => {
       const overview = run(["models"], undefined, env)
       expect(overview.code).toBe(0)
       expect(overview.stdout).toContain("minimax/MiniMax-M3")
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it("color output is plain-identical once stripped; piped output is always plain", () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "cli-color-"))
+    const configDir = path.join(tmp, "cfg")
+    mkdirSync(configDir, { recursive: true })
+    writeFileSync(path.join(configDir, "config.json"), "{}")
+    const env = { CREATIFACT_CONFIG_DIR: configDir }
+    try {
+      // Contract: piped stdout carries zero ANSI escapes — even under CI=true,
+      // which picocolors' default heuristics would otherwise color.
+      const piped = run(["models", "kling"], undefined, { ...env, CI: "true" })
+      expect(piped.code).toBe(0)
+      expect(piped.stdout).not.toContain("\u001b")
+
+      // Forced color: stripping must reproduce the plain output byte-for-byte,
+      // so the color path can never diverge from the plain path in content.
+      // NO_COLOR="" re-enables color despite the run() pin (spec: only a
+      // non-empty NO_COLOR disables).
+      const colored = run(["models", "kling"], undefined, {
+        ...env,
+        FORCE_COLOR: "1",
+        NO_COLOR: "",
+      })
+      expect(colored.code).toBe(0)
+      expect(colored.stdout).toContain("\u001b[") // color path really exercised
+      expect(stripAnsi(colored.stdout)).toBe(piped.stdout)
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
