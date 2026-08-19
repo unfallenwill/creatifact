@@ -9,7 +9,7 @@ import { buildConfigCommand } from "./configCmd"
 import { executeCommand } from "./execute"
 import { runFileFromArgs } from "./fileCmd"
 import { buildGenerateCommand } from "./generate"
-import { buildImagesCommand, buildPackageCommand, runPackageList } from "./store"
+import { buildPackageCommand } from "./store"
 import { buildAuthCommand } from "./login"
 import { buildModelsCommand, type ModelsCommandOptions, modelsArgsFromOptions } from "./models"
 import { buildPullCommand, type PullCommandOptions, pullArgsFromOptions } from "./pull"
@@ -98,12 +98,7 @@ program.addCommand(
 // --- generate / gen ---
 program.addCommand(buildGenerateCommand().alias("gen"))
 
-// --- images (top-level short form) + package (store management: ls / rm) ---
-program.addCommand(
-  buildImagesCommand().action(async (options: { configDir?: string }, command: Command) => {
-    await runPackageList(configOpts(command, options.configDir))
-  }),
-)
+// --- package: store management (list / ls, rm) ---
 program.addCommand(buildPackageCommand())
 
 // --- bare invocation / unknown top-level command ---

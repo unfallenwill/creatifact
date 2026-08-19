@@ -370,12 +370,12 @@ Options:
   -h, --help             Show this help message
 ```
 
-### `images` / `package ls` / `package rm`
+### `package ls` / `package rm`
 
-List tags in the shared store (like `docker images` / `docker image ls`):
+List tags in the shared store (like `docker image ls`):
 
 ```bash
-$ openmmcli images          # or: openmmcli package ls
+$ openmmcli package ls
 REF                DIGEST             SIZE  KIND
 gen-output:latest  b196744b7944       363B  gen
 team/app-a:1       0d0e0f1a2b3c       392B  image
@@ -436,7 +436,7 @@ by other openmmcli modules (e.g. provider API keys under `providers`).
 Built/pulled/generated images live in a **shared content store** at
 `~/.openmmcli/store` — one OCI layout where blobs are deduplicated by digest
 and tags are pointers in `index.json` (docker-style). Rebuilding the same tag
-repoints it and never touches other tags; `openmmcli images` lists them, and
+repoints it and never touches other tags; `openmmcli package ls` lists them, and
 `--output`/`--layout` still pin/export an explicit standalone directory.
 A per-invocation override is also available: pass `--config-dir <dir>` to any
 subcommand to use `<dir>/config.json` (takes precedence over the env var).

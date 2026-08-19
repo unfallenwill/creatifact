@@ -140,13 +140,6 @@ export async function removeStoreRefs(refs: string[], configPath?: string): Prom
   return { untagged: refs, deletedBlobs }
 }
 
-export function buildImagesCommand(): Command {
-  const cmd = new Command("images").description(
-    "List tags in the shared store (~/.openmmcli/store)",
-  )
-  return addGlobalOptions(cmd)
-}
-
 export function buildPackageCommand(): Command {
   const pkg = new Command("package")
     .usage("<action>")
@@ -156,7 +149,7 @@ export function buildPackageCommand(): Command {
 
   const ls = new Command("list")
     .alias("ls")
-    .description("List store tags (same as `openmmcli images`)")
+    .description("List tags in the shared store (~/.openmmcli/store)")
   ls.action(async (options: { configDir?: string }, command: Command) => {
     await runPackageList(configOpts(command, options.configDir))
   })
