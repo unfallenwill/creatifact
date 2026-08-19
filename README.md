@@ -1,14 +1,14 @@
-# openmmcli
+# Creatifact
 
 **An agent-native multimodal creation runtime, powered by portable OCI artifacts.**
 
-openmmcli gives AI agents a composable CLI and JSON interface for generating,
+Creatifact gives AI agents a composable CLI and JSON interface for generating,
 understanding, and transforming text, images, and video across model providers.
 Creation recipes, assets, results, and provenance can travel as
 [OCI artifacts](https://github.com/opencontainers/image-spec/blob/main/image-layout.md)
 through any OCI-compatible registry. No Docker daemon is required.
 
-Agents handle creative planning and iteration; openmmcli handles task
+Agents handle creative planning and iteration; Creatifact handles task
 execution, provider integration, artifact packaging, and delivery.
 
 - **Agent-native** — CLI commands, JSON request files, pipelines, and structured output
@@ -19,28 +19,28 @@ execution, provider integration, artifact packaging, and delivery.
 ## Install
 
 ```bash
-npm install -g openmmcli
+npm install -g creatifact
 ```
 
 Or use directly without installing:
 
 ```bash
-npx openmmcli --version
+npx creatifact --version
 ```
 
 ## Quick Start
 
 ```bash
-# 1. Give openmmcli a creative task
-openmmcli generate text2image zhipu "a paper crane in the rain" \
+# 1. Give Creatifact a creative task
+creatifact generate text2image zhipu "a paper crane in the rain" \
   --tag ghcr.io/acme/crane:v1
 
 # 2. Publish the resulting OCI package
-openmmcli auth login ghcr.io
-openmmcli push ghcr.io/acme/crane:v1
+creatifact auth login ghcr.io
+creatifact push ghcr.io/acme/crane:v1
 
 # 3. Another agent can pull the package from the same registry
-openmmcli pull ghcr.io/acme/crane:v1 -o ./pulled-crane
+creatifact pull ghcr.io/acme/crane:v1 -o ./pulled-crane
 ```
 
 Agents can invoke the same workflow through a JSON request file, making the
@@ -48,7 +48,7 @@ execution contract explicit and reproducible:
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/unfallenwill/openmmcli/main/schemas/openmm-request.schema.json",
+  "$schema": "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-request.schema.json",
   "command": "generate.text2image",
   "provider": "zhipu",
   "prompt": "a paper crane in the rain",
@@ -57,7 +57,7 @@ execution contract explicit and reproducible:
 ```
 
 ```bash
-openmmcli -f request.json
+creatifact -f request.json
 ```
 
 ## Command forms
@@ -66,17 +66,17 @@ Every command supports two forms — a subcommand tree and a JSON request file:
 
 ```bash
 # Form 1: subcommand tree
-openmmcli generate text2image zhipu "a crane" --opt size=1024x1024
-openmmcli generate image2image demo "paint it" --image cat.png
-openmmcli build -t org/myapp:1.0.0
+creatifact generate text2image zhipu "a crane" --opt size=1024x1024
+creatifact generate image2image demo "paint it" --image cat.png
+creatifact build -t org/myapp:1.0.0
 
-# Form 2: JSON request file (openmmcli -f <file>.json)
-openmmcli -f request.json
+# Form 2: JSON request file (creatifact -f <file>.json)
+creatifact -f request.json
 ```
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/unfallenwill/openmmcli/main/schemas/openmm-request.schema.json",
+  "$schema": "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-request.schema.json",
   "command": "generate.text2image",
   "provider": "zhipu",
   "prompt": "a crane",
@@ -95,7 +95,7 @@ fields map to that command's arguments. `command` mirrors the subcommand tree:
 commands, flags after the file override the file's fields (CLI wins):
 
 ```bash
-openmmcli -f request.json --prompt "a red crane" --opt size=2048x2048
+creatifact -f request.json --prompt "a red crane" --opt size=2048x2048
 ```
 
 ### Pipelines (`steps`)
@@ -148,22 +148,22 @@ Progress and notes go to stderr; results go to stdout.
 
 ```
 # text chat
-openmmcli generate text2text zhipu "explain ECC memory in one paragraph"
-openmmcli generate text2text ark/doubao-seed-1-6-250615 "hi" --system "be brief"
+creatifact generate text2text zhipu "explain ECC memory in one paragraph"
+creatifact generate text2text ark/doubao-seed-1-6-250615 "hi" --system "be brief"
 
 # text-to-image / image-to-image
-openmmcli generate text2image zhipu "a crane" --opt size=1024x1024
-openmmcli generate image2image ark "oil painting style" --image cat.png
+creatifact generate text2image zhipu "a crane" --opt size=1024x1024
+creatifact generate image2image ark "oil painting style" --image cat.png
 
 # video: text / image / first+last frames
-openmmcli generate text2video ark "a paper crane" --no-wait
-openmmcli generate image2video kling/kling-3.0-turbo "animate" --image first.png
-openmmcli generate frames2video zhipu/viduq1-start-end "morph" \
+creatifact generate text2video ark "a paper crane" --no-wait
+creatifact generate image2video kling/kling-3.0-turbo "animate" --image first.png
+creatifact generate frames2video zhipu/viduq1-start-end "morph" \
   --first-frame a.png --last-frame b.png
 
 # understanding and embeddings
-openmmcli generate image2text ark/doubao-1.5-vision-pro-32k-250115 "what is this" --input cat.png
-openmmcli generate embed ark "hello" "world"
+creatifact generate image2text ark/doubao-1.5-vision-pro-32k-250115 "what is this" --input cat.png
+creatifact generate embed ark "hello" "world"
 ```
 
 With no `<provider>`, the default provider from the config is used; with no
@@ -173,15 +173,15 @@ when it satisfies the task (e.g. `imageInput` for image2image, `firstFrame` +
 a fallback with a warning (frames2video is strict and errors instead):
 
 ```bash
-openmmcli config set defaults.gen.provider zhipu
-openmmcli generate text2image "a crane"   # zhipu + its default image model
+creatifact config set defaults.gen.provider zhipu
+creatifact generate text2image "a crane"   # zhipu + its default image model
 ```
 
 Wrong flag/task combinations are rejected with guidance instead of failing at
 the provider:
 
 ```
-$ openmmcli generate text2video demo x --first-frame a.png
+$ creatifact generate text2video demo x --first-frame a.png
 error: text2video does not take --first-frame; use `generate image2video --image <img>`
 ```
 
@@ -192,12 +192,12 @@ or the provider's env vars (`ZHIPU_API_KEY`, `ARK_API_KEY`, ...). See
 
 ### Gen packages
 
-`openmmcli build` can bake a generation *recipe* (task, provider, model,
+`creatifact build` can bake a generation *recipe* (task, provider, model,
 and parameters — never API keys) into an OCI package, and
-`openmmcli generate <ref>` runs it:
+`creatifact generate <ref>` runs it:
 
 ```jsonc
-// openmm-build.json
+// creatifact-build.json
 {
   "gen": {
     "task": "image2image",
@@ -213,12 +213,12 @@ and parameters — never API keys) into an OCI package, and
 
 ```bash
 # 1. Build and push the recipe package
-openmmcli build -t example.com/xxxxxx:v1.0
-openmmcli push example.com/xxxxxx:v1.0
+creatifact build -t example.com/xxxxxx:v1.0
+creatifact push example.com/xxxxxx:v1.0
 
 # 2. Run it from anywhere: the task comes from the package
-openmmcli generate example.com/xxxxxx:v1.0 "a red crane" --opt size=2048x2048
-openmmcli generate org/myresult:1.0 "a crane"  # a tag in the local store also works
+creatifact generate example.com/xxxxxx:v1.0 "a red crane" --opt size=2048x2048
+creatifact generate org/myresult:1.0 "a crane"  # a tag in the local store also works
 ```
 
 `generate <ref>` accepts a registry reference, a tag from the local store, or a
@@ -241,7 +241,7 @@ blob records the *effective* generation parameters plus result metadata
 image/video was produced:
 
 ```bash
-openmmcli generate example.com/xxxxxx:v1.0 "a red crane" --tag org/myresult:1.0
+creatifact generate example.com/xxxxxx:v1.0 "a red crane" --tag org/myresult:1.0
 # → store tag org/myresult:1.0 (index.json + blobs + a config blob with provenance)
 ```
 
@@ -252,25 +252,25 @@ Non-media tasks (text/understand/embed) print to stdout.
 
 ```
 # List available providers (built-ins + config-declared plugins)
-openmmcli models
+creatifact models
 
 # List a provider's verified models with capability tags
-openmmcli models zhipu
-openmmcli models zhipu --json
+creatifact models zhipu
+creatifact models zhipu --json
 ```
 
 ### `build`
 
-Build an OCI image layout from a build manifest (`openmm-build.json` by default; `pkg` is an alias for `package`). The manifest describes the image *content*; everything else (tag, output dir, assets override) is passed via CLI flags.
+Build an OCI image layout from a build manifest (`creatifact-build.json` by default; `pkg` is an alias for `package`). The manifest describes the image *content*; everything else (tag, output dir, assets override) is passed via CLI flags.
 
 ```
-Usage: openmmcli build [options]
+Usage: creatifact build [options]
 
 Options:
   -t, --tag <repo:tag>   Image reference, e.g. org/myapp:1.0.0 (required)
       --dir <path>       Local directory to pack as the top layer
                          (overrides "assets" in the manifest)
-  -f, --file <path>      Build manifest path (default: ./openmm-build.json)
+  -f, --file <path>      Build manifest path (default: ./creatifact-build.json)
   -o, --output <dir>     Export a standalone layout dir (default: shared store)
       --annotation k=v   Add manifest annotation (repeatable, overrides manifest)
       --username <user>  Registry username for from/copy sources
@@ -286,10 +286,10 @@ The manifest is a plain JSON file. All fields are optional; an empty manifest bu
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/unfallenwill/openmmcli/main/schemas/openmm-build.schema.json",
+  "$schema": "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-build.schema.json",
   "annotations": {
-    "org.openmm.name": "my-package",
-    "org.openmm.description": "cuda runtime + custom assets"
+    "org.creatifact.name": "my-package",
+    "org.creatifact.description": "cuda runtime + custom assets"
   },
   "from": [
     "localhost:5000/runtime:1.0.0",
@@ -308,7 +308,7 @@ The manifest is a plain JSON file. All fields are optional; an empty manifest bu
 | `from` | string \| string[] | Inherit all layers from a registry reference or a local OCI layout path. Order = layer order |
 | `copy` | array | Extract specific paths from a source image into a new layer. `paths` match exact files or directory subtrees |
 | `assets` | string | Local directory packed as the top layer (relative to the manifest file) |
-| `gen` | object | Generation recipe (`lane` required, plus `provider`, `model`, `prompt`, `system`, `options`, `image`, `firstFrame`, `lastFrame`, `input`). Baked into the config blob so `openmmcli gen <ref>` can run it. Never includes credentials |
+| `gen` | object | Generation recipe (`task` required, plus `provider`, `model`, `prompt`, `system`, `options`, `images`, `firstFrame`, `lastFrame`, `inputs`). Baked into the config blob so `creatifact generate <ref>` can run it. Never includes credentials |
 
 - `from` / `copy.from` accept a registry reference (e.g. `localhost:5000/pkg:1.0`) or a local OCI layout directory. A string starting with `.`, `/`, or an existing directory is treated as a local path.
 - Relative paths in the manifest (`assets`, local `from`/`copy.from`) are resolved relative to the manifest file. CLI `--dir` is resolved relative to the current directory.
@@ -324,8 +324,8 @@ Reference the JSON Schema in your manifest (as in the example above), or associa
 {
   "json.schemas": [
     {
-      "fileMatch": ["openmm-build.json"],
-      "url": "./schemas/openmm-build.schema.json"
+      "fileMatch": ["creatifact-build.json"],
+      "url": "./schemas/creatifact-build.schema.json"
     }
   ]
 }
@@ -336,7 +336,7 @@ Reference the JSON Schema in your manifest (as in the example above), or associa
 Push an OCI image layout to a registry.
 
 ```
-Usage: openmmcli push <registry>/<repo>:<tag> [options]
+Usage: creatifact push <registry>/<repo>:<tag> [options]
 
 Arguments:
   <registry>/<repo>:<tag>  Destination reference (e.g. localhost:5000/myrepo:1.0)
@@ -356,7 +356,7 @@ Options:
 Pull an OCI image layout from a registry.
 
 ```
-Usage: openmmcli pull <registry>/<repo>:<tag> [options]
+Usage: creatifact pull <registry>/<repo>:<tag> [options]
 
 Arguments:
   <registry>/<repo>:<tag>  Source reference (e.g. localhost:5000/myrepo:1.0)
@@ -375,7 +375,7 @@ Options:
 List tags in the shared store (like `docker image ls`):
 
 ```bash
-$ openmmcli package ls
+$ creatifact package ls
 REF                DIGEST             SIZE  KIND
 gen-output:latest  b196744b7944       363B  gen
 team/app-a:1       0d0e0f1a2b3c       392B  image
@@ -387,7 +387,7 @@ Remove tags with `package rm`; blobs shared with other tags survive, and the
 last reference deletes the underlying blobs (docker rmi semantics):
 
 ```bash
-$ openmmcli package rm gen-output:latest
+$ creatifact package rm gen-output:latest
 Untagged: gen-output:latest
 Deleted: sha256:3f2a...   # only when no other tag references them
 ```
@@ -399,7 +399,7 @@ Save and remove registry credentials. Credentials are stored base64-encoded in
 never in shell history.
 
 ```
-Usage: openmmcli auth login <registry> [options]
+Usage: creatifact auth login <registry> [options]
 
 Arguments:
   <registry>             Registry host[:port] (e.g. localhost:5000, registry.example.com)
@@ -418,7 +418,7 @@ always wins over the config file.
 ### `config`
 
 ```
-Usage: openmmcli config <action> [args]
+Usage: creatifact config <action> [args]
 
 Actions:
   path                  Print the config file path
@@ -430,13 +430,13 @@ Actions:
 
 ## Configuration
 
-The config file lives at `~/.openmmcli/config.json` (override with the
-`OPENMMCLI_CONFIG_DIR` environment variable). It is shared by all commands and
-by other openmmcli modules (e.g. provider API keys under `providers`).
+The config file lives at `~/.creatifact/config.json` (override with the
+`CREATIFACT_CONFIG_DIR` environment variable). It is shared by all commands and
+by other Creatifact modules (e.g. provider API keys under `providers`).
 Built/pulled/generated images live in a **shared content store** at
-`~/.openmmcli/store` — one OCI layout where blobs are deduplicated by digest
+`~/.creatifact/store` — one OCI layout where blobs are deduplicated by digest
 and tags are pointers in `index.json` (docker-style). Rebuilding the same tag
-repoints it and never touches other tags; `openmmcli package ls` lists them, and
+repoints it and never touches other tags; `creatifact package ls` lists them, and
 `--output`/`--layout` still pin/export an explicit standalone directory.
 A per-invocation override is also available: pass `--config-dir <dir>` to any
 subcommand to use `<dir>/config.json` (takes precedence over the env var).
@@ -458,14 +458,14 @@ subcommand to use `<dir>/config.json` (takes precedence over the env var).
 }
 ```
 
-- `defaults.gen.provider` — provider used when `openmmcli generate <task>` omits `<provider>`; the task then picks a suitable default model.
-- `auths.<registry>.auth` — base64(`user:password`), docker-config-compatible; managed by `openmmcli auth login`/`logout`.
+- `defaults.gen.provider` — provider used when `creatifact generate <task>` omits `<provider>`; the task then picks a suitable default model.
+- `auths.<registry>.auth` — base64(`user:password`), docker-config-compatible; managed by `creatifact auth login`/`logout`.
 - `auths.<registry>.insecure` — talk plain HTTP to this registry without `--plain-http` (per registry, not global).
-- `providers.*` — passthrough section for other openmmcli modules; preserved by every write.
+- `providers.*` — passthrough section for other Creatifact modules; preserved by every write.
 
 Credential resolution order: **CLI flags (complete pair) → config file → anonymous**.
 If the config file is corrupt, commands fail loudly with the file path and a
-`openmmcli config reset` hint instead of silently ignoring your settings.
+`creatifact config reset` hint instead of silently ignoring your settings.
 
 ### Provider plugins
 
@@ -476,7 +476,7 @@ any settings you need:
 ```json
 {
   "providers": {
-    "my-provider": { "module": "openmmcli-my-provider", "apiKey": "..." }
+    "my-provider": { "module": "creatifact-my-provider", "apiKey": "..." }
   }
 }
 ```
@@ -485,7 +485,7 @@ any settings you need:
 
 | Form | Example | Resolution |
 |------|---------|------------|
-| Bare package name | `openmmcli-my-provider` | Resolved from openmmcli's own module tree first (same-project or both-global installs), then falls back to the current working directory (global CLI + project-local plugin) |
+| Bare package name | `creatifact-my-provider` | Resolved from Creatifact's own module tree first (same-project or both-global installs), then falls back to the current working directory (global CLI + project-local plugin) |
 | Relative path | `./plugins/my-provider.mjs` | Resolved against the caller's `cwd` |
 | Absolute path | `/opt/plugins/my-provider.mjs` | Used as-is |
 | Home path | `~/plugins/my-provider.mjs` | `~` expanded via the home directory |
@@ -499,13 +499,13 @@ sees its business settings. The returned provider must:
 - implement at least one capability API (`textGenerate`, `videoGenerate`,
   `videoUnderstand`, `imageGenerate`, `imageUnderstand`, `embed`),
 - optionally declare `defaultModels` — a `{ capability: modelId }` map used
-  when the CLI omits the model (e.g. `openmmcli gen image my-provider`).
+  when the CLI omits the model (e.g. `creatifact gen image my-provider`).
 
 ESM (`"type": "module"`) is recommended; CommonJS (`module.exports = factory`)
 is also supported. Minimal plugin:
 
 ```ts
-import { createJsonClient, defineProvider, type Provider } from "openmmcli/providers"
+import { createJsonClient, defineProvider, type Provider } from "creatifact/providers"
 
 interface Settings {
   apiKey?: string
@@ -531,8 +531,8 @@ export default defineProvider((settings: Settings, env) => {
 ```
 
 Types and helpers (`Provider`, `defineProvider`, `createJsonClient`,
-`pollUntil`, `ProviderError`, …) are importable from `openmmcli/providers`;
-add `openmmcli` as a devDependency for compile-time types. No runtime
+`pollUntil`, `ProviderError`, …) are importable from `creatifact/providers`;
+add `creatifact` as a devDependency for compile-time types. No runtime
 peerDependency is required.
 
 Load failures (module not found, bad export shape, `id` mismatch, no capability
@@ -547,7 +547,7 @@ import {
   createProvider,
   listConfiguredProviderIds,
   listProviderIds,
-} from "openmmcli/providers"
+} from "creatifact/providers"
 
 const provider = await createProvider("my-provider") // async since plugins load via import()
 listProviderIds()            // built-ins only, sync

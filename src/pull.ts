@@ -1,7 +1,6 @@
+import { createHash } from "node:crypto"
 import { mkdir } from "node:fs/promises"
 import { join } from "node:path"
-
-import { createHash } from "node:crypto"
 import {
   type LoadedImage,
   MANIFEST_MEDIA_TYPE,
@@ -16,9 +15,9 @@ export { saveLayout }
 
 import { Command } from "commander"
 import {
+  type CreatifactConfig,
   envForConfigPath,
   loadConfig,
-  type OpenmmCliConfig,
   resolvePlainHttp,
   resolveRegistryCredentials,
   storeDir,
@@ -31,7 +30,7 @@ export interface ImageFetchOptions {
   username: string | undefined
   password: string | undefined
   /** Loaded config for credential/insecure fallback; omit to disable. */
-  config?: OpenmmCliConfig
+  config?: CreatifactConfig
 }
 
 export async function fetchImage(ref: string, opts: ImageFetchOptions): Promise<LoadedImage> {
@@ -152,11 +151,11 @@ export function buildPullCommand(): Command {
     .argument("[ref]", "Source reference (e.g. localhost:5000/myrepo:1.0)")
     .option(
       "-o, --output <dir>",
-      "Output OCI layout directory (default: ~/.openmmcli/layouts/<repo>)",
+      "Export a standalone OCI layout directory (default: ~/.creatifact/store)",
     )
     .option(
       "--username <user>",
-      "Registry username (falls back to config, see: openmmcli auth login)",
+      "Registry username (falls back to config, see: creatifact auth login)",
     )
     .option("--password <pw>", "Registry password (prefer --password-stdin)")
     .option("--password-stdin", "Read password from stdin")

@@ -88,14 +88,7 @@ function refLabel(ref: ParsedRef): string {
     : `${ref.step}.${ref.field}[${ref.index}].${ref.prop}`
 }
 
-/**
- * Fail fast on structural problems before any step runs: duplicate names,
- * unknown / forward / void references, and generate steps that would pollute
- * the pipeline (noWait prints a handle and returns nothing; json fights the
- * pipeline's own output).
- */
-function precheck(steps: PipelineStep[]): void {
-  if (steps.length === 0) throw new Error("steps must be a non-empty array")
+function collectStepNames(steps: PipelineStep[]): Map<string, number> {
   const seen = new Map<string, number>()
   for (const [i, step] of steps.entries()) {
     if (step.name === undefined) continue
@@ -104,30 +97,53 @@ function precheck(steps: PipelineStep[]): void {
     }
     seen.set(step.name, i)
   }
+  return seen
+}
+
+function validateGenerateStep(step: PipelineStep, stepIndex: number): void {
+  if (!step.command.startsWith("generate.")) return
+  if (step.fields["noWait"] === true) {
+    throw new Error(`step ${stepIndex}: generate steps cannot use noWait inside a pipeline`)
+  }
+  if (step.fields["json"] === true) {
+    throw new Error(`step ${stepIndex}: generate steps cannot use json inside a pipeline`)
+  }
+}
+
+function validateStepReferences(
+  step: PipelineStep,
+  stepIndex: number,
+  seen: Map<string, number>,
+): void {
+  const refs: { text: string; ref: ParsedRef }[] = []
+  collectRefs(step.fields, refs)
+  for (const { ref } of refs) {
+    const target = seen.get(ref.step)
+    if (target === undefined) {
+      throw new Error(
+        `step ${stepIndex} references unknown step '${ref.step}' (known: ${[...seen.keys()].join(", ") || "none"})`,
+      )
+    }
+    if (target >= stepIndex) {
+      throw new Error(
+        `step ${stepIndex} references '${refLabel(ref)}' which runs later (forward reference)`,
+      )
+    }
+  }
+}
+
+/**
+ * Fail fast on structural problems before any step runs: duplicate names,
+ * unknown / forward / void references, and generate steps that would pollute
+ * the pipeline (noWait prints a handle and returns nothing; json fights the
+ * pipeline's own output).
+ */
+function precheck(steps: PipelineStep[]): void {
+  if (steps.length === 0) throw new Error("steps must be a non-empty array")
+  const seen = collectStepNames(steps)
   for (const [i, step] of steps.entries()) {
-    if (step.command.startsWith("generate.")) {
-      if (step.fields["noWait"] === true) {
-        throw new Error(`step ${i}: generate steps cannot use noWait inside a pipeline`)
-      }
-      if (step.fields["json"] === true) {
-        throw new Error(`step ${i}: generate steps cannot use json inside a pipeline`)
-      }
-    }
-    const refs: { text: string; ref: ParsedRef }[] = []
-    collectRefs(step.fields, refs)
-    for (const { ref } of refs) {
-      const target = seen.get(ref.step)
-      if (target === undefined) {
-        throw new Error(
-          `step ${i} references unknown step '${ref.step}' (known: ${[...seen.keys()].join(", ") || "none"})`,
-        )
-      }
-      if (target >= i) {
-        throw new Error(
-          `step ${i} references '${refLabel(ref)}' which runs later (forward reference)`,
-        )
-      }
-    }
+    validateGenerateStep(step, i)
+    validateStepReferences(step, i, seen)
   }
 }
 
@@ -169,6 +185,54 @@ function resolvePlaceholders(
   return value
 }
 
+function notReferenceableError(ref: ParsedRef, allowed: string[], stepIndex: number): Error {
+  return new Error(
+    `step ${stepIndex}: '${refLabel(ref)}' is not referenceable (allowed for this step: ${allowed.join(", ")})`,
+  )
+}
+
+function isReferenceableArtifactRef(
+  ref: ParsedRef & { index: number },
+): ref is ParsedRef & { field: "artifacts"; index: number; prop: "url" | "base64" } {
+  return ref.field === "artifacts" && (ref.prop === "url" || ref.prop === "base64")
+}
+
+function artifactRefValue(
+  ref: ParsedRef & { index: number },
+  result: CommandResult,
+  allowed: string[],
+  stepIndex: number,
+): unknown {
+  if (!isReferenceableArtifactRef(ref)) {
+    throw notReferenceableError(ref, allowed, stepIndex)
+  }
+  const artifacts = result.kind === "generate" ? result.artifacts : undefined
+  const artifact = artifacts?.[ref.index]
+  if (artifact === undefined) {
+    throw new Error(
+      `step ${stepIndex}: '${ref.step}' has no artifact at index ${ref.index} (got ${artifacts?.length ?? 0})`,
+    )
+  }
+  const value = ref.prop === "url" ? artifact.url : artifact.base64
+  if (value === undefined) {
+    throw new Error(`step ${stepIndex}: '${refLabel(ref)}' has no ${ref.prop}`)
+  }
+  return value
+}
+
+function resultFieldRefValue(
+  ref: ParsedRef,
+  result: CommandResult,
+  allowed: string[],
+  stepIndex: number,
+): unknown {
+  const value = resolveResultField(result, ref.field)
+  if (value === undefined || !allowed.includes(ref.field)) {
+    throw notReferenceableError(ref, allowed, stepIndex)
+  }
+  return value
+}
+
 function refValue(ref: ParsedRef, results: Map<string, CommandResult>, stepIndex: number): unknown {
   const result = results.get(ref.step)
   if (result === undefined) {
@@ -180,36 +244,9 @@ function refValue(ref: ParsedRef, results: Map<string, CommandResult>, stepIndex
       `step ${stepIndex}: '${ref.step}' produced no referenceable output (void result); referenceable steps return tag/digest/outputDir/artifacts`,
     )
   }
-  if (ref.index !== undefined) {
-    if (
-      ref.field !== "artifacts" ||
-      ref.prop === undefined ||
-      (ref.prop !== "url" && ref.prop !== "base64")
-    ) {
-      throw new Error(
-        `step ${stepIndex}: '${refLabel(ref)}' is not referenceable (allowed for this step: ${allowed.join(", ")})`,
-      )
-    }
-    const artifacts = result.kind === "generate" ? result.artifacts : undefined
-    const artifact = artifacts?.[ref.index]
-    if (artifact === undefined) {
-      throw new Error(
-        `step ${stepIndex}: '${ref.step}' has no artifact at index ${ref.index} (got ${artifacts?.length ?? 0})`,
-      )
-    }
-    const value = ref.prop === "url" ? artifact.url : artifact.base64
-    if (value === undefined) {
-      throw new Error(`step ${stepIndex}: '${refLabel(ref)}' has no ${ref.prop}`)
-    }
-    return value
-  }
-  const value = resolveResultField(result, ref.field)
-  if (value === undefined || !allowed.includes(ref.field)) {
-    throw new Error(
-      `step ${stepIndex}: '${refLabel(ref)}' is not referenceable (allowed for this step: ${allowed.join(", ")})`,
-    )
-  }
-  return value
+  return ref.index === undefined
+    ? resultFieldRefValue(ref, result, allowed, stepIndex)
+    : artifactRefValue(ref as ParsedRef & { index: number }, result, allowed, stepIndex)
 }
 
 /**

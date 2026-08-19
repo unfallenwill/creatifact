@@ -8,9 +8,9 @@ import {
   MANIFEST_MEDIA_TYPE,
   type OCIDescriptor,
   type OCIManifest,
+  REF_NAME_ANNOTATION,
   readIndexEntries,
   readOciLayout,
-  REF_NAME_ANNOTATION,
   upsertStoreEntry,
   writeBlob,
   writeOciLayout,
@@ -18,20 +18,20 @@ import {
 import type { Artifact, Usage } from "./providers"
 import type { ImageFetchOptions } from "./pull"
 import { isLocalRef } from "./refs"
-import { TASKS, type GenTaskName } from "./tasks"
+import { type GenTaskName, TASKS } from "./tasks"
 import { ensureOutputDirEmpty } from "./util"
 
 export type { LoadedImage }
 
 /** Media type of the OCI config blob that carries a gen recipe (or a result's provenance). */
-export const GEN_CONFIG_MEDIA_TYPE = "application/vnd.openmm.gen.v1+json"
+export const GEN_CONFIG_MEDIA_TYPE = "application/vnd.creatifact.gen.v1+json"
 export const GEN_SCHEMA_VERSION = 1
 
 /** Gen recipes cannot be the `resume` control command. */
 const GEN_TASKS = new Set(Object.keys(TASKS).filter((t) => t !== "resume"))
 
 /**
- * A generation recipe baked into a package by `openmmcli build`.
+ * A generation recipe baked into a package by `creatifact package build`.
  * Task-oriented (X2Y); never contains credentials — only provider/model ids
  * and parameters. Media references are URLs, local paths, or pkg://paths into
  * the package's own layers.
@@ -253,6 +253,34 @@ export interface ResultPackageOptions {
   createdAt?: string
 }
 
+async function stageArtifacts(
+  artifacts: Artifact[],
+  stage: string,
+  blobsDir: string,
+): Promise<{
+  recorded: Array<{ name?: string; url?: string; mimeType?: string | undefined }>
+  layers: OCIDescriptor[]
+}> {
+  const recorded: Array<{ name?: string; url?: string; mimeType?: string | undefined }> = []
+  let fileCount = 0
+  for (const [i, artifact] of artifacts.entries()) {
+    if (artifact.url !== undefined) {
+      recorded.push({ url: artifact.url, mimeType: artifact.mimeType })
+      continue
+    }
+    if (artifact.base64 === undefined) continue
+    const ext = (artifact.mimeType && MIME_EXT[artifact.mimeType]) || "bin"
+    const name = `artifact-${i + 1}.${ext}`
+    await writeFile(join(stage, name), Buffer.from(artifact.base64, "base64"))
+    recorded.push({ name, mimeType: artifact.mimeType })
+    fileCount++
+  }
+  return {
+    recorded,
+    layers: fileCount > 0 ? [await createLayerTarball(stage, blobsDir)] : [],
+  }
+}
+
 /**
  * Write generated media as an OCI layout: base64 artifacts become a tar
  * layer, and a config blob records the effective gen spec + result metadata
@@ -266,26 +294,13 @@ export async function buildResultPackage(opts: ResultPackageOptions): Promise<{ 
   const blobsDir = join(opts.outputDir, "blobs", "sha256")
   await mkdir(blobsDir, { recursive: true })
 
-  const stage = await mkdtemp(join(tmpdir(), "openmm-gen-"))
-  const recorded: Array<{ name?: string; url?: string; mimeType?: string | undefined }> = []
+  const stage = await mkdtemp(join(tmpdir(), "creatifact-gen-"))
+  let recorded: Array<{ name?: string; url?: string; mimeType?: string | undefined }> = []
   let layers: OCIDescriptor[] = []
   try {
-    let fileCount = 0
-    for (const [i, artifact] of opts.artifacts.entries()) {
-      if (artifact.url !== undefined) {
-        recorded.push({ url: artifact.url, mimeType: artifact.mimeType })
-        continue
-      }
-      if (artifact.base64 === undefined) continue
-      const ext = (artifact.mimeType && MIME_EXT[artifact.mimeType]) || "bin"
-      const name = `artifact-${i + 1}.${ext}`
-      await writeFile(join(stage, name), Buffer.from(artifact.base64, "base64"))
-      recorded.push({ name, mimeType: artifact.mimeType })
-      fileCount++
-    }
-    if (fileCount > 0) {
-      layers = [await createLayerTarball(stage, blobsDir)]
-    }
+    const staged = await stageArtifacts(opts.artifacts, stage, blobsDir)
+    recorded = staged.recorded
+    layers = staged.layers
   } finally {
     await rm(stage, { recursive: true, force: true })
   }
@@ -309,10 +324,12 @@ export async function buildResultPackage(opts: ResultPackageOptions): Promise<{ 
   )
 
   const annotations: Record<string, string> = {
-    "org.openmm.gen.task": opts.spec.task,
+    "org.creatifact.gen.task": opts.spec.task,
   }
-  if (opts.spec.provider !== undefined) annotations["org.openmm.gen.provider"] = opts.spec.provider
-  if (opts.spec.model !== undefined) annotations["org.openmm.gen.model"] = opts.spec.model
+  if (opts.spec.provider !== undefined) {
+    annotations["org.creatifact.gen.provider"] = opts.spec.provider
+  }
+  if (opts.spec.model !== undefined) annotations["org.creatifact.gen.model"] = opts.spec.model
 
   const manifest: OCIManifest = {
     schemaVersion: 2,

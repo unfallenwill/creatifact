@@ -6,7 +6,7 @@ import { encodeAuth } from "../config"
 import { parseLoginArgs, runLogin, runLoginFromArgs, runLogout, runLogoutFromArgs } from "../login"
 
 function tmpConfigPath(): string {
-  return join(mkdtempSync(join(tmpdir(), "openmmcli-login-")), "config.json")
+  return join(mkdtempSync(join(tmpdir(), "creatifact-login-")), "config.json")
 }
 
 function readConfig(path: string): Record<string, unknown> {

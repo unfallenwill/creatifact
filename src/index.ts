@@ -4,16 +4,16 @@ import { readFileSync } from "node:fs"
 
 import { Command } from "commander"
 
-import { buildArgsFromOptions, buildBuildCommand, type BuildCommandOptions } from "./build"
+import { type BuildCommandOptions, buildArgsFromOptions, buildBuildCommand } from "./build"
 import { buildConfigCommand } from "./configCmd"
 import { executeCommand } from "./execute"
 import { runFileFromArgs } from "./fileCmd"
 import { buildGenerateCommand } from "./generate"
-import { buildPackageCommand } from "./store"
 import { buildAuthCommand } from "./login"
 import { buildModelsCommand, type ModelsCommandOptions, modelsArgsFromOptions } from "./models"
 import { buildPullCommand, type PullCommandOptions, pullArgsFromOptions } from "./pull"
 import { buildPushCommand, type PushCommandOptions, pushArgsFromOptions } from "./push"
+import { buildPackageCommand } from "./store"
 import { addGlobalOptions, configOpts } from "./util"
 
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
@@ -21,12 +21,11 @@ const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url),
 }
 
 const program = new Command()
-  .name("openmmcli")
-  .description(`A lightweight CLI for building, pushing, and pulling OCI image layouts,
-plus AI media generation via provider models.
+  .name("creatifact")
+  .description(`An agent-native multimodal creation executor with OCI artifact capabilities.
 
-  openmmcli -f <file>.json [options]     Run a command described by a JSON file
-  openmmcli <command> [args]`)
+  creatifact -f <file>.json [options]     Run a command described by a JSON file
+  creatifact <command> [args]`)
   .version(pkg.version)
   .enablePositionalOptions()
   .allowExcessArguments(true)

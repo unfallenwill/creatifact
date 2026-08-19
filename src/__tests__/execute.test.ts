@@ -5,7 +5,7 @@ import { beforeEach, expect, test } from "vitest"
 import { executeCommand } from "../execute"
 
 function tmpDir(): string {
-  return mkdtempSync(join(tmpdir(), "openmm-execute-"))
+  return mkdtempSync(join(tmpdir(), "creatifact-execute-"))
 }
 
 describe("executeCommand", () => {

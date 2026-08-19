@@ -91,7 +91,7 @@ export function buildConfigCommand(): Command {
   const config = new Command("config")
     .usage("<action>")
     .description(
-      "Manage the openmmcli config file (~/.openmmcli/config.json by default, overridable via OPENMMCLI_CONFIG_DIR)",
+      "Manage the creatifact config file (~/.creatifact/config.json by default, overridable via CREATIFACT_CONFIG_DIR)",
     )
   addGlobalOptions(config)
   config.allowExcessArguments(true)
@@ -122,7 +122,7 @@ export function buildConfigCommand(): Command {
   config
     .command("set")
     .description(
-      "Set a value (value parsed as JSON if valid, else string; credentials belong to `openmmcli auth login`, not `config set`)",
+      "Set a value (value parsed as JSON if valid, else string; credentials belong to `creatifact auth login`, not `config set`)",
     )
     .argument("[key]")
     .argument("[value]")

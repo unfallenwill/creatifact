@@ -143,13 +143,13 @@ export async function removeStoreRefs(refs: string[], configPath?: string): Prom
 export function buildPackageCommand(): Command {
   const pkg = new Command("package")
     .usage("<action>")
-    .description("Manage packages in the shared store (~/.openmmcli/store)")
+    .description("Manage packages in the shared store (~/.creatifact/store)")
   addGlobalOptions(pkg)
   pkg.allowExcessArguments(true)
 
   const ls = new Command("list")
     .alias("ls")
-    .description("List tags in the shared store (~/.openmmcli/store)")
+    .description("List tags in the shared store (~/.creatifact/store)")
   ls.action(async (options: { configDir?: string }, command: Command) => {
     await runPackageList(configOpts(command, options.configDir))
   })

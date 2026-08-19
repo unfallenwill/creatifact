@@ -6,12 +6,14 @@ import { requestFieldsForTask, TASKS } from "../generate"
  * schemas must stay in sync with it or CI fails here.
  */
 
-const REQUEST_SCHEMA = JSON.parse(readFileSync("schemas/openmm-request.schema.json", "utf8")) as {
+const REQUEST_SCHEMA = JSON.parse(
+  readFileSync("schemas/creatifact-request.schema.json", "utf8"),
+) as {
   properties: Record<string, unknown>
   "properties-command"?: never
 }
 
-const BUILD_SCHEMA = JSON.parse(readFileSync("schemas/openmm-build.schema.json", "utf8")) as {
+const BUILD_SCHEMA = JSON.parse(readFileSync("schemas/creatifact-build.schema.json", "utf8")) as {
   properties: Record<string, { properties?: Record<string, unknown> }>
 }
 

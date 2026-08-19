@@ -523,7 +523,7 @@ test("runPushFromArgs falls back to config credentials", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "push-test-"))
   await setupTestLayout(tmp)
 
-  const configDir = mkdtempSync(join(tmpdir(), "openmmcli-cfg-"))
+  const configDir = mkdtempSync(join(tmpdir(), "creatifact-cfg-"))
   const configPath = join(configDir, "config.json")
   writeFileSync(
     configPath,

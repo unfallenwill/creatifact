@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/unfallenwill/openmmcli/main/schemas/openmm-request.schema.json",
-  "title": "openmmcli request file",
-  "description": "Describes one openmmcli command (or a `steps` pipeline) to run via `openmmcli -f <file>.json`. Single-command form: the 'command' field selects the command; the remaining fields map to its arguments, and command-line flags after the file override generate.* fields. Pipeline form: a `steps` array runs sequentially, fails fast, and resolves `${step.field}` references to earlier steps' results (tag/digest/outputDir/artifacts[N].url).",
+  "$id": "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-request.schema.json",
+  "title": "Creatifact request file",
+  "description": "Describes one Creatifact command (or a `steps` pipeline) to run via `creatifact -f <file>.json`. Single-command form: the 'command' field selects the command; the remaining fields map to its arguments, and command-line flags after the file override generate.* fields. Pipeline form: a `steps` array runs sequentially, fails fast, and resolves `${step.field}` references to earlier steps' results (tag/digest/outputDir/artifacts[N].url).",
   "type": "object",
   "oneOf": [
     { "required": ["command"] },

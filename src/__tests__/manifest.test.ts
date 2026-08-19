@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { loadBuildManifest, validateBuildManifest } from "../manifest"
 
-const FILE = "openmm-build.json"
+const FILE = "creatifact-build.json"
 
 function parse(raw: unknown): ReturnType<typeof validateBuildManifest> {
   return validateBuildManifest(raw, FILE)
@@ -11,13 +11,13 @@ function parse(raw: unknown): ReturnType<typeof validateBuildManifest> {
 
 test("valid manifest with all fields passes", () => {
   const result = parse({
-    annotations: { "org.openmm.name": "pkg" },
+    annotations: { "org.creatifact.name": "pkg" },
     from: ["localhost:5000/base:1.0"],
     copy: [{ from: "localhost:5000/cuda:12.0", paths: ["cuda-libs"] }],
     assets: "./app",
   })
   expect(result).toEqual({
-    annotations: { "org.openmm.name": "pkg" },
+    annotations: { "org.creatifact.name": "pkg" },
     from: ["localhost:5000/base:1.0"],
     copy: [{ from: "localhost:5000/cuda:12.0", paths: ["cuda-libs"] }],
     assets: "./app",
@@ -89,7 +89,7 @@ test("loadBuildManifest returns empty manifest when file missing", async () => {
 
 test("loadBuildManifest parses and validates JSON", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "manifest-test-"))
-  const filePath = join(tmp, "openmm-build.json")
+  const filePath = join(tmp, "creatifact-build.json")
   await writeFile(filePath, JSON.stringify({ from: ["r:1"], assets: "./a" }))
   const result = await loadBuildManifest(filePath)
   expect(result.file).toEqual({ from: ["r:1"], assets: "./a" })
@@ -99,7 +99,7 @@ test("loadBuildManifest parses and validates JSON", async () => {
 
 test("loadBuildManifest propagates invalid JSON errors", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "manifest-test-"))
-  const filePath = join(tmp, "openmm-build.json")
+  const filePath = join(tmp, "creatifact-build.json")
   await writeFile(filePath, "{ invalid }")
   await expect(loadBuildManifest(filePath)).rejects.toThrow()
   await rm(tmp, { recursive: true })

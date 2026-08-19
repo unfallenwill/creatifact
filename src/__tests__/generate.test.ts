@@ -328,7 +328,7 @@ test("TASKS registry is complete and consistent", () => {
     ].sort(),
   )
   for (const spec of Object.values(TASKS)) {
-    expect(spec.usage).toContain(`openmmcli generate ${spec.name}`)
+    expect(spec.usage).toContain(`creatifact generate ${spec.name}`)
     expect(spec.capability === undefined ? "resume" : "x").toBeTruthy()
   }
 })

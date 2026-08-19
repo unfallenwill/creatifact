@@ -60,7 +60,7 @@ export const TASKS: Record<GenTaskName, TaskSpec> = {
     required: { prompt: true },
     optional: { system: true, options: true },
     payload: "prompt",
-    usage: `Usage: openmmcli generate text2text [provider] [prompt] [options]
+    usage: `Usage: creatifact generate text2text [provider] [prompt] [options]
 
 Text chat completion (text in, text out).
 
@@ -83,7 +83,7 @@ Options:
     required: { inputs: true },
     optional: { prompt: true, options: true },
     payload: "prompt",
-    usage: `Usage: openmmcli generate image2text [provider] [question] [options]
+    usage: `Usage: creatifact generate image2text [provider] [question] [options]
 
 Ask a question about image(s) (image in, text out); with no question the
 images are described.
@@ -106,7 +106,7 @@ Options:
     required: { inputs: true },
     optional: { prompt: true, options: true },
     payload: "prompt",
-    usage: `Usage: openmmcli generate video2text [provider] [question] [options]
+    usage: `Usage: creatifact generate video2text [provider] [question] [options]
 
 Ask a question about video(s) (video in, text out); with no question the
 videos are described.
@@ -129,7 +129,7 @@ Options:
     required: { prompt: true },
     optional: { options: true },
     payload: "prompt",
-    usage: `Usage: openmmcli generate text2image [provider] [prompt] [options]
+    usage: `Usage: creatifact generate text2image [provider] [prompt] [options]
 
 Generate an image from text.
 
@@ -140,7 +140,7 @@ Arguments:
 Options:
     --prompt <text>   Alternative to the positional prompt
     --opt <k=v>       Repeatable provider option
-    --output <dir>    Result OCI layout directory (default ~/.openmmcli/layouts/<repo>)
+    --output <dir>    Result OCI layout directory (default ~/.creatifact/layouts/<repo>)
     --tag <repo:tag>  Reference name for the result package
     --no-pack         Print artifacts only; do not build a result package
     --json            Print structured JSON to stdout
@@ -154,7 +154,7 @@ Options:
     optional: { options: true },
     payload: "prompt",
     pickModel: (s) => s.imageInput === true,
-    usage: `Usage: openmmcli generate image2image [provider] [prompt] [options]
+    usage: `Usage: creatifact generate image2image [provider] [prompt] [options]
 
 Generate an image from a reference image plus text (image editing /
 restyling). Takes exactly one reference image.
@@ -168,7 +168,7 @@ Options:
     --image <ref>     Reference image (required): http(s)/data URL, local
                       path, or pkg://path into a recipe package
     --opt <k=v>       Repeatable provider option
-    --output <dir>    Result OCI layout directory (default ~/.openmmcli/layouts/<repo>)
+    --output <dir>    Result OCI layout directory (default ~/.creatifact/layouts/<repo>)
     --tag <repo:tag>  Reference name for the result package
     --no-pack         Print artifacts only; do not build a result package
     --json            Print structured JSON to stdout
@@ -182,7 +182,7 @@ Options:
     optional: { options: true, noWait: true, timeout: true, interval: true },
     payload: "prompt",
     pickModel: (s) => s.textOnly !== false,
-    usage: `Usage: openmmcli generate text2video [provider] [prompt] [options]
+    usage: `Usage: creatifact generate text2video [provider] [prompt] [options]
 
 Generate a video from text (async; polls until done).
 
@@ -196,7 +196,7 @@ Options:
     --no-wait         Submit and print the task handle, then exit
     --timeout <dur>   Polling timeout (default 10m; e.g. 90s, 5m, 600)
     --interval <dur>  Polling interval (default 5s)
-    --output <dir>    Result OCI layout directory (default ~/.openmmcli/layouts/<repo>)
+    --output <dir>    Result OCI layout directory (default ~/.creatifact/layouts/<repo>)
     --tag <repo:tag>  Reference name for the result package
     --no-pack         Print artifacts only; do not build a result package
     --json            Print structured JSON to stdout
@@ -210,7 +210,7 @@ Options:
     optional: { options: true, noWait: true, timeout: true, interval: true },
     payload: "prompt",
     pickModel: (s) => s.firstFrame === true,
-    usage: `Usage: openmmcli generate image2video [provider] [prompt] [options]
+    usage: `Usage: creatifact generate image2video [provider] [prompt] [options]
 
 Generate a video from a reference image plus text; the image becomes the
 video's first frame.
@@ -226,7 +226,7 @@ Options:
     --no-wait         Submit and print the task handle, then exit
     --timeout <dur>   Polling timeout (default 10m)
     --interval <dur>  Polling interval (default 5s)
-    --output <dir>    Result OCI layout directory (default ~/.openmmcli/layouts/<repo>)
+    --output <dir>    Result OCI layout directory (default ~/.creatifact/layouts/<repo>)
     --tag <repo:tag>  Reference name for the result package
     --no-pack         Print artifacts only; do not build a result package
     --json            Print structured JSON to stdout
@@ -241,7 +241,7 @@ Options:
     payload: "prompt",
     pickModel: (s) => s.firstFrame === true && s.lastFrame === true,
     strictModel: true,
-    usage: `Usage: openmmcli generate frames2video [provider] [prompt] [options]
+    usage: `Usage: creatifact generate frames2video [provider] [prompt] [options]
 
 Generate a video from an explicit first frame and last frame plus text.
 
@@ -258,7 +258,7 @@ Options:
     --no-wait            Submit and print the task handle, then exit
     --timeout <dur>      Polling timeout (default 10m)
     --interval <dur>     Polling interval (default 5s)
-    --output <dir>       Result OCI layout directory (default ~/.openmmcli/layouts/<repo>)
+    --output <dir>       Result OCI layout directory (default ~/.creatifact/layouts/<repo>)
     --tag <repo:tag>     Reference name for the result package
     --no-pack            Print artifacts only; skip the result package
     --json               Print structured JSON to stdout
@@ -271,7 +271,7 @@ Options:
     required: { inputs: true },
     optional: { options: true },
     payload: "inputs",
-    usage: `Usage: openmmcli generate embed [provider] [input...] [options]
+    usage: `Usage: creatifact generate embed [provider] [input...] [options]
 
 Compute text embeddings (text in, vectors out).
 
@@ -292,7 +292,7 @@ Options:
     required: { handle: true },
     optional: { timeout: true, interval: true },
     payload: "handle",
-    usage: `Usage: openmmcli generate resume <handle|file> [options]
+    usage: `Usage: creatifact generate resume <handle|file> [options]
 
 Resume polling a video task saved by a video task's --no-wait.
 

@@ -34,7 +34,7 @@ function emptyCli(): ParsedArgs {
 }
 
 test("buildManifest produces valid OCI manifest with annotations", () => {
-  const annotations = { "org.openmm.platform": "CUDA" }
+  const annotations = { "org.creatifact.platform": "CUDA" }
 
   const manifest = buildManifest(CONFIG, [LAYER], annotations)
 
@@ -60,7 +60,7 @@ test("parseBuildArgs parses all flags", () => {
     "-o",
     "./out",
     "-f",
-    "./openmm-build.json",
+    "./creatifact-build.json",
     "--annotation",
     "a=1",
     "--annotation",
@@ -76,7 +76,7 @@ test("parseBuildArgs parses all flags", () => {
   expect(result.dir).toBe("./assets")
   expect(result.tag).toBe("org/myapp:1.0.0")
   expect(result.output).toBe("./out")
-  expect(result.file).toBe("./openmm-build.json")
+  expect(result.file).toBe("./creatifact-build.json")
   expect(result.annotations).toEqual({ a: "1", b: "2" })
   expect(result.username).toBe("user")
   expect(result.password).toBe("secret")
@@ -277,7 +277,7 @@ test("runBuild writes a gen recipe into the config blob", async () => {
   const manifest = JSON.parse(
     await readFile(join(outputDir, "blobs", "sha256", index.manifests[0].digest.slice(7)), "utf8"),
   )
-  expect(manifest.config.mediaType).toBe("application/vnd.openmm.gen.v1+json")
+  expect(manifest.config.mediaType).toBe("application/vnd.creatifact.gen.v1+json")
   const config = JSON.parse(
     await readFile(join(outputDir, "blobs", "sha256", manifest.config.digest.slice(7)), "utf8"),
   )
@@ -305,7 +305,7 @@ test("runBuild packs assets as the top layer", async () => {
     tag: "org/pkg:1.0.0",
     assetsDir,
     output: outputDir,
-    annotations: { "org.openmm.platform": "CUDA" },
+    annotations: { "org.creatifact.platform": "CUDA" },
     from: [],
     copy: [],
     plainHttp: false,
@@ -319,7 +319,7 @@ test("runBuild packs assets as the top layer", async () => {
     await readFile(join(outputDir, "blobs", "sha256", index.manifests[0].digest.slice(7)), "utf8"),
   )
   expect(manifest.layers).toHaveLength(1)
-  expect(manifest.annotations).toEqual({ "org.openmm.platform": "CUDA" })
+  expect(manifest.annotations).toEqual({ "org.creatifact.platform": "CUDA" })
 
   await rm(tmp, { recursive: true })
 })
@@ -512,7 +512,7 @@ test("runBuildFromArgs parses CLI and manifest together", async () => {
   const outputDir = join(tmp, "out")
   await mkdir(assetsDir, { recursive: true })
   await writeFile(join(assetsDir, "f.txt"), "data")
-  const manifestPath = join(tmp, "openmm-build.json")
+  const manifestPath = join(tmp, "creatifact-build.json")
   await writeFile(manifestPath, JSON.stringify({ assets: "./assets", annotations: { a: "1" } }))
 
   await runBuildFromArgs(["-f", manifestPath, "-t", "org/pkg:1.0.0", "-o", outputDir])

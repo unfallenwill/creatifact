@@ -1,4 +1,4 @@
-import { ProviderError, type Artifact, type JobHandle, type JobStatus } from "./types"
+import { type Artifact, type JobHandle, type JobStatus, ProviderError } from "./types"
 
 export interface PollOptions {
   intervalMs: number

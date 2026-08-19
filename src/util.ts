@@ -84,7 +84,7 @@ export function parseArgsWith<T extends object = Record<string, unknown>>(
 export function addGlobalOptions(cmd: Command): Command {
   return cmd.option(
     "--config-dir <dir>",
-    "Use <dir>/config.json instead of ~/.openmmcli/config.json (takes precedence over OPENMMCLI_CONFIG_DIR)",
+    "Use <dir>/config.json instead of ~/.creatifact/config.json (takes precedence over CREATIFACT_CONFIG_DIR)",
   )
 }
 

@@ -27,11 +27,11 @@ export interface RegistryAuthEntry {
 }
 
 /**
- * Root config object stored at ~/.openmmcli/config.json (or $OPENMMCLI_CONFIG_DIR).
+ * Root config object stored at ~/.creatifact/config.json (or $CREATIFACT_CONFIG_DIR).
  * Unknown sections (e.g. "providers" used by the providers module) are preserved
  * on load/save, so multiple features share one file safely.
  */
-export interface OpenmmCliConfig {
+export interface CreatifactConfig {
   version?: number
   providers?: Record<string, Record<string, unknown>>
   auths?: Record<string, RegistryAuthEntry>
@@ -41,8 +41,8 @@ export interface OpenmmCliConfig {
 export class ConfigError extends Error {}
 
 export function configDir(env: Record<string, string | undefined> = process.env): string {
-  const override = env["OPENMMCLI_CONFIG_DIR"]
-  return override && override !== "" ? override : join(homedir(), ".openmmcli")
+  const override = env["CREATIFACT_CONFIG_DIR"]
+  return override && override !== "" ? override : join(homedir(), ".creatifact")
 }
 
 export function configPath(env: Record<string, string | undefined> = process.env): string {
@@ -51,12 +51,12 @@ export function configPath(env: Record<string, string | undefined> = process.env
 
 /**
  * Env view that honors an explicit --config-dir (as configPath) over
- * OPENMMCLI_CONFIG_DIR, for path helpers shared by run functions.
+ * CREATIFACT_CONFIG_DIR, for path helpers shared by run functions.
  */
 export function envForConfigPath(
   configPath: string | undefined,
 ): Record<string, string | undefined> {
-  return configPath === undefined ? process.env : { OPENMMCLI_CONFIG_DIR: dirname(configPath) }
+  return configPath === undefined ? process.env : { CREATIFACT_CONFIG_DIR: dirname(configPath) }
 }
 
 /**
@@ -67,7 +67,7 @@ export function storeDir(env: Record<string, string | undefined> = process.env):
   return join(configDir(env), "store")
 }
 
-export function loadConfig(path?: string): OpenmmCliConfig {
+export function loadConfig(path?: string): CreatifactConfig {
   const file = path ?? configPath()
   let raw: string
   try {
@@ -84,20 +84,20 @@ export function loadConfig(path?: string): OpenmmCliConfig {
   } catch (e) {
     throw new ConfigError(
       `config file is corrupt: ${file} (${(e as Error).message}). ` +
-        "Fix it manually or run: openmmcli config reset",
+        "Fix it manually or run: creatifact config reset",
     )
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new ConfigError(
       `config file is corrupt: ${file} (expected a JSON object). ` +
-        "Fix it manually or run: openmmcli config reset",
+        "Fix it manually or run: creatifact config reset",
     )
   }
-  return parsed as OpenmmCliConfig
+  return parsed as CreatifactConfig
 }
 
 /** Atomic write: tmp file + rename in the same directory, best-effort 0600. */
-export function saveConfig(config: OpenmmCliConfig, path?: string): void {
+export function saveConfig(config: CreatifactConfig, path?: string): void {
   const file = path ?? configPath()
   mkdirSync(dirname(file), { recursive: true })
   const tmp = join(
@@ -170,14 +170,14 @@ export function decodeAuth(auth: string): { username: string; password: string }
 }
 
 export function getRegistryEntry(
-  config: OpenmmCliConfig,
+  config: CreatifactConfig,
   registry: string,
 ): RegistryAuthEntry | undefined {
   return config.auths?.[normalizeRegistry(registry)]
 }
 
 /** Default gen provider: config key `defaults.gen.provider` (e.g. "zhipu"). */
-export function defaultGenProvider(config: OpenmmCliConfig): string | undefined {
+export function defaultGenProvider(config: CreatifactConfig): string | undefined {
   const defaults = config["defaults"]
   if (typeof defaults !== "object" || defaults === null) return undefined
   const gen = (defaults as Record<string, unknown>)["gen"]
@@ -196,7 +196,7 @@ export function resolveRegistryCredentials(
   registry: string,
   cliUsername: string | undefined,
   cliPassword: string | undefined,
-  config: OpenmmCliConfig,
+  config: CreatifactConfig,
 ): { username: string; password: string } | undefined {
   if (cliUsername !== undefined && cliPassword !== undefined) {
     return { username: cliUsername, password: cliPassword }
@@ -212,7 +212,7 @@ export function resolveRegistryCredentials(
 export function resolvePlainHttp(
   registry: string,
   cliPlainHttp: boolean,
-  config: OpenmmCliConfig,
+  config: CreatifactConfig,
 ): boolean {
   if (cliPlainHttp) return true
   return getRegistryEntry(config, registry)?.insecure === true
@@ -221,7 +221,7 @@ export function resolvePlainHttp(
 const RESERVED_KEYS = new Set(["version"])
 
 export function getConfigValue(
-  config: OpenmmCliConfig,
+  config: CreatifactConfig,
   key: string,
 ): { found: boolean; value: unknown } {
   const parts = key.split(".")
@@ -235,7 +235,7 @@ export function getConfigValue(
   return { found: true, value: current }
 }
 
-export function setConfigValue(config: OpenmmCliConfig, key: string, value: unknown): void {
+export function setConfigValue(config: CreatifactConfig, key: string, value: unknown): void {
   const parts = key.split(".")
   if (parts.some((p) => p === "")) {
     throw new ConfigError(`invalid config key: ${key}`)

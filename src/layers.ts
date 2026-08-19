@@ -344,7 +344,10 @@ export async function createLayerTarball(dir: string, blobsDir: string): Promise
     const fullPath = join(dir, relPath)
     const content = await readFile(fullPath)
     const fileStat = await stat(fullPath)
-    tarPack.entry({ name: relPath, mode: fileStat.mode & 0o777, size: fileStat.size, mtime: new Date(0) }, content)
+    tarPack.entry(
+      { name: relPath, mode: fileStat.mode & 0o777, size: fileStat.size, mtime: new Date(0) },
+      content,
+    )
   }
 
   return writeLayerBlob(tarPack, blobsDir)

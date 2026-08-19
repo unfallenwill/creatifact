@@ -1,11 +1,13 @@
 {
-  "name": "openmmcli",
+  "name": "creatifact",
   "version": "0.0.0",
-  "description": "CLI tool for building, pushing, and pulling OCI image layouts",
+  "description": "Agent-native multimodal creation executor with OCI artifact packaging and delivery",
   "author": "unfallenwill",
   "license": "MIT",
   "type": "module",
-  "bin": "dist/index.mjs",
+  "bin": {
+    "creatifact": "dist/index.mjs"
+  },
   "main": "./dist/index.mjs",
   "types": "./dist/index.d.mts",
   "exports": {

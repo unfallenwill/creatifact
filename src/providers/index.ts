@@ -1,4 +1,4 @@
-import { loadConfig, type OpenmmCliConfig } from "../config"
+import { type CreatifactConfig, loadConfig } from "../config"
 import { type ArkProviderConfig, createArkProvider } from "./ark"
 import type { Env, Provider } from "./core/types"
 import { createKlingProvider, type KlingProviderConfig } from "./kling"
@@ -88,7 +88,7 @@ const FACTORIES: Record<string, ProviderFactory> = {
 }
 
 export interface CreateProviderOptions {
-  /** Config file path (defaults to ~/.openmmcli/config.json or OPENMMCLI_CONFIG_DIR). */
+  /** Config file path (defaults to ~/.creatifact/config.json or CREATIFACT_CONFIG_DIR). */
   configPath?: string
   /** Explicit settings that override the config file's providers.<id> section. */
   settings?: Record<string, unknown>
@@ -100,7 +100,7 @@ export function listProviderIds(): string[] {
   return Object.keys(FACTORIES)
 }
 
-function configuredPluginIds(config: OpenmmCliConfig): string[] {
+function configuredPluginIds(config: CreatifactConfig): string[] {
   return Object.entries(config.providers ?? {})
     .filter(([, section]) => typeof section?.["module"] === "string" && section["module"] !== "")
     .map(([id]) => id)

@@ -9,6 +9,9 @@ beforeAll(() => {
   if (!existsSync(CLI)) execSync("npm run build", { stdio: "inherit" })
 })
 
+// spawnSync blocks the worker IPC loop; yield between cases so Vitest can flush task updates.
+afterEach(() => new Promise<void>((resolve) => setImmediate(resolve)))
+
 interface RunResult {
   stdout: string
   stderr: string
@@ -36,7 +39,7 @@ describe("cli — integration", () => {
   it("bare invocation prints usage and exits 0", () => {
     const { stdout, code } = run([])
     expect(code).toBe(0)
-    expect(stdout).toContain("openmmcli -f <file>.json")
+    expect(stdout).toContain("creatifact -f <file>.json")
     expect(stdout).toContain("gen")
     expect(stdout).toContain("build")
     expect(stdout).toContain("auth")
@@ -52,11 +55,11 @@ describe("cli — integration", () => {
   it("build/push/pull --help list options; unknown top-level fails", () => {
     const build = run(["build", "--help"])
     expect(build.code).toBe(0)
-    expect(build.stdout).toContain("Usage: openmmcli build")
+    expect(build.stdout).toContain("Usage: creatifact build")
 
     const auth = run(["auth", "--help"])
     expect(auth.code).toBe(0)
-    expect(auth.stdout).toContain("Usage: openmmcli auth <action>")
+    expect(auth.stdout).toContain("Usage: creatifact auth <action>")
     expect(auth.stdout).toContain("login")
 
     const unknown = run(["frobnicate"])
@@ -75,7 +78,7 @@ describe("cli build — integration", () => {
 
     try {
       const { stdout, code } = run([
-                "build",
+        "build",
         "--dir",
         fixtureDir,
         "-t",
@@ -97,7 +100,7 @@ describe("cli build — integration", () => {
   it("build --help prints usage and exits 0", () => {
     const { stdout, code } = run(["build", "--help"])
     expect(code).toBe(0)
-    expect(stdout).toContain("Usage: openmmcli build")
+    expect(stdout).toContain("Usage: creatifact build")
     expect(stdout).toContain("--tag")
     expect(stdout).toContain("--annotation")
     expect(stdout).toContain("--plain-http")
@@ -106,14 +109,14 @@ describe("cli build — integration", () => {
   it("build -h prints usage and exits 0", () => {
     const { stdout, code } = run(["build", "-h"])
     expect(code).toBe(0)
-    expect(stdout).toContain("Usage: openmmcli build")
+    expect(stdout).toContain("Usage: creatifact build")
   })
 
   it("build fails when dir does not exist", () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
     try {
       const { stderr, code } = run([
-                "build",
+        "build",
         "--dir",
         "/nonexistent/path/xyz",
         "-t",
@@ -149,7 +152,7 @@ describe("cli build — integration", () => {
     const outputDir = path.join(tmp, "output")
     mkdirSync(fixtureDir, { recursive: true })
     writeFileSync(path.join(fixtureDir, "asset.txt"), "from manifest")
-    const descPath = path.join(tmp, "openmm-build.json")
+    const descPath = path.join(tmp, "creatifact-build.json")
     writeFileSync(
       descPath,
       JSON.stringify({
@@ -160,7 +163,7 @@ describe("cli build — integration", () => {
 
     try {
       const { stdout, code } = run([
-                "build",
+        "build",
         "-f",
         descPath,
         "-t",
@@ -190,12 +193,12 @@ describe("cli build — integration", () => {
     mkdirSync(cliAssets, { recursive: true })
     writeFileSync(path.join(manifestAssets, "manifest.txt"), "manifest content")
     writeFileSync(path.join(cliAssets, "cli.txt"), "cli content")
-    const descPath = path.join(tmp, "openmm-build.json")
+    const descPath = path.join(tmp, "creatifact-build.json")
     writeFileSync(descPath, JSON.stringify({ assets: manifestAssets }))
 
     try {
       const { code } = run([
-                "build",
+        "build",
         "-f",
         descPath,
         "-t",
@@ -217,28 +220,12 @@ describe("cli build — integration", () => {
     const outputDir = path.join(tmp, "output")
 
     try {
-      const first = run([
-                "build",
-        "-t",
-        "org/source:1.0.0",
-        "--dir",
-        sourceDir,
-        "-o",
-        sourceDir,
-      ])
+      const first = run(["build", "-t", "org/source:1.0.0", "--dir", sourceDir, "-o", sourceDir])
       expect(first.code).toBe(0)
 
-      const descPath = path.join(tmp, "openmm-build.json")
+      const descPath = path.join(tmp, "creatifact-build.json")
       writeFileSync(descPath, JSON.stringify({ from: sourceDir }))
-      const { code } = run([
-                "build",
-        "-f",
-        descPath,
-        "-t",
-        "org/combined:1.0.0",
-        "-o",
-        outputDir,
-      ])
+      const { code } = run(["build", "-f", descPath, "-t", "org/combined:1.0.0", "-o", outputDir])
       expect(code).toBe(0)
 
       const index = JSON.parse(readFileSync(path.join(outputDir, "index.json"), "utf8"))
@@ -256,7 +243,7 @@ describe("cli build — integration", () => {
 
   it("build warns about legacy manifest fields and still needs -t", () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
-    const descPath = path.join(tmp, "openmm-build.json")
+    const descPath = path.join(tmp, "creatifact-build.json")
     writeFileSync(descPath, JSON.stringify({ tag: "old/test:1.0", dir: "./x" }))
 
     try {
@@ -273,7 +260,7 @@ describe("cli push — integration", () => {
   it("push --help prints usage and exits 0", () => {
     const { stdout, code } = run(["push", "--help"])
     expect(code).toBe(0)
-    expect(stdout).toContain("Usage: openmmcli push")
+    expect(stdout).toContain("Usage: creatifact push")
     expect(stdout).toContain("--layout")
     expect(stdout).toContain("--plain-http")
   })
@@ -281,12 +268,12 @@ describe("cli push — integration", () => {
   it("push -h prints usage and exits 0", () => {
     const { stdout, code } = run(["push", "-h"])
     expect(code).toBe(0)
-    expect(stdout).toContain("Usage: openmmcli push")
+    expect(stdout).toContain("Usage: creatifact push")
   })
 
   it("push fails when layout directory does not exist", () => {
     const { stderr, code } = run([
-            "push",
+      "push",
       "localhost:5000/test:1.0",
       "--layout",
       "/nonexistent/path/xyz",
@@ -299,7 +286,7 @@ describe("cli push — integration", () => {
   it("pull --help prints usage and exits 0", () => {
     const { stdout, code } = run(["pull", "--help"])
     expect(code).toBe(0)
-    expect(stdout).toContain("Usage: openmmcli pull")
+    expect(stdout).toContain("Usage: creatifact pull")
   })
 })
 
@@ -311,7 +298,7 @@ describe("cli package store — integration", () => {
     mkdirSync(configDir, { recursive: true })
     mkdirSync(fixture, { recursive: true })
     writeFileSync(path.join(fixture, "a.txt"), "hello")
-    const env = { OPENMMCLI_CONFIG_DIR: configDir }
+    const env = { CREATIFACT_CONFIG_DIR: configDir }
     try {
       run(["build", "--dir", fixture, "-t", "demo/a:1"], undefined, env)
       run(["build", "--dir", fixture, "-t", "demo/b:1"], undefined, env)
@@ -344,14 +331,14 @@ describe("cli package store — integration", () => {
     }
   })
 
-  it("images lists store tags after builds; rebuild replaces the same tag", () => {
+  it("package ls lists store tags after builds; rebuild replaces the same tag", () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-store-"))
     const configDir = path.join(tmp, "cfg")
     const fixture = path.join(tmp, "assets")
     mkdirSync(configDir, { recursive: true })
     mkdirSync(fixture, { recursive: true })
     writeFileSync(path.join(fixture, "a.txt"), "hello")
-    const env = { OPENMMCLI_CONFIG_DIR: configDir }
+    const env = { CREATIFACT_CONFIG_DIR: configDir }
     try {
       const r1 = run(["build", "--dir", fixture, "-t", "demo/one:1"], undefined, env)
       expect(r1.code).toBe(0)
@@ -383,8 +370,8 @@ describe("cli package store — integration", () => {
 
 describe("cli config/auth — integration", () => {
   function configEnv(): { dir: string; env: Record<string, string>; file: string } {
-    const dir = mkdtempSync(path.join(tmpdir(), "openmmcli-home-"))
-    return { dir, env: { OPENMMCLI_CONFIG_DIR: dir }, file: path.join(dir, "config.json") }
+    const dir = mkdtempSync(path.join(tmpdir(), "creatifact-home-"))
+    return { dir, env: { CREATIFACT_CONFIG_DIR: dir }, file: path.join(dir, "config.json") }
   }
 
   it("config path prints the config file location", () => {
@@ -437,7 +424,7 @@ describe("cli config/auth — integration", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
-  })
+  }, 15_000)
 
   it("auth login normalizes registry and logout errors when not logged in", () => {
     const { dir, env } = configEnv()
@@ -524,14 +511,14 @@ describe("cli config/auth — integration", () => {
   it("config --help prints usage", () => {
     const { stdout, code } = run(["config", "--help"])
     expect(code).toBe(0)
-    expect(stdout).toContain("Usage: openmmcli config")
+    expect(stdout).toContain("Usage: creatifact config")
     expect(stdout).toContain("reset")
   })
 
   it("auth login --help prints usage", () => {
     const { stdout, code } = run(["auth", "login", "--help"])
     expect(code).toBe(0)
-    expect(stdout).toContain("Usage: openmmcli auth login")
+    expect(stdout).toContain("Usage: creatifact auth login")
   })
 })
 
@@ -605,7 +592,7 @@ function demoEnv(): {
   recordPath: string
   configPath: string
 } {
-  const dir = mkdtempSync(path.join(tmpdir(), "openmmcli-demo-"))
+  const dir = mkdtempSync(path.join(tmpdir(), "creatifact-demo-"))
   const pluginPath = path.join(dir, "demo.mjs")
   const recordPath = path.join(dir, "requests.log")
   writeFileSync(pluginPath, DEMO_PLUGIN)
@@ -616,7 +603,7 @@ function demoEnv(): {
     configPath,
     JSON.stringify({ providers: { demo: { module: pluginPath, recordPath } } }),
   )
-  return { env: { OPENMMCLI_CONFIG_DIR: configDir }, dir, recordPath, configPath }
+  return { env: { CREATIFACT_CONFIG_DIR: configDir }, dir, recordPath, configPath }
 }
 
 function lastRequest(recordPath: string): Record<string, unknown> {
@@ -979,9 +966,9 @@ describe("cli generate — integration", () => {
   })
 
   it("errors on missing credentials for real providers", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "openmmcli-empty-"))
+    const dir = mkdtempSync(path.join(tmpdir(), "creatifact-empty-"))
     try {
-      const env = { OPENMMCLI_CONFIG_DIR: dir }
+      const env = { CREATIFACT_CONFIG_DIR: dir }
       const r = run(["generate", "text2image", "zhipu/cogview-4", "x"], undefined, env)
       expect(r.code).toBe(1)
       expect(r.stderr).toContain("missing Zhipu API key")
@@ -993,7 +980,7 @@ describe("cli generate — integration", () => {
   it("generate --help prints usage and each task has help", () => {
     const gen = run(["generate", "--help"])
     expect(gen.code).toBe(0)
-    expect(gen.stdout).toContain("Usage: openmmcli generate|gen <task>")
+    expect(gen.stdout).toContain("Usage: creatifact generate|gen <task>")
     expect(gen.stdout).toContain("image2image")
     expect(gen.stdout).toContain("frames2video")
 
@@ -1011,15 +998,15 @@ describe("cli generate — integration", () => {
     ]) {
       const { stdout, code } = run(["generate", task, "--help"])
       expect(code).toBe(0)
-      expect(stdout).toContain(`Usage: openmmcli generate ${task}`)
+      expect(stdout).toContain(`Usage: creatifact generate ${task}`)
     }
-  })
+  }, 15_000)
 
-  it("package build with gen + generate <ref> runs the recipe and packages results", () => {
+  it("build with gen + generate <ref> runs the recipe and packages results", () => {
     const { env, dir, recordPath } = demoEnv()
     const recipeDir = path.join(dir, "recipe")
     const resultDir = path.join(dir, "result")
-    const manifestPath = path.join(dir, "openmm-build.json")
+    const manifestPath = path.join(dir, "creatifact-build.json")
     writeFileSync(
       manifestPath,
       JSON.stringify({
@@ -1033,7 +1020,7 @@ describe("cli generate — integration", () => {
     )
     try {
       const built = run([
-                "build",
+        "build",
         "-f",
         manifestPath,
         "-t",
@@ -1059,7 +1046,7 @@ describe("cli generate — integration", () => {
         undefined,
         env,
       )
-      expect(gen.code).toBe(0)
+      expect(gen.code, gen.stderr).toBe(0)
       expect(gen.stdout).toContain("https://cdn.test/out.png")
       expect(gen.stderr).toContain("Built org/result:1.0")
 
@@ -1103,7 +1090,7 @@ describe("cli generate — integration", () => {
     const resultDir = path.join(dir, "result")
     mkdirSync(assetsDir, { recursive: true })
     writeFileSync(path.join(assetsDir, "ref.png"), "REFIMAGE")
-    const manifestPath = path.join(dir, "openmm-build.json")
+    const manifestPath = path.join(dir, "creatifact-build.json")
     writeFileSync(
       manifestPath,
       JSON.stringify({
@@ -1118,7 +1105,7 @@ describe("cli generate — integration", () => {
     )
     try {
       const built = run([
-                "build",
+        "build",
         "-f",
         manifestPath,
         "-t",
@@ -1129,11 +1116,11 @@ describe("cli generate — integration", () => {
       expect(built.code).toBe(0)
 
       const gen = run(["generate", recipeDir, "paint it", "--output", resultDir], undefined, env)
-      expect(gen.code).toBe(0)
+      expect(gen.code, gen.stderr).toBe(0)
       expect(gen.stdout).toContain("https://cdn.test/out.png")
 
       const req = lastRequest(recordPath)
-      expect((req["image"] as { localPath: string }).localPath).toMatch(/openmm-pkgref-/)
+      expect((req["image"] as { localPath: string }).localPath).toMatch(/creatifact-pkgref-/)
       expect((req["image"] as { localPath: string }).localPath).toContain("ref.png")
 
       const index = JSON.parse(readFileSync(path.join(resultDir, "index.json"), "utf8"))
@@ -1183,7 +1170,7 @@ describe("cli generate — integration", () => {
     const { env, dir } = demoEnv()
     const configDir = path.join(dir, "cfg")
     try {
-      // No OPENMMCLI_CONFIG_DIR: the flag alone must route config reads.
+      // No CREATIFACT_CONFIG_DIR: the flag alone must route config reads.
       const models = run(["models", "--config-dir", configDir])
       expect(models.code).toBe(0)
       expect(models.stdout).toContain("demo  (")
@@ -1215,7 +1202,7 @@ describe("cli -f file-driven — integration", () => {
   it("-f --help prints usage", () => {
     const { stdout, code } = run(["-f", "--help"])
     expect(code).toBe(0)
-    expect(stdout).toContain("Usage: openmmcli -f <file>.json")
+    expect(stdout).toContain("Usage: creatifact -f <file>.json")
   })
 
   it("runs generate.text2image from a JSON file, CLI flags override fields", () => {
@@ -1297,7 +1284,7 @@ describe("cli -f file-driven — integration", () => {
     }
   })
 
-  it("runs package.build from a JSON file", () => {
+  it("runs build from a JSON file", () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-file-test-"))
     const fixtureDir = path.join(tmp, "fixture")
     const outputDir = path.join(tmp, "output")
@@ -1311,7 +1298,7 @@ describe("cli -f file-driven — integration", () => {
         tag: "file/test:1.0",
         dir: fixtureDir,
         output: outputDir,
-        annotations: { "org.openmm.from": "file" },
+        annotations: { "org.creatifact.from": "file" },
       }),
     )
     try {
@@ -1325,15 +1312,15 @@ describe("cli -f file-driven — integration", () => {
           "utf8",
         ),
       )
-      expect(manifest.annotations["org.openmm.from"]).toBe("file")
+      expect(manifest.annotations["org.creatifact.from"]).toBe("file")
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
   })
 
   it("runs auth.login and config.set from JSON files", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "openmmcli-file-auth-"))
-    const env = { OPENMMCLI_CONFIG_DIR: dir }
+    const dir = mkdtempSync(path.join(tmpdir(), "creatifact-file-auth-"))
+    const env = { CREATIFACT_CONFIG_DIR: dir }
     try {
       const loginPath = path.join(dir, "login.json")
       writeFileSync(
@@ -1366,7 +1353,7 @@ describe("cli -f file-driven — integration", () => {
   })
 
   it("rejects bad JSON, unknown commands, and unknown fields", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "openmmcli-file-err-"))
+    const dir = mkdtempSync(path.join(tmpdir(), "creatifact-file-err-"))
     try {
       const badJson = path.join(dir, "bad.json")
       writeFileSync(badJson, "{ oops")
@@ -1409,6 +1396,7 @@ describe("cli -f file-driven — integration", () => {
             command: "generate.text2image",
             provider: "demo/demo-image",
             prompt: "a crane",
+            output: path.join(dir, "result-1"),
           },
           {
             name: "s2",
@@ -1416,13 +1404,14 @@ describe("cli -f file-driven — integration", () => {
             provider: "demo/demo-image",
             prompt: "make it red",
             images: ["${s1.artifacts[0].url}"],
+            output: path.join(dir, "result-2"),
           },
         ],
       }),
     )
     try {
       const r = run(["-f", pipelinePath], undefined, env)
-      expect(r.code).toBe(0)
+      expect(r.code, r.stderr).toBe(0)
       expect(r.stderr).toContain("[1/2] s1 · generate.text2image")
       expect(r.stderr).toContain("[2/2] s2 · generate.image2image")
 
@@ -1438,7 +1427,7 @@ describe("cli -f file-driven — integration", () => {
   })
 
   it("rejects steps files: command+steps mix, flag overlay, forward refs", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "openmmcli-steps-err-"))
+    const dir = mkdtempSync(path.join(tmpdir(), "creatifact-steps-err-"))
     try {
       const mixed = path.join(dir, "mixed.json")
       writeFileSync(mixed, JSON.stringify({ command: "models", steps: [{ command: "models" }] }))

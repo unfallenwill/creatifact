@@ -80,8 +80,8 @@ test("buildResultPackage records provenance and packs base64 artifacts", async (
   )
   expect(manifest.config.mediaType).toBe(GEN_CONFIG_MEDIA_TYPE)
   expect(manifest.layers).toHaveLength(1)
-  expect(manifest.annotations["org.openmm.gen.task"]).toBe("image2image")
-  expect(manifest.annotations["org.openmm.gen.provider"]).toBe("zhipu")
+  expect(manifest.annotations["org.creatifact.gen.task"]).toBe("image2image")
+  expect(manifest.annotations["org.creatifact.gen.provider"]).toBe("zhipu")
 
   const config = JSON.parse(
     await readFile(join(outputDir, "blobs", "sha256", manifest.config.digest.slice(7)), "utf8"),

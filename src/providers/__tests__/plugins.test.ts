@@ -22,7 +22,7 @@ export default (settings, env) => {
 `
 
 async function makeFixtureDir(): Promise<string> {
-  return mkdtemp(join(tmpdir(), "openmmcli-plugins-"))
+  return mkdtemp(join(tmpdir(), "creatifact-plugins-"))
 }
 
 async function writeConfig(dir: string, config: unknown): Promise<string> {
@@ -82,15 +82,15 @@ testUnlessWindows("expands ~/ in plugin paths", async () => {
 
 test("falls back to cwd resolution for bare specifiers", async () => {
   const project = await makeFixtureDir()
-  const pkgDir = join(project, "node_modules", "openmmcli-fixture-pkg")
+  const pkgDir = join(project, "node_modules", "creatifact-fixture-pkg")
   await mkdir(pkgDir, { recursive: true })
   await writeFile(
     join(pkgDir, "package.json"),
-    JSON.stringify({ name: "openmmcli-fixture-pkg", type: "module", main: "index.mjs" }),
+    JSON.stringify({ name: "creatifact-fixture-pkg", type: "module", main: "index.mjs" }),
   )
   await writeFile(join(pkgDir, "index.mjs"), CAPTURING_PLUGIN)
   const configPath = await writeConfig(project, {
-    providers: { fixture: { module: "openmmcli-fixture-pkg" } },
+    providers: { fixture: { module: "creatifact-fixture-pkg" } },
   })
 
   try {
@@ -296,7 +296,7 @@ test("reports missing plugin paths and unresolvable bare specifiers", async () =
   const configPath = await writeConfig(dir, {
     providers: {
       fixture: { module: "./missing.mjs" },
-      ghost: { module: "openmmcli-definitely-not-installed-pkg" },
+      ghost: { module: "creatifact-definitely-not-installed-pkg" },
     },
   })
 
@@ -305,7 +305,7 @@ test("reports missing plugin paths and unresolvable bare specifiers", async () =
       /cannot load provider module '.\/missing\.mjs'/,
     )
     await expect(createProvider("ghost", { configPath, cwd: dir }, {})).rejects.toThrow(
-      /cannot resolve provider module 'openmmcli-definitely-not-installed-pkg'/,
+      /cannot resolve provider module 'creatifact-definitely-not-installed-pkg'/,
     )
   } finally {
     await rm(dir, { recursive: true, force: true })

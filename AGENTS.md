@@ -1,6 +1,6 @@
-# openmmcli
+# Creatifact
 
-openmmcli 是用 create-ts-fast 创建的 TypeScript CLI 项目(tsdown 打包,vitest 测试,tsc 仅做严格类型检查,Biome 做 lint/格式化)。
+Creatifact 是用 create-ts-fast 创建的 TypeScript CLI 项目(tsdown 打包,vitest 测试,tsc 仅做严格类型检查,Biome 做 lint/格式化)。
 
 ## 命令
 

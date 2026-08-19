@@ -69,9 +69,9 @@ async function importPluginModule(
       )
     }
   }
-  // Bare specifier: Node resolves it from openmmcli's own module tree first
+  // Bare specifier: Node resolves it from creatifact's own module tree first
   // (same-project or both-global installs), then falls back to the user's cwd
-  // (global openmmcli + project-local plugin).
+  // (global creatifact + project-local plugin).
   try {
     return (await import(/* @vite-ignore */ specifier)) as ProviderPluginModule
   } catch (e) {
@@ -89,7 +89,7 @@ async function importPluginModule(
     } catch (resolveErr) {
       throw new PluginError(
         id,
-        `cannot resolve provider module '${specifier}' (tried openmmcli's module tree and '${cwd}'): ${(resolveErr as Error).message}`,
+        `cannot resolve provider module '${specifier}' (tried creatifact's module tree and '${cwd}'): ${(resolveErr as Error).message}`,
         { cause: resolveErr },
       )
     }
@@ -113,8 +113,7 @@ export async function loadProviderFactory(
   return factory
 }
 
-/** Runtime-check what a plugin factory returned (built-ins are typed already). */
-export function assertPluginProvider(id: string, provider: Provider): void {
+function assertProviderIdentity(id: string, provider: Provider): void {
   if (typeof provider !== "object" || provider === null) {
     throw new PluginError(id, `provider factory must return an object (got ${typeof provider})`)
   }
@@ -127,6 +126,9 @@ export function assertPluginProvider(id: string, provider: Provider): void {
       `provider declares id '${provider.id}' but is configured as '${id}'; rename the config section or fix the factory`,
     )
   }
+}
+
+function assertProviderModels(id: string, provider: Provider): void {
   if (!Array.isArray(provider.models)) {
     throw new PluginError(id, "provider must expose 'models' as an array")
   }
@@ -135,6 +137,32 @@ export function assertPluginProvider(id: string, provider: Provider): void {
       throw new PluginError(id, "every entry in provider.models needs a non-empty string 'id'")
     }
   }
+}
+
+function assertCapabilityApi(
+  id: string,
+  method: (typeof METHOD_CAPABILITIES)[number][0],
+  value: Provider[typeof method],
+): void {
+  if (value !== undefined && typeof value !== "object") {
+    throw new PluginError(
+      id,
+      `provider capability '${method}' must be an API object (got ${typeof value})`,
+    )
+  }
+  const api = value as Record<string, unknown> | undefined
+  if (api === undefined) return
+  for (const [name, fn] of Object.entries(api)) {
+    if (fn !== undefined && typeof fn !== "function") {
+      throw new PluginError(
+        id,
+        `provider capability '${method}' has non-function member '${name}' (got ${typeof fn})`,
+      )
+    }
+  }
+}
+
+function assertProviderCapabilities(id: string, provider: Provider): void {
   const implemented = capabilitiesOf(provider)
   if (implemented.length === 0) {
     throw new PluginError(
@@ -143,22 +171,13 @@ export function assertPluginProvider(id: string, provider: Provider): void {
     )
   }
   for (const [method] of METHOD_CAPABILITIES) {
-    const value = provider[method]
-    if (value !== undefined && typeof value !== "object") {
-      throw new PluginError(
-        id,
-        `provider capability '${method}' must be an API object (got ${typeof value})`,
-      )
-    }
-    const api = value as Record<string, unknown> | undefined
-    if (api === undefined) continue
-    for (const [name, fn] of Object.entries(api)) {
-      if (fn !== undefined && typeof fn !== "function") {
-        throw new PluginError(
-          id,
-          `provider capability '${method}' has non-function member '${name}' (got ${typeof fn})`,
-        )
-      }
-    }
+    assertCapabilityApi(id, method, provider[method])
   }
+}
+
+/** Runtime-check what a plugin factory returned (built-ins are typed already). */
+export function assertPluginProvider(id: string, provider: Provider): void {
+  assertProviderIdentity(id, provider)
+  assertProviderModels(id, provider)
+  assertProviderCapabilities(id, provider)
 }

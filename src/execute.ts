@@ -1,6 +1,6 @@
-import { type BuildResult, type ParsedArgs as BuildRequest, runBuildFromParsed } from "./build"
+import { type ParsedArgs as BuildRequest, type BuildResult, runBuildFromParsed } from "./build"
 import { runConfigAction } from "./configCmd"
-import { type GenRequest, type GenerateResult, runGenerateRequest } from "./generate"
+import { type GenerateResult, type GenRequest, runGenerateRequest } from "./generate"
 import { type ParsedLoginArgs, runLoginFromParsed, runLogoutFromParsed } from "./login"
 import { runModelsFromParsed } from "./models"
 import { type ParsedPullArgs, type PullResult, runPullFromParsed } from "./pull"

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest"
 import { GEN_CONFIG_MEDIA_TYPE } from "../genPackage"
-import { TASKS, requestFieldsForTask } from "../tasks"
+import { requestFieldsForTask, TASKS } from "../tasks"
 
 test("TASKS registry keys cover all generation tasks plus resume", () => {
   expect(Object.keys(TASKS).sort()).toEqual([
@@ -19,7 +19,7 @@ test("TASKS registry keys cover all generation tasks plus resume", () => {
 
 test("every task has a usage string naming itself", () => {
   for (const spec of Object.values(TASKS)) {
-    expect(spec.usage).toContain(`openmmcli generate ${spec.name}`)
+    expect(spec.usage).toContain(`creatifact generate ${spec.name}`)
   }
 })
 
@@ -53,5 +53,5 @@ describe("requestFieldsForTask contract", () => {
 })
 
 test("gen recipe media type is versioned", () => {
-  expect(GEN_CONFIG_MEDIA_TYPE).toBe("application/vnd.openmm.gen.v1+json")
+  expect(GEN_CONFIG_MEDIA_TYPE).toBe("application/vnd.creatifact.gen.v1+json")
 })

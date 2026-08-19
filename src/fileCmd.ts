@@ -13,8 +13,8 @@ import { listConfiguredProviderIds } from "./providers"
 import {
   commandRequestFromFields,
   type Fields,
-  readRequestFile,
   generateRequest,
+  readRequestFile,
 } from "./requestFile"
 
 export interface FileRunOptions {
@@ -50,7 +50,7 @@ async function runFileGenerate(
 export async function runFileFromArgs(args: string[], opts: FileRunOptions = {}): Promise<void> {
   const file = args[0]
   if (file === undefined || file === "") {
-    throw new Error("-f requires a JSON file path, e.g. openmmcli -f request.json")
+    throw new Error("-f requires a JSON file path, e.g. creatifact -f request.json")
   }
   const parsed = readRequestFile(file)
 

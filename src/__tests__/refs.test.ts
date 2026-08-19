@@ -1,3 +1,4 @@
+import { resolve } from "node:path"
 import { expect, test } from "vitest"
 import { isLocalRef, looksLikeRegistryRef } from "../refs"
 
@@ -5,6 +6,7 @@ test("isLocalRef: relative, absolute, and home paths are local", () => {
   expect(isLocalRef("./oci-layout")).toBe(true)
   expect(isLocalRef("../layouts/app")).toBe(true)
   expect(isLocalRef("/tmp/oci-layout")).toBe(true)
+  expect(isLocalRef(resolve("oci-layout"))).toBe(true)
   expect(isLocalRef("~/layouts/app")).toBe(true)
 })
 

@@ -1,9 +1,9 @@
 import { existsSync } from "node:fs"
 
 import {
+  type Credentials,
   encodeBasicAuth,
   envForConfigPath,
-  type Credentials,
   loadConfig,
   resolvePlainHttp,
   resolveRegistryCredentials,
@@ -12,8 +12,8 @@ import {
 } from "./config"
 import { parseRef, readOciLayout } from "./oci"
 
+export { type Credentials, encodeBasicAuth, toCredentials } from "./config"
 export { parseRef, readOciLayout }
-export { encodeBasicAuth, type Credentials, toCredentials } from "./config"
 
 import { Command } from "commander"
 import { addGlobalOptions, parseArgsWith, resolvePassword } from "./util"
@@ -221,10 +221,10 @@ export function buildPushCommand(): Command {
   const cmd = new Command("push")
     .description("Push an OCI image layout to a registry")
     .argument("[ref]", "Destination reference; if omitted, uses ref from index.json")
-    .option("--layout <dir>", "OCI layout directory (default: ~/.openmmcli/layouts/<repo of ref>)")
+    .option("--layout <dir>", "OCI layout directory (default: tag in ~/.creatifact/store)")
     .option(
       "--username <user>",
-      "Registry username (falls back to config, see: openmmcli auth login)",
+      "Registry username (falls back to config, see: creatifact auth login)",
     )
     .option("--password <pw>", "Registry password (prefer --password-stdin)")
     .option("--password-stdin", "Read password from stdin")
@@ -267,12 +267,12 @@ export interface PushResult {
 
 export async function runPush(options: PushOptions): Promise<PushResult> {
   // --layout pins an explicit layout dir; otherwise the tag is looked up in
-  // the shared store (~/.openmmcli/store).
+  // the shared store (~/.creatifact/store).
   const layoutDir =
     options.layout ??
     (options.ref !== undefined ? storeDir(envForConfigPath(options.configPath)) : undefined)
   if (layoutDir === undefined) {
-    throw new Error("push requires a <ref> (to locate it in ~/.openmmcli/store) or --layout <dir>")
+    throw new Error("push requires a <ref> (to locate it in ~/.creatifact/store) or --layout <dir>")
   }
   if (!existsSync(layoutDir)) {
     throw new Error(

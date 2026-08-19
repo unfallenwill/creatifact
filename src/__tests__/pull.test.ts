@@ -386,7 +386,7 @@ test("runPull throws when blob digest mismatch", async () => {
   }
 })
 
-import { encodeAuth, type OpenmmCliConfig } from "../config"
+import { type CreatifactConfig, encodeAuth } from "../config"
 
 function fetchImageFixtureConfig() {
   const configData = "{}"
@@ -402,7 +402,7 @@ function fetchImageFixtureConfig() {
 }
 
 test("fetchImage resolves credentials and insecure from config", async () => {
-  const config: OpenmmCliConfig = {
+  const config: CreatifactConfig = {
     auths: { "localhost:5000": { auth: encodeAuth("cfguser", "cfgpw"), insecure: true } },
   }
 
@@ -457,7 +457,7 @@ test("fetchImage resolves credentials and insecure from config", async () => {
 })
 
 test("fetchImage prefers complete CLI credentials over config", async () => {
-  const config: OpenmmCliConfig = {
+  const config: CreatifactConfig = {
     auths: { "localhost:5000": { auth: encodeAuth("cfguser", "cfgpw") } },
   }
 

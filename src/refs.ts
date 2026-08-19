@@ -1,3 +1,5 @@
+import { isAbsolute } from "node:path"
+
 /**
  * Ref classification, shared by every consumer of image references (build
  * sources, gen package loading, the generate CLI): a ref is either a local
@@ -7,7 +9,7 @@
  */
 
 export function isLocalRef(ref: string): boolean {
-  return ref.startsWith(".") || ref.startsWith("/") || ref.startsWith("~")
+  return ref.startsWith(".") || ref.startsWith("~") || isAbsolute(ref)
 }
 
 /** True when the first path segment looks like a registry host, not a repo. */

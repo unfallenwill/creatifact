@@ -75,7 +75,7 @@ export interface LoginCommandOptions {
 
 export function buildLoginCommand(): Command {
   const cmd = new Command("login")
-    .description("Save registry credentials to the openmmcli config file")
+    .description("Save registry credentials to the creatifact config file")
     .argument("[registry]", "Registry host[:port] (e.g. localhost:5000, registry.example.com)")
     .option("-u, --username <user>", "Registry username (prompted if omitted and interactive)")
     .option("-p, --password <pw>", "Registry password (prefer --password-stdin)")
@@ -118,7 +118,7 @@ export async function runLoginFromArgs(args: string[], opts?: RunOpts): Promise<
 export async function runLoginFromParsed(parsed: ParsedLoginArgs, opts?: RunOpts): Promise<void> {
   if (!parsed.registry) {
     throw new Error(
-      "login requires a <registry> argument, e.g. openmmcli auth login localhost:5000",
+      "login requires a <registry> argument, e.g. creatifact auth login localhost:5000",
     )
   }
 
@@ -186,7 +186,7 @@ export async function runLogoutFromParsed(
 ): Promise<void> {
   if (!parsed.registry) {
     throw new Error(
-      "logout requires a <registry> argument, e.g. openmmcli auth logout localhost:5000",
+      "logout requires a <registry> argument, e.g. creatifact auth logout localhost:5000",
     )
   }
 
@@ -199,7 +199,7 @@ export async function runLogoutFromParsed(
 export function buildAuthCommand(): Command {
   const auth = new Command("auth")
     .usage("<action>")
-    .description("Manage registry credentials stored in the openmmcli config file")
+    .description("Manage registry credentials stored in the creatifact config file")
   addGlobalOptions(auth)
   auth.allowExcessArguments(true)
 

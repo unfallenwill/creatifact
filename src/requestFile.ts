@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs"
 import type { ParsedArgs as BuildRequest } from "./build"
 import type { CommandRequest } from "./execute"
 import type { GenRequest, GenTaskName } from "./generate"
-import type { PipelineStep } from "./pipeline"
 import type { ParsedLoginArgs } from "./login"
+import type { PipelineStep } from "./pipeline"
 import type { ParsedPullArgs } from "./pull"
 import type { ParsedPushArgs } from "./push"
 import { requestFieldsForTask, TASKS } from "./tasks"
@@ -159,11 +159,7 @@ export function buildRequest(fields: Fields): BuildRequest {
 }
 
 export function pushRequest(fields: Fields): ParsedPushArgs {
-  rejectUnknown(
-    fields,
-    new Set(["ref", "layout", "username", "password", "plainHttp"]),
-    "push",
-  )
+  rejectUnknown(fields, new Set(["ref", "layout", "username", "password", "plainHttp"]), "push")
   return {
     ref: asString(fields["ref"], "ref"),
     layout: asOptionalString(fields["layout"], "layout"),
@@ -175,11 +171,7 @@ export function pushRequest(fields: Fields): ParsedPushArgs {
 }
 
 export function pullRequest(fields: Fields): ParsedPullArgs {
-  rejectUnknown(
-    fields,
-    new Set(["ref", "output", "username", "password", "plainHttp"]),
-    "pull",
-  )
+  rejectUnknown(fields, new Set(["ref", "output", "username", "password", "plainHttp"]), "pull")
   return {
     ref: asString(fields["ref"], "ref"),
     output: asOptionalString(fields["output"], "output"),

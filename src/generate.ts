@@ -28,6 +28,7 @@ import {
 } from "./providers"
 import { fetchImage } from "./pull"
 import { isLocalRef, looksLikeRegistryRef } from "./refs"
+import { type GenTaskName, TASKS, type TaskSpec } from "./tasks"
 import {
   addGlobalOptions,
   collectValue,
@@ -37,10 +38,9 @@ import {
   parseKvValue,
   readPasswordFromStdin,
 } from "./util"
-import { type GenTaskName, TASKS, type TaskSpec } from "./tasks"
 
-export { requestFieldsForTask, TASKS } from "./tasks"
 export type { GenTaskName, TaskSpec } from "./tasks"
+export { requestFieldsForTask, TASKS } from "./tasks"
 
 const TASK_LIST = Object.keys(TASKS).join(", ")
 
@@ -127,7 +127,7 @@ export function addGenerateOptions(cmd: Command): Command {
     .option("--interval <dur>", "Polling interval (e.g. 1s); video tasks and resume only")
     .option(
       "--output <dir>",
-      "Export a standalone result layout dir (default: store ~/.openmmcli/store)",
+      "Export a standalone result layout dir (default: store ~/.creatifact/store)",
     )
     .option("--tag <repo:tag>", "Reference name for the result package (default gen-output:latest)")
     .option("--provider <id>", "Provider id (alternative to the positional provider)")
@@ -178,7 +178,7 @@ export function splitProviderPositional(
   if (first !== undefined && !ctx.hasDefaultProvider) {
     throw new Error(
       `expected <provider>, got '${first}' (known providers: ${[...ctx.known].join(", ") || "none configured"}); ` +
-        "or set defaults.gen.provider via `openmmcli config set defaults.gen.provider <id>`",
+        "or set defaults.gen.provider via `creatifact config set defaults.gen.provider <id>`",
     )
   }
   return { target: undefined, payload: positionals }
@@ -585,7 +585,7 @@ export async function resolveProviderForTask(
     if (providerId === "") {
       fail(
         "no <provider> given and no default provider configured; " +
-          "set defaults.gen.provider via `openmmcli config set defaults.gen.provider <id>`",
+          "set defaults.gen.provider via `creatifact config set defaults.gen.provider <id>`",
       )
     }
   }
@@ -1128,7 +1128,7 @@ async function materializePackageMedia(
   if (!usesPkg) return { req, cleanup: () => {} }
 
   const view = await packageFsView(image)
-  const tmp = mkdtempSync(join(tmpdir(), "openmm-pkgref-"))
+  const tmp = mkdtempSync(join(tmpdir(), "creatifact-pkgref-"))
   const extract = (value: string | undefined): string | undefined => {
     if (value === undefined || !value.startsWith("pkg://")) return value
     const rel = value.slice("pkg://".length)
@@ -1171,7 +1171,7 @@ async function runGeneratePackage(
   if (image.manifest.config.mediaType !== GEN_CONFIG_MEDIA_TYPE) {
     fail(
       `${ref}: not a gen package (config mediaType ${image.manifest.config.mediaType}); ` +
-        "build one by adding a 'gen' field to openmm-build.json",
+        "build one by adding a 'gen' field to creatifact-build.json",
     )
   }
   const configBlob = image.blobs.get(image.manifest.config.digest)
@@ -1217,7 +1217,7 @@ function rejectPkgRefsOutsidePackageMode(req: GenRequest): void {
     ...(req.lastFrame !== undefined ? [req.lastFrame] : []),
   ]
   if (fields.some((v) => v.startsWith("pkg://"))) {
-    fail("`pkg://` media references only work with `openmmcli generate <ref>` (a gen package)")
+    fail("`pkg://` media references only work with `creatifact generate <ref>` (a gen package)")
   }
 }
 

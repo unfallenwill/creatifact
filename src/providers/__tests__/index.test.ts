@@ -8,7 +8,7 @@ import { at, headersOf, jsonResponse, mockFetch } from "./helpers"
 let configDir: string
 
 test("createProvider wires config file section, settings override, and env fallback", async () => {
-  configDir = await mkdtemp(join(tmpdir(), "openmmcli-providers-"))
+  configDir = await mkdtemp(join(tmpdir(), "creatifact-providers-"))
   const configPath = join(configDir, "config.json")
   await writeFile(
     configPath,
@@ -64,7 +64,7 @@ test("createProvider rejects unknown ids and lists available", async () => {
 })
 
 test("createProvider surfaces corrupt config loudly", async () => {
-  configDir = await mkdtemp(join(tmpdir(), "openmmcli-providers-"))
+  configDir = await mkdtemp(join(tmpdir(), "creatifact-providers-"))
   const configPath = join(configDir, "config.json")
   await writeFile(configPath, "{ broken")
 

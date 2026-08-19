@@ -24,12 +24,12 @@ import {
 } from "../config"
 
 function tmpConfigPath(): string {
-  return join(mkdtempSync(join(tmpdir(), "openmmcli-config-")), "config.json")
+  return join(mkdtempSync(join(tmpdir(), "creatifact-config-")), "config.json")
 }
 
-test("configPath honors OPENMMCLI_CONFIG_DIR", () => {
-  expect(configPath({ OPENMMCLI_CONFIG_DIR: "/tmp/x" })).toBe(join("/tmp/x", "config.json"))
-  expect(configPath({})).toBe(join(homedir(), ".openmmcli", "config.json"))
+test("configPath honors CREATIFACT_CONFIG_DIR", () => {
+  expect(configPath({ CREATIFACT_CONFIG_DIR: "/tmp/x" })).toBe(join("/tmp/x", "config.json"))
+  expect(configPath({})).toBe(join(homedir(), ".creatifact", "config.json"))
 })
 
 test("loadConfig returns empty object when file is missing", () => {
@@ -37,7 +37,7 @@ test("loadConfig returns empty object when file is missing", () => {
 })
 
 test("loadConfig throws ConfigError on malformed JSON with path and hint", () => {
-  const dir = mkdtempSync(join(tmpdir(), "openmmcli-config-"))
+  const dir = mkdtempSync(join(tmpdir(), "creatifact-config-"))
   const path = join(dir, "config.json")
   writeFileSync(path, "{ not json")
 
@@ -45,14 +45,14 @@ test("loadConfig throws ConfigError on malformed JSON with path and hint", () =>
     expect(() => loadConfig(path)).toThrow(ConfigError)
     expect(() => loadConfig(path)).toThrow(/corrupt/)
     expect(() => loadConfig(path)).toThrow(path)
-    expect(() => loadConfig(path)).toThrow("openmmcli config reset")
+    expect(() => loadConfig(path)).toThrow("creatifact config reset")
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 })
 
 test("loadConfig throws on non-object root", () => {
-  const dir = mkdtempSync(join(tmpdir(), "openmmcli-config-"))
+  const dir = mkdtempSync(join(tmpdir(), "creatifact-config-"))
   const path = join(dir, "config.json")
   writeFileSync(path, "[1,2]")
 
@@ -64,7 +64,7 @@ test("loadConfig throws on non-object root", () => {
 })
 
 test("saveConfig writes atomically, preserves unknown sections, leaves no tmp files", () => {
-  const dir = mkdtempSync(join(tmpdir(), "openmmcli-config-"))
+  const dir = mkdtempSync(join(tmpdir(), "creatifact-config-"))
   const path = join(dir, "config.json")
 
   try {
@@ -87,7 +87,7 @@ test("saveConfig writes atomically, preserves unknown sections, leaves no tmp fi
 })
 
 test("deleteConfig returns false when absent, true when removed", () => {
-  const dir = mkdtempSync(join(tmpdir(), "openmmcli-config-"))
+  const dir = mkdtempSync(join(tmpdir(), "creatifact-config-"))
   const path = join(dir, "config.json")
 
   try {
@@ -214,12 +214,12 @@ test("toCredentials requires a complete pair; encodeBasicAuth reuses encodeAuth"
 })
 
 test("storeDir lives under the config dir", () => {
-  const env = { OPENMMCLI_CONFIG_DIR: "/cfg" }
-  expect(storeDir(env)).toBe("/cfg/store")
-  expect(storeDir()).toBe(join(homedir(), ".openmmcli", "store"))
+  const env = { CREATIFACT_CONFIG_DIR: "/cfg" }
+  expect(storeDir(env)).toBe(join("/cfg", "store"))
+  expect(storeDir()).toBe(join(homedir(), ".creatifact", "store"))
 })
 
 test("envForConfigPath prefers the explicit config dir", () => {
   expect(envForConfigPath(undefined)).toBe(process.env)
-  expect(envForConfigPath("/x/config.json")).toEqual({ OPENMMCLI_CONFIG_DIR: "/x" })
+  expect(envForConfigPath("/x/config.json")).toEqual({ CREATIFACT_CONFIG_DIR: "/x" })
 })

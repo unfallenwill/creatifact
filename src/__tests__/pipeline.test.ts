@@ -1,9 +1,9 @@
+import { createHash } from "node:crypto"
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createHash } from "node:crypto"
 import { beforeEach, expect, test, vi } from "vitest"
-import { runPipeline, type PipelineStep } from "../pipeline"
+import { type PipelineStep, runPipeline } from "../pipeline"
 
 function step(command: string, fields: Record<string, unknown>, name?: string): PipelineStep {
   return name === undefined ? { command, fields } : { command, fields, name }
@@ -13,7 +13,7 @@ let dir: string
 let configPath: string
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "openmm-pipeline-"))
+  dir = mkdtempSync(join(tmpdir(), "creatifact-pipeline-"))
   configPath = join(dir, "config.json")
   writeFileSync(configPath, JSON.stringify({ version: 1 }))
 })
@@ -24,11 +24,7 @@ test("runs build → build chain with ${step.outputDir} interpolation", async ()
   const results = await runPipeline(
     [
       step("build", { tag: "org/a:1", output: out1, annotations: { from: "first" } }, "a"),
-      step(
-        "build",
-        { tag: "org/b:1", output: out2, annotations: { note: "after ${a.tag}" } },
-        "b",
-      ),
+      step("build", { tag: "org/b:1", output: out2, annotations: { note: "after ${a.tag}" } }, "b"),
     ],
     { configPath },
   )
@@ -132,13 +128,9 @@ test("fails fast: forward reference", async () => {
 
 test("fails fast: duplicate step names", async () => {
   await expect(
-    runPipeline(
-      [
-        step("build", { tag: "x:1" }, "same"),
-        step("build", { tag: "y:1" }, "same"),
-      ],
-      { configPath },
-    ),
+    runPipeline([step("build", { tag: "x:1" }, "same"), step("build", { tag: "y:1" }, "same")], {
+      configPath,
+    }),
   ).rejects.toThrow(/duplicate step name 'same'/)
   rmSync(dir, { recursive: true, force: true })
 })

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/unfallenwill/openmmcli/main/schemas/openmm-build.schema.json",
-  "title": "openmmcli build manifest",
+  "$id": "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-build.schema.json",
+  "title": "Creatifact build manifest",
   "description": "Describes an OCI image: annotations, base images to inherit, paths to copy, and a local assets directory.",
   "type": "object",
   "properties": {
@@ -61,7 +61,7 @@
       "minLength": 1
     },
     "gen": {
-      "description": "Generation recipe: task, provider, model, and parameters. Baked into the image config blob so `openmmcli generate <ref>` can run it. Never contains credentials.",
+      "description": "Generation recipe: task, provider, model, and parameters. Baked into the image config blob so `creatifact generate <ref>` can run it. Never contains credentials.",
       "type": "object",
       "required": [
         "task"
