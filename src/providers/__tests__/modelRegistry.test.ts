@@ -101,16 +101,15 @@ describe("expandEnvRefs", () => {
   const env = { MINIMAX_API_KEY: "sk-live", EMPTY: "" }
   // "$" + "{NAME}" concatenation: the literal ${} is the feature under test,
   // so avoid writing it in a plain string (biome noTemplateCurlyInString)
-  const ref = (name: string) => `$` + `{${name}}`
+  const ref = (name: string): string => `$`.concat(`{${name}}`)
 
   test("expands whole-value refs; unresolvable refs become undefined", () => {
     expect(expandEnvRefs(ref("MINIMAX_API_KEY"), env)).toBe("sk-live")
     expect(expandEnvRefs(ref("MISSING_VAR"), env)).toBeUndefined()
     expect(expandEnvRefs(ref("EMPTY"), env)).toBeUndefined()
     expect(expandEnvRefs("", env)).toBe("")
-    expect(expandEnvRefs(`prefix-` + ref("MINIMAX_API_KEY"), env)).toBe(
-      `prefix-` + ref("MINIMAX_API_KEY"),
-    )
+    const prefixed = `prefix-${ref("MINIMAX_API_KEY")}`
+    expect(expandEnvRefs(prefixed, env)).toBe(prefixed)
   })
 
   test("walks nested objects and arrays, leaves non-strings untouched", () => {

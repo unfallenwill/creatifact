@@ -24,6 +24,100 @@ function fail(providerId: string, message: string): never {
   throw new Error(`models config for '${providerId}': ${message}`)
 }
 
+/** Parse & type-check one raw declaration entry; throws via fail(). */
+function parseDeclaration(providerId: string, raw: unknown, index: number): ModelDeclaration {
+  if (typeof raw !== "object" || raw === null) {
+    fail(providerId, `entry [${index}] must be an object`)
+  }
+  const decl = raw as ModelDeclaration
+  if (typeof decl.id !== "string" || decl.id === "") {
+    fail(providerId, `entry [${index}].id must be a non-empty string`)
+  }
+  if (decl.note !== undefined && typeof decl.note !== "string") {
+    fail(providerId, `entry [${index}] (${decl.id}): note must be a string`)
+  }
+  validateCapabilities(providerId, decl, index)
+  return decl
+}
+
+function validateCapabilities(providerId: string, decl: ModelDeclaration, index: number): void {
+  if (decl.capabilities === undefined) return
+  if (typeof decl.capabilities !== "object" || decl.capabilities === null) {
+    fail(providerId, `entry [${index}] (${decl.id}): capabilities must be an object`)
+  }
+  for (const [cap, support] of Object.entries(decl.capabilities)) {
+    if (typeof support !== "object" || support === null) {
+      fail(providerId, `${decl.id}: capabilities.${cap} must be an object`)
+    }
+  }
+}
+
+/** Validate the mode field against the provider's mode table. */
+function validateMode(
+  providerId: string,
+  decl: ModelDeclaration,
+  isKnownId: boolean,
+  knownModes: readonly string[] | undefined,
+): string | undefined {
+  if (decl.mode === undefined) {
+    if (
+      knownModes !== undefined &&
+      decl.capabilities?.["video.generate"] !== undefined &&
+      !isKnownId
+    ) {
+      fail(
+        providerId,
+        `${decl.id}: declares video.generate, so 'mode' is required (one of: ${knownModes.join(", ")})`,
+      )
+    }
+    return undefined
+  }
+  if (typeof decl.mode !== "string" || decl.mode === "") {
+    fail(providerId, `${decl.id}: mode must be a non-empty string`)
+  }
+  if (knownModes === undefined) {
+    fail(providerId, `${decl.id}: provider has no protocol modes; remove 'mode'`)
+  }
+  if (!knownModes.includes(decl.mode)) {
+    fail(providerId, `${decl.id}: unknown mode '${decl.mode}' (valid: ${knownModes.join(", ")})`)
+  }
+  return decl.mode
+}
+
+/** Merge one declaration into the ordered list (append custom / override builtin). */
+function applyDeclaration(
+  byId: Map<string, VerifiedModel>,
+  order: VerifiedModel[],
+  decl: ModelDeclaration,
+): void {
+  const existing = byId.get(decl.id)
+  if (existing === undefined) {
+    const appended: VerifiedModel = {
+      id: decl.id,
+      capabilities: (decl.capabilities ?? {}) as Partial<Record<Capability, ModelSupport>>,
+      source: "custom",
+      ...(decl.note === undefined ? {} : { note: decl.note }),
+    }
+    byId.set(decl.id, appended)
+    order.push(appended)
+    return
+  }
+  const merged: VerifiedModel = {
+    ...existing,
+    ...(decl.note === undefined ? {} : { note: decl.note }),
+    ...(decl.capabilities === undefined
+      ? {}
+      : {
+          capabilities: {
+            ...existing.capabilities,
+            ...(decl.capabilities as Partial<Record<Capability, ModelSupport>>),
+          },
+        }),
+  }
+  byId.set(decl.id, merged)
+  order[order.findIndex((m) => m.id === decl.id)] = merged
+}
+
 export function mergeModelDeclarations(
   providerId: string,
   builtin: VerifiedModel[],
@@ -40,80 +134,10 @@ export function mergeModelDeclarations(
   const order = [...builtin]
 
   for (const [index, raw] of (declarations as unknown[]).entries()) {
-    if (typeof raw !== "object" || raw === null) {
-      fail(providerId, `entry [${index}] must be an object`)
-    }
-    const decl = raw as ModelDeclaration
-    if (typeof decl.id !== "string" || decl.id === "") {
-      fail(providerId, `entry [${index}].id must be a non-empty string`)
-    }
-    if (decl.note !== undefined && typeof decl.note !== "string") {
-      fail(providerId, `entry [${index}] (${decl.id}): note must be a string`)
-    }
-    if (decl.capabilities !== undefined) {
-      if (typeof decl.capabilities !== "object" || decl.capabilities === null) {
-        fail(providerId, `entry [${index}] (${decl.id}): capabilities must be an object`)
-      }
-      for (const [cap, support] of Object.entries(decl.capabilities)) {
-        if (typeof support !== "object" || support === null) {
-          fail(providerId, `${decl.id}: capabilities.${cap} must be an object`)
-        }
-      }
-    }
-
-    // mode validation: only providers with a protocol mode table accept modes
-    if (decl.mode !== undefined) {
-      if (typeof decl.mode !== "string" || decl.mode === "") {
-        fail(providerId, `${decl.id}: mode must be a non-empty string`)
-      }
-      if (knownModes === undefined) {
-        fail(providerId, `${decl.id}: provider has no protocol modes; remove 'mode'`)
-      }
-      if (!knownModes.includes(decl.mode)) {
-        fail(
-          providerId,
-          `${decl.id}: unknown mode '${decl.mode}' (valid: ${knownModes.join(", ")})`,
-        )
-      }
-      modeFor[decl.id] = decl.mode
-    } else if (
-      knownModes !== undefined &&
-      decl.capabilities?.["video.generate"] !== undefined &&
-      byId.get(decl.id) === undefined
-    ) {
-      fail(
-        providerId,
-        `${decl.id}: declares video.generate, so 'mode' is required (one of: ${knownModes.join(", ")})`,
-      )
-    }
-
-    const existing = byId.get(decl.id)
-    if (existing === undefined) {
-      const appended: VerifiedModel = {
-        id: decl.id,
-        capabilities: (decl.capabilities ?? {}) as Partial<Record<Capability, ModelSupport>>,
-        source: "custom",
-        ...(decl.note === undefined ? {} : { note: decl.note }),
-      }
-      byId.set(decl.id, appended)
-      order.push(appended)
-    } else {
-      const merged: VerifiedModel = {
-        ...existing,
-        ...(decl.note === undefined ? {} : { note: decl.note }),
-        ...(decl.capabilities === undefined
-          ? {}
-          : {
-              capabilities: {
-                ...existing.capabilities,
-                ...(decl.capabilities as Partial<Record<Capability, ModelSupport>>),
-              },
-            }),
-      }
-      byId.set(decl.id, merged)
-      const at = order.findIndex((m) => m.id === decl.id)
-      order[at] = merged
-    }
+    const decl = parseDeclaration(providerId, raw, index)
+    const mode = validateMode(providerId, decl, byId.has(decl.id), knownModes)
+    if (mode !== undefined) modeFor[decl.id] = mode
+    applyDeclaration(byId, order, decl)
   }
 
   return { models: order, modeFor }

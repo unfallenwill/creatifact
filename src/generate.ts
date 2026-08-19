@@ -580,7 +580,7 @@ export async function resolveProviderForTask(
     const split = splitTargetString(target)
     providerId = split.provider
     model = split.model ?? ""
-  } else if (req.model !== undefined && req.model.includes("/")) {
+  } else if (req.model?.includes("/")) {
     // --model <provider>/<model> shorthand: carries the provider too
     const split = splitTargetString(req.model)
     providerId = split.provider
@@ -595,11 +595,7 @@ export async function resolveProviderForTask(
       )
     }
   }
-  if (
-    req.model !== undefined &&
-    req.model !== "" &&
-    !req.model.includes("/")
-  ) {
+  if (req.model !== undefined && req.model !== "" && !req.model.includes("/")) {
     model = req.model
   }
 
