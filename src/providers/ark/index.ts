@@ -22,7 +22,7 @@ import { classifyArkError } from "./error-map"
 import { ARK_DEFAULT_MODELS, ARK_MODELS } from "./models"
 
 const DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
-/** 带内联帧(data URI 可达 50MB+)的提交与同步图像生成,30s 默认超时偏紧。 */
+/** Submissions with inline frames (data URIs up to 50MB+) and sync image generation; the default 30s timeout is tight. */
 
 export interface ArkVideoOptions {
   resolution?: "720p" | "1080p"
@@ -275,7 +275,7 @@ export function createArkProvider(
 
   const embed: EmbedApi<ArkEmbedOptions> = {
     async create(req, ctx) {
-      // 文本 embeddings 无 dimensions 参数(仅 multimodal 端点有),options 透传兜底
+      // Text embeddings take no dimensions param (multimodal endpoint only); options passthrough covers it
       const resp = await client.post<ArkEmbedResponse>(
         "/embeddings",
         {
@@ -294,7 +294,7 @@ export function createArkProvider(
     },
   }
 
-  /** 文本对话: POST /chat/completions(OpenAI 兼容)。 */
+  /** Text chat: POST /chat/completions (OpenAI-compatible). */
   const textGenerate: TextGenerateApi<ArkChatOptions> = {
     async create(req, ctx) {
       const messages: Array<Record<string, unknown>> = []

@@ -316,8 +316,10 @@ describe("cli models — custom declarations", () => {
     try {
       const r = run(["models", "minimax"], undefined, env)
       expect(r.code).toBe(0)
-      expect(r.stdout).toContain("MiniMax-H4 (custom)  video.generate  next gen")
-      expect(r.stdout).toContain("MiniMax-H3  video.generate  gw override")
+      // Task-language output, column-aligned (spacing is layout-dependent)
+      expect(r.stdout).toMatch(/MiniMax-H4 \(custom\)\s+text2video\s+next gen/)
+      // H3 keeps {textOnly: false, ...} → image2video/frames2video, no text2video
+      expect(r.stdout).toMatch(/MiniMax-H3\s+image2video, frames2video\s+gw override/)
 
       // unknown provider key in models config → hard error
       writeFileSync(
@@ -327,6 +329,58 @@ describe("cli models — custom declarations", () => {
       const bad = run(["models"], undefined, env)
       expect(bad.code).toBe(1)
       expect(bad.stderr).toContain("unknown provider 'volcengine'")
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it("lists models without credentials (discovery is never gated on secrets)", () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "cli-models-nokey-"))
+    const configDir = path.join(tmp, "cfg")
+    mkdirSync(configDir, { recursive: true })
+    writeFileSync(path.join(configDir, "config.json"), "{}")
+    const env = {
+      CREATIFACT_CONFIG_DIR: configDir,
+      MINIMAX_API_KEY: "",
+      ARK_API_KEY: "",
+      ZHIPU_API_KEY: "",
+      KLING_API_KEY: "",
+      KLING_ACCESS_KEY: "",
+      KLING_SECRET_KEY: "",
+    }
+    try {
+      const r = run(["models", "minimax"], undefined, env)
+      expect(r.code).toBe(0)
+      expect(r.stdout).toMatch(/MiniMax-M3\s+text2text/)
+      // defaults are starred per capability
+      // defaults no longer carry a plain-text marker (TTY-only green)
+      expect(r.stdout).toContain("minimax/MiniMax-M2.7")
+      expect(r.stdout).toContain("minimax/MiniMax-H3")
+
+      const overview = run(["models"], undefined, env)
+      expect(overview.code).toBe(0)
+      expect(overview.stdout).toContain("minimax/MiniMax-M3")
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it("--json adds derived tasks per model", () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "cli-models-json-"))
+    const configDir = path.join(tmp, "cfg")
+    mkdirSync(configDir, { recursive: true })
+    writeFileSync(path.join(configDir, "config.json"), "{}")
+    const env = { CREATIFACT_CONFIG_DIR: configDir, MINIMAX_API_KEY: "" }
+    try {
+      const r = run(["models", "minimax", "--json"], undefined, env)
+      expect(r.code).toBe(0)
+      const parsed = JSON.parse(r.stdout)
+      expect(parsed.provider).toBe("minimax")
+      expect(parsed.defaults["text.generate"]).toBe("MiniMax-M2.7")
+      const m3 = parsed.models.find((m: { id: string }) => m.id === "MiniMax-M3")
+      expect(m3.tasks).toEqual(["text2text"])
+      const h3 = parsed.models.find((m: { id: string }) => m.id === "MiniMax-H3")
+      expect(h3.tasks).toEqual(["image2video", "frames2video"])
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
@@ -727,7 +781,7 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("text2video rejects --first-frame with guidance to image2video", () => {
+  it("task-inapplicable flags fail at parse time with unknown option", () => {
     const { env, dir } = demoEnv()
     try {
       const r = run(
@@ -736,8 +790,9 @@ describe("cli generate — integration", () => {
         env,
       )
       expect(r.code).toBe(1)
-      expect(r.stderr).toContain("text2video does not take --first-frame")
-      expect(r.stderr).toContain("image2video")
+      // The flag is not registered for text2video (help never shows it), so
+      // commander rejects it at parse time before any provider work.
+      expect(r.stderr).toContain("unknown option '--first-frame'")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -1214,13 +1269,78 @@ describe("cli generate — integration", () => {
     }
   })
 
+  it("--list-models prints supporting models with defaults and call templates", () => {
+    const { env, dir } = demoEnv()
+    try {
+      const r = run(["generate", "image2text", "--list-models"], undefined, env)
+      expect(r.code).toBe(0)
+      expect(r.stdout).toContain("models supporting image2text")
+      // full reference form on every line; no plain-text default badge
+      expect(r.stdout).not.toContain("(default)")
+      expect(r.stdout).toMatch(/demo\/demo-vision\s*\n/)
+      expect(r.stdout).toContain(
+        'creatifact generate image2text demo/demo-vision "<prompt>" --input <file>',
+      )
+
+      // provider scope positional filters to that provider
+      const scoped = run(["generate", "text2text", "demo", "--list-models"], undefined, env)
+      expect(scoped.code).toBe(0)
+      expect(scoped.stdout).toMatch(/demo\/demo-text\s/)
+
+      // task with no supporter on the scoped provider: informative stderr, exit 0
+      const empty = run(["generate", "video2text", "minimax", "--list-models"], undefined, env)
+      expect(empty.code).toBe(0)
+      expect(empty.stderr).toContain("no verified model supports video2text on 'minimax'")
+
+      // json payload is machine-parseable
+      const j = run(["generate", "image2text", "--list-models", "--json"], undefined, env)
+      expect(j.code).toBe(0)
+      const parsed = JSON.parse(j.stdout)
+      const demoEntry = parsed.entries.find((e: { provider: string }) => e.provider === "demo")
+      expect(demoEntry).toEqual({ provider: "demo", model: "demo-vision", default: true })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("model-selection errors inline cross-provider suggestions", () => {
+    const { env, dir, configPath } = demoEnv()
+    // minimax constructs fine (key from config) but has no video.understand model
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        providers: {
+          demo: JSON.parse(readFileSync(configPath, "utf8")).providers.demo,
+          minimax: { apiKey: "k" },
+        },
+      }),
+    )
+    try {
+      const r = run(["generate", "video2text", "minimax", "q", "--input", "a.mp4"], undefined, env)
+      expect(r.code).toBe(1)
+      expect(r.stderr).toContain("has no model for video.understand")
+      expect(r.stderr).toContain("models that support video2text:")
+      expect(r.stderr).toContain("demo/demo-vision")
+      expect(r.stderr).toContain("--list-models")
+
+      // explicit model that exists but supports a different capability → warning + suggestions
+      const w = run(["generate", "text2text", "demo/demo-image", "hi"], undefined, env)
+      expect(w.stderr).toContain("warning: 'demo-image' is not marked as supporting text2text")
+      expect(w.stderr).toContain("demo/demo-text")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it("models lists providers, plugin details, and errors on unknown", () => {
     const { env, dir } = demoEnv()
     try {
       const all = run(["models"], undefined, env)
       expect(all.code).toBe(0)
-      expect(all.stdout).toContain("demo  (")
-      expect(all.stderr).toContain("unavailable")
+      // flat catalog: pure data rows, no provider section comments
+      expect(all.stdout).toContain("minimax/MiniMax-M3")
+      expect(all.stdout).not.toMatch(/^\s*#/m)
+      expect(all.stderr).not.toContain("unavailable")
 
       const one = run(["models", "demo"], undefined, env)
       expect(one.code).toBe(0)
@@ -1243,8 +1363,9 @@ describe("cli generate — integration", () => {
       // No CREATIFACT_CONFIG_DIR: the flag alone must route config reads.
       const models = run(["models", "--config-dir", configDir])
       expect(models.code).toBe(0)
-      expect(models.stdout).toContain("demo  (")
-      expect(models.stderr).toContain("unavailable")
+      expect(models.stdout).toMatch(/demo\/demo-image/)
+      // credential-free built-ins list with a badge instead of erroring
+      expect(models.stderr).not.toContain("unavailable")
 
       const configPath = run(["config", "path", "--config-dir", configDir])
       expect(configPath.code).toBe(0)

@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs"
 
 import { Command } from "commander"
-
+import pc from "picocolors"
 import { type BuildCommandOptions, buildArgsFromOptions, buildBuildCommand } from "./build"
 import { buildConfigCommand } from "./configCmd"
 import { executeCommand } from "./execute"
@@ -136,7 +136,7 @@ function extractConfigDir(args: string[]): { rest: string[]; configDir?: string 
 program.parseAsync(process.argv).then(
   () => process.exit(0),
   (e: unknown) => {
-    console.error(`error: ${e instanceof Error ? e.message : String(e)}`)
+    console.error(pc.red(`error: ${e instanceof Error ? e.message : String(e)}`))
     process.exit(1)
   },
 )

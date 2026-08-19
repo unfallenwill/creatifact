@@ -12,18 +12,18 @@ const STATUS_MAP: Array<[RegExp, ErrorCategory]> = [
   [/api.?key|token|auth|unauthorized/i, "auth"],
 ]
 
-// 状态码含义:https://platform.minimaxi.com/docs/api-reference/errorcode.md
+// Status code meanings: https://platform.minimaxi.com/docs/api-reference/errorcode.md
 function fromStatusCode(code: number): ErrorCategory | undefined {
   if (code === 1004 || code === 2049) return "auth"
   if (code === 1002) return "rate"
   if (code === 1008) return "quota"
-  // 1026 输入涉敏 / 1027 输出涉敏 / 2013 传入参数异常(调用方错误,不应重试)
+  // 1026 sensitive input / 1027 sensitive output / 2013 invalid params (caller error; do not retry)
   if (code === 1026 || code === 1027) return "moderation"
   if (code === 2013) return "invalid"
   return undefined
 }
 
-// OpenAI 风格错误会把业务码内嵌在消息尾部,如 "... (2013)"
+// OpenAI-style errors embed the business code at the message tail, e.g. "... (2013)"
 const TRAILING_CODE_RE = /\((\d{4})\)\s*$/
 
 function fromHttpStatus(status: number): ErrorCategory | undefined {
@@ -34,7 +34,7 @@ function fromHttpStatus(status: number): ErrorCategory | undefined {
   return undefined
 }
 
-/** base_resp.status_code → 内嵌尾部码 → 消息正则,逐级兜底。 */
+/** base_resp.status_code → embedded tail code → message regex, cascading fallbacks. */
 function fromBody(body: unknown): ErrorCategory | undefined {
   const parsed = (body ?? {}) as MiniMaxErrorBody
   const code = parsed.base_resp?.status_code
@@ -45,7 +45,7 @@ function fromBody(body: unknown): ErrorCategory | undefined {
 
   const text = parsed.base_resp?.status_msg ?? parsed.error?.message ?? ""
 
-  // 内嵌业务码优先于正则,避免如 "TokenPlan" 里的 "token" 触发 auth 误判
+  // Embedded business codes take priority over regex so "token" inside "TokenPlan" never misfires as auth
   const embedded = TRAILING_CODE_RE.exec(text)
   if (embedded) {
     const byCode = fromStatusCode(Number(embedded[1]))

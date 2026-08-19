@@ -4,7 +4,7 @@ interface ArkErrorBody {
   error?: { code?: string; message?: string }
 }
 
-// 错误码表:https://www.volcengine.com/docs/82379/1299023
+// Error code table: https://www.volcengine.com/docs/82379/1299023
 const CODE_MAP: Array<[RegExp, ErrorCategory]> = [
   [/Authentication|AccessDenied|InvalidApiKey/i, "auth"],
   [/RateLimit|Throttling|ServerOverloaded/i, "rate"],

@@ -10,7 +10,7 @@ export const KLING_MODELS: VerifiedModel[] = [
     id: "kling-3.0-turbo",
     capabilities: { "video.generate": { textOnly: false, firstFrame: true } },
     lastVerified: "2026-08",
-    note: "路径族 /text-to-video/kling-3.0-turbo 与 /image-to-video/kling-3.0-turbo",
+    note: "path families /text-to-video/kling-3.0-turbo and /image-to-video/kling-3.0-turbo",
   },
   {
     id: "kling-v2.1-turbo",
@@ -21,6 +21,6 @@ export const KLING_MODELS: VerifiedModel[] = [
     id: "kolors",
     capabilities: { "image.generate": { imageInput: true } },
     lastVerified: "2026-08",
-    note: "图片生成模型;传 image 时走图生图",
+    note: "image generation; with an image input it becomes image-to-image",
   },
 ]

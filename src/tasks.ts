@@ -49,7 +49,32 @@ export interface TaskSpec {
   pickModel?: (s: ModelSupport) => boolean
   /** Hard-fail when no model passes pickModel (frames2video). */
   strictModel?: boolean
-  usage: string
+}
+
+/**
+ * Does this model verifiably support the task? Mirrors the `satisfies`
+ * predicate inside pickModelForTask: has the task's capability AND passes the
+ * task's pickModel filter (when the task has one). This is the single
+ * derivation every discoverability surface (models listing, --list-models,
+ * error suggestions) must share, so a listed model is always a runnable one.
+ */
+export function modelSupportsTask(
+  model: { capabilities: Partial<Record<Capability, ModelSupport>> },
+  task: GenTaskName,
+): boolean {
+  const spec = TASKS[task]
+  const cap = spec.capability
+  if (cap === undefined) return false
+  const support = model.capabilities[cap]
+  if (support === undefined) return false
+  return spec.pickModel === undefined || spec.pickModel(support)
+}
+
+/** The tasks a model verifiably supports, in TASKS declaration order. */
+export function tasksForModel(model: {
+  capabilities: Partial<Record<Capability, ModelSupport>>
+}): GenTaskName[] {
+  return (Object.keys(TASKS) as GenTaskName[]).filter((task) => modelSupportsTask(model, task))
 }
 
 export const TASKS: Record<GenTaskName, TaskSpec> = {
@@ -60,21 +85,6 @@ export const TASKS: Record<GenTaskName, TaskSpec> = {
     required: { prompt: true },
     optional: { system: true, options: true },
     payload: "prompt",
-    usage: `Usage: creatifact generate text2text [provider] [prompt] [options]
-
-Text chat completion (text in, text out).
-
-Arguments:
-  [provider]            provider id or provider/model (e.g. zhipu/glm-4-flash);
-                        omit to use the default provider
-  [prompt]              the message to send (or use --prompt)
-
-Options:
-    --prompt <text>   Alternative to the positional prompt
-    --system <text>   System prompt
-    --opt <k=v>       Repeatable provider option (JSON-parsed when valid)
-    --json            Print structured JSON to stdout
-  -h, --help            Show this help message`,
   },
   image2text: {
     name: "image2text",
@@ -83,21 +93,6 @@ Options:
     required: { inputs: true },
     optional: { prompt: true, options: true },
     payload: "prompt",
-    usage: `Usage: creatifact generate image2text [provider] [question] [options]
-
-Ask a question about image(s) (image in, text out); with no question the
-images are described.
-
-Arguments:
-  [provider]            provider id or provider/model
-  [question]            optional question (or use --prompt)
-
-Options:
-    --prompt <text>   Alternative to the positional question
-    --input <x>       Repeatable image (http(s)/data URL, path, pkg://path)
-    --opt <k=v>       Repeatable provider option
-    --json            Print structured JSON to stdout
-  -h, --help            Show this help message`,
   },
   video2text: {
     name: "video2text",
@@ -106,21 +101,6 @@ Options:
     required: { inputs: true },
     optional: { prompt: true, options: true },
     payload: "prompt",
-    usage: `Usage: creatifact generate video2text [provider] [question] [options]
-
-Ask a question about video(s) (video in, text out); with no question the
-videos are described.
-
-Arguments:
-  [provider]            provider id or provider/model
-  [question]            optional question (or use --prompt)
-
-Options:
-    --prompt <text>   Alternative to the positional question
-    --input <x>       Repeatable video (http(s)/data URL, path, pkg://path)
-    --opt <k=v>       Repeatable provider option
-    --json            Print structured JSON to stdout
-  -h, --help            Show this help message`,
   },
   text2image: {
     name: "text2image",
@@ -129,22 +109,6 @@ Options:
     required: { prompt: true },
     optional: { options: true },
     payload: "prompt",
-    usage: `Usage: creatifact generate text2image [provider] [prompt] [options]
-
-Generate an image from text.
-
-Arguments:
-  [provider]            provider id or provider/model (e.g. zhipu/cogview-4)
-  [prompt]              generation instruction (or use --prompt)
-
-Options:
-    --prompt <text>   Alternative to the positional prompt
-    --opt <k=v>       Repeatable provider option
-    --output <dir>    Result OCI layout directory (default ~/.creatifact/layouts/<repo>)
-    --tag <repo:tag>  Reference name for the result package
-    --no-pack         Print artifacts only; do not build a result package
-    --json            Print structured JSON to stdout
-  -h, --help            Show this help message`,
   },
   image2image: {
     name: "image2image",
@@ -154,25 +118,6 @@ Options:
     optional: { options: true },
     payload: "prompt",
     pickModel: (s) => s.imageInput === true,
-    usage: `Usage: creatifact generate image2image [provider] [prompt] [options]
-
-Generate an image from a reference image plus text (image editing /
-restyling). Takes exactly one reference image.
-
-Arguments:
-  [provider]            provider id or provider/model
-  [prompt]              generation instruction (or use --prompt)
-
-Options:
-    --prompt <text>   Alternative to the positional prompt
-    --image <ref>     Reference image (required): http(s)/data URL, local
-                      path, or pkg://path into a recipe package
-    --opt <k=v>       Repeatable provider option
-    --output <dir>    Result OCI layout directory (default ~/.creatifact/layouts/<repo>)
-    --tag <repo:tag>  Reference name for the result package
-    --no-pack         Print artifacts only; do not build a result package
-    --json            Print structured JSON to stdout
-  -h, --help            Show this help message`,
   },
   text2video: {
     name: "text2video",
@@ -182,25 +127,6 @@ Options:
     optional: { options: true, noWait: true, timeout: true, interval: true },
     payload: "prompt",
     pickModel: (s) => s.textOnly !== false,
-    usage: `Usage: creatifact generate text2video [provider] [prompt] [options]
-
-Generate a video from text (async; polls until done).
-
-Arguments:
-  [provider]            provider id or provider/model (e.g. ark/doubao-seedance-2.0)
-  [prompt]              generation instruction (or use --prompt)
-
-Options:
-    --prompt <text>   Alternative to the positional prompt
-    --opt <k=v>       Repeatable provider option
-    --no-wait         Submit and print the task handle, then exit
-    --timeout <dur>   Polling timeout (default 10m; e.g. 90s, 5m, 600)
-    --interval <dur>  Polling interval (default 5s)
-    --output <dir>    Result OCI layout directory (default ~/.creatifact/layouts/<repo>)
-    --tag <repo:tag>  Reference name for the result package
-    --no-pack         Print artifacts only; do not build a result package
-    --json            Print structured JSON to stdout
-  -h, --help            Show this help message`,
   },
   image2video: {
     name: "image2video",
@@ -210,27 +136,6 @@ Options:
     optional: { options: true, noWait: true, timeout: true, interval: true },
     payload: "prompt",
     pickModel: (s) => s.firstFrame === true,
-    usage: `Usage: creatifact generate image2video [provider] [prompt] [options]
-
-Generate a video from a reference image plus text; the image becomes the
-video's first frame.
-
-Arguments:
-  [provider]            provider id or provider/model
-  [prompt]              generation instruction (or use --prompt)
-
-Options:
-    --prompt <text>   Alternative to the positional prompt
-    --image <ref>     Reference image (required): URL, local path, pkg://path
-    --opt <k=v>       Repeatable provider option
-    --no-wait         Submit and print the task handle, then exit
-    --timeout <dur>   Polling timeout (default 10m)
-    --interval <dur>  Polling interval (default 5s)
-    --output <dir>    Result OCI layout directory (default ~/.creatifact/layouts/<repo>)
-    --tag <repo:tag>  Reference name for the result package
-    --no-pack         Print artifacts only; do not build a result package
-    --json            Print structured JSON to stdout
-  -h, --help            Show this help message`,
   },
   frames2video: {
     name: "frames2video",
@@ -241,28 +146,6 @@ Options:
     payload: "prompt",
     pickModel: (s) => s.firstFrame === true && s.lastFrame === true,
     strictModel: true,
-    usage: `Usage: creatifact generate frames2video [provider] [prompt] [options]
-
-Generate a video from an explicit first frame and last frame plus text.
-
-Arguments:
-  [provider]            provider id or provider/model
-                        (e.g. zhipu/viduq1-start-end)
-  [prompt]              generation instruction (or use --prompt)
-
-Options:
-    --prompt <text>       Alternative to the positional prompt
-    --first-frame <ref>  First frame image (required)
-    --last-frame <ref>   Last frame image (required)
-    --opt <k=v>          Repeatable provider option
-    --no-wait            Submit and print the task handle, then exit
-    --timeout <dur>      Polling timeout (default 10m)
-    --interval <dur>     Polling interval (default 5s)
-    --output <dir>       Result OCI layout directory (default ~/.creatifact/layouts/<repo>)
-    --tag <repo:tag>     Reference name for the result package
-    --no-pack            Print artifacts only; skip the result package
-    --json               Print structured JSON to stdout
-  -h, --help               Show this help message`,
   },
   embed: {
     name: "embed",
@@ -271,19 +154,6 @@ Options:
     required: { inputs: true },
     optional: { options: true },
     payload: "inputs",
-    usage: `Usage: creatifact generate embed [provider] [input...] [options]
-
-Compute text embeddings (text in, vectors out).
-
-Arguments:
-  [provider]            provider id or provider/model
-  [input...]            texts to embed (or use --input)
-
-Options:
-    --input <text>    Repeatable text, URL, or existing path
-    --opt <k=v>       Repeatable provider option
-    --json            Print structured JSON to stdout
-  -h, --help            Show this help message`,
   },
   resume: {
     name: "resume",
@@ -292,20 +162,6 @@ Options:
     required: { handle: true },
     optional: { timeout: true, interval: true },
     payload: "handle",
-    usage: `Usage: creatifact generate resume <handle|file> [options]
-
-Resume polling a video task saved by a video task's --no-wait.
-
-Arguments:
-  <handle|file>         Task handle: inline JSON (starts with "{") or a file
-                        path. When omitted, reads the handle from stdin.
-
-Options:
-    --timeout <dur>   Polling timeout (default 10m)
-    --interval <dur>  Polling interval (default 5s)
-    --output <dir>    Directory to save base64-only artifacts
-    --json            Print structured JSON to stdout
-  -h, --help            Show this help message`,
   },
 }
 

@@ -2,6 +2,7 @@ import { type CreatifactConfig, loadConfig } from "../config"
 import { type ArkProviderConfig, createArkProvider } from "./ark"
 import { expandEnvRefs } from "./core/modelRegistry"
 import type { Env, Provider } from "./core/types"
+import { ProviderError } from "./core/types"
 import { createKlingProvider, type KlingProviderConfig } from "./kling"
 import { createMiniMaxProvider, type MiniMaxProviderConfig } from "./minimax"
 import {
@@ -114,6 +115,42 @@ export function listConfiguredProviderIds(opts: { configPath?: string } = {}): s
   return [
     ...new Set([...Object.keys(FACTORIES), ...configuredPluginIds(loadConfig(opts.configPath))]),
   ]
+}
+
+const LISTING_PLACEHOLDER_KEY = "creatifact-models-listing"
+
+export interface ProviderCatalog {
+  provider: Provider
+  /** Present when construction succeeded only with placeholder credentials. */
+  listingOnly?: string
+}
+
+/**
+ * List a provider's model catalog without requiring credentials. Model
+ * registries are static (code + config declarations); API keys are only
+ * consumed at request time, so an auth failure at construction is retried
+ * with placeholder credentials — discovery must never be gated on secrets.
+ */
+export async function listProviderCatalog(
+  id: string,
+  opts: CreateProviderOptions = {},
+  env: Env = process.env,
+): Promise<ProviderCatalog> {
+  try {
+    return { provider: await createProvider(id, opts, env) }
+  } catch (e) {
+    if (e instanceof ProviderError && e.category === "auth") {
+      const placeholder = {
+        ...opts.settings,
+        apiKey: LISTING_PLACEHOLDER_KEY,
+        accessKey: LISTING_PLACEHOLDER_KEY,
+        secretKey: LISTING_PLACEHOLDER_KEY,
+      }
+      const provider = await createProvider(id, { ...opts, settings: placeholder }, env)
+      return { provider, listingOnly: "no credentials configured (listing only)" }
+    }
+    throw e
+  }
 }
 
 /**

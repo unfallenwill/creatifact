@@ -29,14 +29,14 @@ import {
 } from "./models"
 
 const DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
-/** 帧内联上传与同步图像生成,30s 默认超时偏紧。 */
+/** Inline frame uploads and sync image generation; the default 30s timeout is tight for them. */
 
-// 视频生成(异步): https://docs.bigmodel.cn/api-reference/模型-api/视频生成异步
-// 查询异步结果: https://docs.bigmodel.cn/api-reference/模型-api/查询异步结果
-// 图像生成: https://docs.bigmodel.cn/api-reference/模型-api/图像生成
-// 图像生成(异步): https://docs.bigmodel.cn/api-reference/模型-api/图像生成异步
+// Video generation (async): https://docs.bigmodel.cn/api-reference/model-api/video-generation-async
+// Query async result: https://docs.bigmodel.cn/api-reference/model-api/query-async-result
+// Image generation: https://docs.bigmodel.cn/api-reference/model-api/image-generation
+// Image generation (async): https://docs.bigmodel.cn/api-reference/model-api/image-generation-async
 
-/** 视频入参(snake_case 透传,与 API 文档一致);各模型可用字段见 models.ts 备注。 */
+/** Video params (snake_case passthrough, matching the API docs); per-model fields are noted in models.ts. */
 export interface ZhipuVideoOptions {
   quality?: "speed" | "quality"
   with_audio?: boolean
@@ -47,7 +47,7 @@ export interface ZhipuVideoOptions {
   style?: "general" | "anime"
   aspect_ratio?: "16:9" | "9:16" | "1:1"
   movement_amplitude?: "auto" | "small" | "medium" | "large"
-  /** vidu2-reference 多参考图(1-3 张 URL/data URI);与 firstFrame 二选一 */
+  /** vidu2-reference multi-reference images (1-3 URL/data URIs); mutually exclusive with firstFrame */
   image_url?: string | string[]
   request_id?: string
   user_id?: string
@@ -67,8 +67,8 @@ export interface ZhipuImageOptions {
   watermark_enabled?: boolean
   user_id?: string
   /**
-   * 走异步任务端点 /async/images/generations 并内部轮询收口(仅 glm-image)。
-   * 默认 false:直接调用同步 /images/generations。
+   * Routes through the async task endpoint /async/images/generations with internal polling (glm-image only).
+   * Default false: call the sync /images/generations directly.
    */
   useAsync?: boolean
   [key: string]: unknown
@@ -77,9 +77,9 @@ export interface ZhipuImageOptions {
 export interface ZhipuProviderConfig {
   apiKey?: string
   baseUrl?: string
-  /** useAsync 轮询间隔(默认 2s) */
+  /** useAsync polling interval (default 2s) */
   pollIntervalMs?: number
-  /** useAsync 轮询超时(默认 10 分钟) */
+  /** useAsync polling timeout (default 10 minutes) */
   pollTimeoutMs?: number
   /** User model declarations from config.json's models.zhipu (merged into the builtin list). */
   models?: unknown
@@ -128,12 +128,12 @@ const MODE_LABEL: Record<ZhipuVideoMode, string> = {
   "vidu-reference": "Vidu reference-to-video",
 }
 
-/** FileRef → 智谱 image_url(URL 原样,本地图按扩展名,base64 兜底 image/png)。 */
+/** FileRef → Zhipu image_url (URLs pass through; local files infer mime from extension; base64 falls back to image/png). */
 async function toZhipuImageUrl(ref: FileRef): Promise<string> {
   return toImageUrl(ref)
 }
 
-/** 智谱产物 URL 无 content-type;按扩展名推断,未知兜底 image/png。 */
+/** Zhipu artifact URLs carry no content-type; infer from extension, fall back to image/png. */
 function artifactMime(url: string | undefined): string {
   return mimeOfUrl(url) ?? "image/png"
 }
@@ -143,8 +143,8 @@ function invalid(model: string, mode: ZhipuVideoMode, reason: string): ProviderE
 }
 
 /**
- * 按模型分支把 firstFrame/lastFrame 折算成请求体的 image_url。
- * 返回 undefined 表示调用方未传帧(保留 options.image_url 透传)。
+ * Fold firstFrame/lastFrame into the request body's image_url per model branch.
+ * Returning undefined means the caller passed no frames (options.image_url passthrough stays).
  */
 async function buildImageUrl(
   req: VideoGenerateRequest<ZhipuVideoOptions>,
@@ -152,7 +152,7 @@ async function buildImageUrl(
 ): Promise<string | string[] | undefined> {
   const { firstFrame, lastFrame } = req
   if (!firstFrame) {
-    // 没有首帧:要么纯文生,要么只有尾帧(无处安放,数组第一张固定是首帧)
+    // No first frame: either pure text-to-video, or a last frame with nowhere to go (array slot 0 is always the first frame)
     if (lastFrame) {
       throw invalid(
         req.model,
@@ -165,7 +165,7 @@ async function buildImageUrl(
 
   switch (mode) {
     case "cogvideox3":
-      // 单图=首帧;[首帧,尾帧] 两图数组=首尾帧
+      // single image = first frame; [first,last] two-image array = frame pair
       if (lastFrame) {
         const [first, last] = await Promise.all([
           toZhipuImageUrl(firstFrame),
@@ -237,7 +237,7 @@ export function createZhipuProvider(
     classifyError: classifyZhipuError,
   })
 
-  /** GET /async-result/{id} → JobStatus,视频/图像任务共用同一查询端点。 */
+  /** GET /async-result/{id} → JobStatus; video and image tasks share this query endpoint. */
   async function pollAsyncResult(handle: JobHandle): Promise<JobStatus> {
     const body = await client.get<ZhipuAsyncResultResponse>(`/async-result/${handle.id}`)
     switch (body.task_status) {
@@ -260,7 +260,7 @@ export function createZhipuProvider(
         return {
           state: "failed",
           error: {
-            // 失败响应通常只有状态无错误详情;content_filter 命中时按内容安全归类
+            // Failed responses usually carry status only, no error detail; content_filter hits classify as moderation
             category:
               (body.content_filter?.length ?? 0) > 0
                 ? "moderation"
@@ -276,7 +276,7 @@ export function createZhipuProvider(
   const videoGenerate: VideoGenerateApi<ZhipuVideoOptions> = {
     async submit(req, ctx) {
       guardFrameSupport(mergedModels, req)
-      // 运行时模型 id 来自用户输入;未声明(不在合并表内)的 id 落到 cogvideox3 分支(历史默认)。
+      // Runtime model ids come from user input; ids absent from the merged table fall to the cogvideox3 branch (historical default).
       const mode = modelModes[req.model as ZhipuModelId] ?? "cogvideox3"
       const { image_url: optionImages, ...rest } = req.options ?? {}
       const frames = await buildImageUrl(req, mode)
@@ -304,7 +304,7 @@ export function createZhipuProvider(
     },
   }
 
-  /** 异步任务端点 /async/images/generations:提交后内部轮询到收口。 */
+  /** Async task endpoint /async/images/generations: submit, then poll internally to completion. */
   async function createImageAsync(
     req: ImageGenerateRequest<ZhipuImageOptions>,
     options: Record<string, unknown>,
@@ -329,7 +329,7 @@ export function createZhipuProvider(
       throw new ProviderError("internal", "Zhipu did not return a task id", submitted)
     }
     const handle: JobHandle = { providerId: "zhipu", id: submitted.id }
-    // 智谱视频/图像异步任务共用 /async-result/{id} 查询端点,可手动续查超时任务
+    // Zhipu video/image async tasks share the /async-result/{id} query endpoint; timed-out tasks can be resumed there
     return pollToArtifacts(pollAsyncResult, handle, {
       intervalMs: config.pollIntervalMs ?? 2000,
       timeoutMs: config.pollTimeoutMs ?? 600_000,
@@ -338,7 +338,7 @@ export function createZhipuProvider(
     })
   }
 
-  /** 同步端点 /images/generations(glm-image / cogview-4-250304 / cogview-4 / cogview-3-flash)。 */
+  /** Sync endpoint /images/generations (glm-image / cogview-4-250304 / cogview-4 / cogview-3-flash). */
   async function createImageSync(
     req: ImageGenerateRequest<ZhipuImageOptions>,
     options: Record<string, unknown>,
@@ -368,7 +368,7 @@ export function createZhipuProvider(
     },
   }
 
-  /** 文本对话: POST /chat/completions(OpenAI 兼容)。 */
+  /** Text chat: POST /chat/completions (OpenAI-compatible). */
   const textGenerate: TextGenerateApi<ZhipuChatOptions> = {
     async create(req) {
       const messages: Array<{ role: string; content: string }> = []

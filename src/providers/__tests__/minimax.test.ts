@@ -249,8 +249,8 @@ test("minimax submit rejects duration outside 4-15", async () => {
 })
 
 test("classifyMinimaxError prefers trailing embedded code over regex (TokenPlan case)", () => {
-  // 真实线上返回:HTTP 400 + OpenAI 风格体,码内嵌在消息尾部。
-  // 旧逻辑把消息里的 "TokenPlan" 误匹配 /token/ → auth;新逻辑取 (2013) → invalid
+  // Real-world response: HTTP 400 + OpenAI-style body with the code embedded at the message tail.
+  // The old logic matched /token/ inside "TokenPlan" → auth; the new logic takes (2013) → invalid
   expect(
     classifyMinimaxError(400, {
       type: "error",

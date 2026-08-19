@@ -26,7 +26,7 @@ import {
 } from "./models"
 
 const DEFAULT_BASE_URL = "https://api.minimaxi.com"
-/** 帧内联上传与同步图像生成,30s 默认超时偏紧。 */
+/** Inline frame uploads and sync image generation; the default 30s timeout is tight for them. */
 
 // Chat: https://platform.minimaxi.com/docs/api-reference/text-chat-openai
 // V2 create: https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create
@@ -42,17 +42,17 @@ export interface MiniMaxSubjectReference {
   image: string[]
 }
 
-/** 文本对话参数(OpenAI 兼容透传): https://platform.minimaxi.com/docs/api-reference/text-chat-openai */
+/** Text chat params (OpenAI-compatible passthrough): https://platform.minimaxi.com/docs/api-reference/text-chat-openai */
 export interface MiniMaxChatOptions {
-  /** [0, 2],M3 默认 1、M2.x 默认 1 */
+  /** [0, 2]; M3 defaults to 1, M2.x to 1 */
   temperature?: number
-  /** 核采样 [0, 1];M3 默认 0.95,M2.x 默认 0.9 */
+  /** Nucleus sampling [0, 1]; M3 defaults to 0.95, M2.x to 0.9 */
   top_p?: number
-  /** 生成长度上限;M3 推荐 131072/上限 524288,其余推荐 65536/上限 204800(max_tokens 已弃用) */
+  /** Generation length cap; M3 recommended 131072 / max 524288, others recommended 65536 / max 204800 (max_tokens deprecated) */
   max_completion_tokens?: number
-  /** M3 thinking 控制 {type: "adaptive" | "off"};M2.x 无法关闭 */
+  /** M3 thinking control {type: "adaptive" | "off"}; cannot be disabled on M2.x */
   thinking?: Record<string, unknown>
-  /** 将 thinking 拆分到 reasoning_content/reasoning_details;只改输出格式,不开关 thinking */
+  /** Splits thinking into reasoning_content/reasoning_details; output formatting only, does not toggle thinking */
   reasoning_split?: boolean
   tools?: Array<Record<string, unknown>>
   service_tier?: "standard" | "priority"
@@ -71,7 +71,7 @@ export interface MiniMaxVideoOptions {
   [key: string]: unknown
 }
 
-// 图片生成参数(snake_case 透传,与 API 文档一致):
+// Image generation params (snake_case passthrough, matching the API docs):
 // https://platform.minimaxi.com/docs/api-reference/image-generation-t2i
 export interface MiniMaxImageOptions {
   aspect_ratio?: string
@@ -153,9 +153,9 @@ function checkBaseResp(body: { base_resp?: MiniMaxBaseResp }): void {
 }
 
 /**
- * MiniMax 默认把 thinking 内联在 content 首部(<think>…</think>),M2.x 无法关闭。
- * CLI 交付物只要正文,故剥离首个前导 think 块;未闭合或非前缀的 <think> 原样保留,
- * 用户传 options.reasoning_split=true 时服务端已拆分,此函数为空操作。
+ * MiniMax inlines thinking at the head of content (<think>…</think>) by default; M2.x cannot disable it.
+ * CLI deliverables want the body only, so strip the leading think block; unterminated or non-prefix <think> stays as-is,
+ * and when the user passes options.reasoning_split=true the server has already split, making this a no-op.
  */
 function stripLeadingThink(text: string): string {
   if (!text.startsWith("<think>")) return text
@@ -211,7 +211,7 @@ export function createMiniMaxProvider(
   }
 
   function modeForRequest(req: VideoGenerateRequest<MiniMaxVideoOptions>): MiniMaxVideoMode {
-    // 运行时模型 id 来自用户输入;未声明(不在合并表内)的 id 保持历史默认(V2)。
+    // Runtime model ids come from user input; ids absent from the merged table keep the historical default (V2).
     const modes = modelModes[req.model as MiniMaxModelId]
     if (!modes) return "v2"
     if (modes.includes("v2")) return "v2"
@@ -478,7 +478,7 @@ export function createMiniMaxProvider(
           prompt: req.prompt,
           ...(req.image
             ? {
-                // JPG/JPEG/PNG data URL 或公网 URL;mime 按扩展名推断,base64 兜底 png
+                // JPG/JPEG/PNG data URL or public URL; mime inferred from extension, base64 falls back to png
                 subject_reference: [
                   {
                     type: "character",
@@ -505,7 +505,7 @@ export function createMiniMaxProvider(
     },
   }
 
-  /** 文本对话: POST /v1/chat/completions(OpenAI 兼容)。 */
+  /** Text chat: POST /v1/chat/completions (OpenAI-compatible). */
   const textGenerate: TextGenerateApi<MiniMaxChatOptions> = {
     async create(req, ctx) {
       const messages: Array<{ role: string; content: string }> = []

@@ -2,7 +2,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Command } from "commander"
+import pc from "picocolors"
 import { defaultGenProvider, envForConfigPath, loadConfig, storeDir } from "./config"
+import { displayWidth } from "./format"
 import {
   buildResultPackage,
   GEN_CONFIG_MEDIA_TYPE,
@@ -20,6 +22,7 @@ import {
   type JobHandle,
   JobTimeoutError,
   listConfiguredProviderIds,
+  listProviderCatalog,
   type ModelSupport,
   type Provider,
   ProviderError,
@@ -28,7 +31,7 @@ import {
 } from "./providers"
 import { fetchImage } from "./pull"
 import { isLocalRef, looksLikeRegistryRef } from "./refs"
-import { type GenTaskName, TASKS, type TaskSpec } from "./tasks"
+import { type GenTaskName, modelSupportsTask, TASKS, type TaskSpec } from "./tasks"
 import {
   addGlobalOptions,
   collectValue,
@@ -101,6 +104,8 @@ export interface GenerateCommandOptions {
   wait?: boolean
   /** Set to false by --no-pack. */
   pack?: boolean
+  /** Meta flag: list models supporting the task, then exit. */
+  listModels?: boolean
   json?: boolean
   plainHttp?: boolean
   configDir?: string
@@ -138,8 +143,147 @@ export function addGenerateOptions(cmd: Command): Command {
     .option("--plain-http", "Use HTTP for the registry (gen packages)")
 }
 
-export function buildGenerateTaskCommand(name: string): Command {
-  const cmd = new Command(name).argument("[args...]")
+/**
+ * Register ONLY the flags a task's spec allows. The TaskSpec in tasks.ts is
+ * the single source of truth: runtime validation (validateRequest), the `-f`
+ * JSON field whitelist (requestFieldsForTask), and this flag surface all
+ * derive from it, so --help can never advertise a flag the task rejects —
+ * inapplicable flags fail at parse time as unknown options instead of
+ * surfacing as runtime errors after credential/provider resolution.
+ */
+/** One CLI flag plus the spec predicate that makes it apply to a task. */
+interface TaskFlagSpec {
+  add: (cmd: Command, task: GenTaskName) => void
+  when: (spec: TaskSpec, task: GenTaskName) => boolean
+}
+
+const TASK_FLAGS: TaskFlagSpec[] = [
+  {
+    when: (s) => Boolean(s.required.prompt || s.optional.prompt),
+    add: (cmd) => cmd.option("--prompt <text>", "Alternative to the positional prompt"),
+  },
+  {
+    when: (s) => s.optional.system === true,
+    add: (cmd) => cmd.option("--system <text>", "System prompt"),
+  },
+  {
+    when: (s) => s.required.images !== undefined,
+    add: (cmd) =>
+      cmd.option(
+        "--image <media>",
+        "Reference image: URL, local path, or pkg://path (repeatable)",
+        collectValue,
+      ),
+  },
+  {
+    when: (s) => s.required.firstFrame === true,
+    add: (cmd) => cmd.option("--first-frame <img>", "First frame image (required)"),
+  },
+  {
+    when: (s) => s.required.lastFrame === true,
+    add: (cmd) => cmd.option("--last-frame <img>", "Last frame image (required)"),
+  },
+  {
+    when: (s) => s.required.inputs === true,
+    add: (cmd, task) => {
+      const kind =
+        task === "embed"
+          ? "Repeatable text, URL, or path"
+          : `Repeatable ${task === "image2text" ? "image" : "video"} (URL, path, pkg://path)`
+      cmd.option("--input <media>", kind, collectValue)
+    },
+  },
+  {
+    when: (s) => s.optional.options === true,
+    add: (cmd) =>
+      cmd.option(
+        "--opt <k=v>",
+        "Repeatable provider option (JSON-parsed when valid)",
+        collectValue,
+      ),
+  },
+  {
+    when: (s) => s.optional.noWait === true,
+    add: (cmd) => cmd.option("--no-wait", "Submit and print the task handle, then exit"),
+  },
+  {
+    when: (s) => s.optional.timeout === true,
+    add: (cmd) => cmd.option("--timeout <dur>", "Polling timeout (default 10m; e.g. 90s, 5m)"),
+  },
+  {
+    when: (s) => s.optional.interval === true,
+    add: (cmd) => cmd.option("--interval <dur>", "Polling interval (default 5s)"),
+  },
+  {
+    when: (_s, task) => task === "resume",
+    add: (cmd) => cmd.option("--output <dir>", "Directory to save base64-only artifacts"),
+  },
+  {
+    when: (s) => s.media,
+    add: (cmd) => {
+      cmd.option(
+        "--output <dir>",
+        "Result OCI layout directory (default ~/.creatifact/layouts/<repo>)",
+      )
+      cmd.option("--tag <repo:tag>", "Reference name for the result package")
+      cmd.option("--no-pack", "Print artifacts only; do not build a result package")
+    },
+  },
+  {
+    when: (_s, task) => task !== "resume",
+    add: (cmd) => {
+      cmd.option("--provider <id>", "Provider id (alternative to the positional provider)")
+      cmd.option("--model <id>", "Model id (requires --provider or a provider positional)")
+      cmd.option("--list-models", "List models that support this task (with defaults), then exit")
+    },
+  },
+]
+
+export function addTaskOptions(cmd: Command, task: GenTaskName): Command {
+  const spec = TASKS[task]
+  for (const flag of TASK_FLAGS) {
+    if (flag.when(spec, task)) flag.add(cmd, task)
+  }
+  cmd.option("--json", "Print structured JSON to stdout")
+  return cmd
+}
+
+/** Positional arguments per task, derived from the same spec (help text). */
+function addTaskArguments(cmd: Command, task: GenTaskName): void {
+  const spec = TASKS[task]
+  if (task === "resume") {
+    cmd.argument("[handle|file]", "Task handle JSON, file path, or stdin when omitted")
+    return
+  }
+  cmd.argument("[provider]", "Provider id or provider/model (e.g. ark/doubao-seedance-2.0)")
+  if (spec.payload === "inputs") {
+    cmd.argument("[input...]", "Texts to embed (or use --input)")
+    return
+  }
+  const question = spec.capability?.endsWith("understand") === true
+  cmd.argument(
+    question ? "[question]" : "[prompt]",
+    question
+      ? "Optional question (or use --prompt); defaults to describing the input"
+      : "Generation instruction (or use --prompt)",
+  )
+}
+
+/** A task subcommand: spec-filtered flags + described positionals. */
+export function buildGenerateTaskCommand(task: GenTaskName): Command {
+  const cmd = new Command(task)
+  addTaskOptions(cmd, task)
+  addTaskArguments(cmd, task)
+  return addGlobalOptions(cmd)
+}
+
+/**
+ * The `generate <ref>` handler re-parses trailing flags BEFORE the package's
+ * embedded task is known, so the ref parser must accept every task's flags
+ * (validation happens later against the ref's own task spec).
+ */
+export function buildRefTaskCommand(): Command {
+  const cmd = new Command("ref").argument("[args...]")
   addGenerateOptions(cmd)
   return addGlobalOptions(cmd)
 }
@@ -563,53 +707,280 @@ export function pickModelForTask(provider: Provider, task: GenTaskName): PickedM
   return { model: fallback, warned: true }
 }
 
+/** A copy-paste call template for one provider/model on a task, from its spec. */
+function callTemplateForTask(task: GenTaskName, target: string): string {
+  const spec = TASKS[task]
+  const parts = ["creatifact generate", task, target]
+  if (spec.payload === "inputs") {
+    parts.push("<text...>")
+  } else if (spec.required.prompt || spec.optional.prompt) {
+    parts.push('"<prompt>"')
+  }
+  if (spec.required.inputs === true && task !== "embed") parts.push("--input <file>")
+  if (spec.required.images !== undefined) parts.push("--image <file>")
+  if (spec.required.firstFrame === true) parts.push("--first-frame <img>")
+  if (spec.required.lastFrame === true) parts.push("--last-frame <img>")
+  return parts.join(" ")
+}
+
+export interface ListModelsResult {
+  provider: string
+  model: string
+  default: boolean
+  note?: string | undefined
+}
+
+/** Collect one provider's supported models + its default resolution. */
+async function collectProviderEntries(
+  id: string,
+  task: GenTaskName,
+  opts: { configPath?: string },
+): Promise<{
+  entries: ListModelsResult[]
+  fallback: ListModelsResult | undefined
+  defaultId: string | undefined
+}> {
+  const { provider } = await listProviderCatalog(
+    id,
+    opts.configPath === undefined ? {} : { configPath: opts.configPath },
+  )
+  const supported = provider.models.filter((m) => modelSupportsTask(m, task))
+  let defaultId: string | undefined
+  try {
+    defaultId = pickModelForTask(provider, task).model
+  } catch {
+    const cap = TASKS[task].capability
+    defaultId = cap !== undefined ? provider.defaultModels?.[cap] : undefined
+  }
+  const entries = supported.map((m) => ({
+    provider: id,
+    model: m.id,
+    default: m.id === defaultId,
+    ...(m.note === undefined ? {} : { note: m.note }),
+  }))
+  // The declared default fails the task filter: runtime would warn and pass
+  // through — surface that instead of hiding it.
+  const fallback =
+    defaultId !== undefined && !supported.some((m) => m.id === defaultId)
+      ? {
+          provider: id,
+          model: defaultId,
+          default: false,
+          note: "default; not verified for this task (passes through with a warning)",
+        }
+      : undefined
+  return { entries, fallback, defaultId }
+}
+
+/**
+ * The --list-models payload: every verified model supporting the task, across
+ * the requested providers (or all configured ones), with the task-level
+ * default (exactly what pickModelForTask would choose) starred. Falls back to
+ * the declared capability default when it does not pass the filter — shown
+ * with a fallback note, mirroring the runtime warning.
+ */
+export async function listModelsForTask(
+  task: GenTaskName,
+  providerScope: string | undefined,
+  opts: { configPath?: string } = {},
+): Promise<{ providers: string[]; entries: ListModelsResult[]; fallback?: ListModelsResult }> {
+  const ids = providerScope !== undefined ? [providerScope] : listConfiguredProviderIds(opts)
+  const entries: ListModelsResult[] = []
+  let fallback: ListModelsResult | undefined
+  for (const id of ids) {
+    const collected = await collectProviderEntries(id, task, opts)
+    entries.push(...collected.entries)
+    fallback = fallback ?? collected.fallback
+  }
+  return { providers: ids, entries, ...(fallback === undefined ? {} : { fallback }) }
+}
+
+/**
+ * Human-readable block for --list-models. The reference column is aligned
+ * like the `models` catalog (whole-list column widths), notes clamp to the
+ * terminal width, and each call template indents under its reference so the
+ * block scans as one table.
+ */
+function printListModelsHuman(
+  task: GenTaskName,
+  result: { entries: ListModelsResult[]; fallback?: ListModelsResult },
+): void {
+  // Model lines use the full <provider>/<model-id> reference — the same
+  // syntax the CLI accepts positionally — so the listing needs zero
+  // inference about which part is the provider and which is the model id.
+  // The default model leads its provider group; on a TTY it is the only
+  // green line, so no badge or marker is needed in plain text either.
+  console.log(pc.bold(`models supporting ${task}:`))
+  const termWidth = process.stdout.columns ?? 100
+  const refs = result.entries.map((e) => `${e.provider}/${e.model}`)
+  const refWidth = Math.max(...refs.map(displayWidth), 0)
+  const noteBudget = Math.max(20, termWidth - refWidth - 6)
+  for (const [i, e] of result.entries.entries()) {
+    const ref = refs[i] ?? ""
+    const pad = " ".repeat(refWidth - displayWidth(ref))
+    const head = e.default ? pc.green(pc.bold(ref)) : pc.bold(ref)
+    const note =
+      e.note !== undefined
+        ? pc.dim(`  ${e.note.length > noteBudget ? `${e.note.slice(0, noteBudget - 1)}…` : e.note}`)
+        : ""
+    console.log(`  ${head}${pad}${note}`)
+    console.log(`  ${pc.dim(`${" ".repeat(refWidth + 2)}${callTemplateForTask(task, ref)}`)}`)
+  }
+  const f = result.fallback
+  if (f !== undefined) {
+    console.log(
+      `  note: ${f.provider}/${f.model} is the declared default but does not pass the ${task} filter; it runs with a warning`,
+    )
+  }
+}
+
+/** Print the --list-models output (human) or dump it (--json). */
+async function runListModels(
+  task: GenTaskName,
+  positionals: string[],
+  options: GenerateCommandOptions,
+  opts: { configPath?: string | undefined },
+): Promise<void> {
+  const ctx = providerContext(opts)
+  const { target } = splitProviderPositional(positionals, ctx)
+  const scope =
+    options.provider ?? (target !== undefined ? splitTargetString(target).provider : undefined)
+  const result = await listModelsForTask(
+    task,
+    scope,
+    opts.configPath === undefined ? {} : { configPath: opts.configPath },
+  )
+  if (options.json) {
+    console.log(JSON.stringify(result, null, 2))
+    return
+  }
+  if (result.entries.length === 0) {
+    console.error(
+      `no verified model supports ${task}${scope !== undefined ? ` on '${scope}'` : ""}; run \`creatifact models\` for the full catalog`,
+    )
+    return
+  }
+  printListModelsHuman(task, result)
+}
+
+/** Cross-provider suggestion block for errors/warnings; "" when nothing helps. */
+async function suggestModelsForTask(
+  task: GenTaskName,
+  opts: { configPath?: string | undefined },
+): Promise<string> {
+  try {
+    const { entries } = await listModelsForTask(
+      task,
+      undefined,
+      opts.configPath === undefined ? {} : { configPath: opts.configPath },
+    )
+    if (entries.length === 0) return ""
+    // Breadth over completeness: up to 3 per provider, 9 lines total — the
+    // agent needs any valid candidate to self-correct; --list-models has the rest.
+    const perProvider = new Map<string, number>()
+    const lines: string[] = []
+    for (const e of entries) {
+      const used = perProvider.get(e.provider) ?? 0
+      if (used >= 3 || lines.length >= 9) continue
+      perProvider.set(e.provider, used + 1)
+      lines.push(`  ${e.provider}/${e.model}`)
+    }
+    return [
+      `models that support ${task}:`,
+      ...lines,
+      `run \`creatifact generate ${task} --list-models\` for more`,
+    ].join("\n")
+  } catch {
+    return "" // suggestions are best-effort; never mask the original error
+  }
+}
+
+/** Resolve provider id + explicit model from the request's target forms. */
+function resolveTargetIds(
+  req: GenRequest,
+  opts: { configPath?: string | undefined },
+): { providerId: string; model: string } {
+  const target = req.provider
+  if (target !== undefined && target !== "") {
+    const split = splitTargetString(target)
+    if (split.model !== undefined) return { providerId: split.provider, model: split.model }
+    // Bare provider positional: an explicit --model (no slash) still applies.
+    if (req.model !== undefined && req.model !== "" && !req.model.includes("/")) {
+      return { providerId: split.provider, model: req.model }
+    }
+    return { providerId: split.provider, model: "" }
+  }
+  if (req.model?.includes("/")) {
+    // --model <provider>/<model> shorthand: carries the provider too
+    const split = splitTargetString(req.model)
+    return { providerId: split.provider, model: split.model ?? "" }
+  }
+  const providerId = defaultGenProvider(loadConfig(opts.configPath)) ?? ""
+  if (providerId === "") {
+    fail(
+      "no <provider> given and no default provider configured; " +
+        "set defaults.gen.provider via `creatifact config set defaults.gen.provider <id>`, " +
+        "or use --model <provider>/<model>",
+    )
+  }
+  if (req.model !== undefined && req.model !== "") {
+    return { providerId, model: req.model }
+  }
+  return { providerId, model: "" }
+}
+
+/**
+ * Default-pick with inline suggestions on hard failure, or verify an explicit
+ * model against the registry (pass-through with a warning when mismatched).
+ */
+async function resolveModelForTask(
+  provider: Provider,
+  task: GenTaskName,
+  model: string,
+  opts: { configPath?: string | undefined },
+): Promise<string> {
+  if (model !== "") {
+    // Explicit model known to the registry but not verified for this task:
+    // pass through (philosophy) but warn with the better candidates inline.
+    const known = provider.models.find((m) => m.id === model)
+    if (known !== undefined && !modelSupportsTask(known, task)) {
+      const suggestion = await suggestModelsForTask(task, opts)
+      console.error(
+        `warning: '${model}' is not marked as supporting ${task} in ${provider.id}'s verified list; passing through` +
+          (suggestion === "" ? "" : `\n${suggestion}`),
+      )
+    }
+    return model
+  }
+  let picked: PickedModel | undefined
+  try {
+    picked = pickModelForTask(provider, task)
+  } catch (e) {
+    // Inline the candidates right where the agent is looking: one failed
+    // call becomes self-correcting instead of prompting a discovery detour.
+    const suggestion = await suggestModelsForTask(task, opts)
+    fail(suggestion === "" ? (e as Error).message : `${(e as Error).message}\n${suggestion}`)
+  }
+  if (picked === undefined) fail("unreachable: pickModelForTask returned nothing")
+  if (picked.warned) {
+    console.error(
+      `note: '${picked.model}' is not marked as supporting ${task} in ${provider.id}'s verified list; passing through`,
+    )
+  }
+  return picked.model
+}
+
 /** Resolve the request's provider/model, applying task-aware default model picking. */
 export async function resolveProviderForTask(
   req: GenRequest,
   opts: { configPath?: string | undefined } = {},
 ): Promise<ResolvedTarget> {
-  const spec = TASKS[req.task]
-  if (spec.capability === undefined) {
+  if (TASKS[req.task].capability === undefined) {
     fail(`task '${req.task}' runs no provider`)
   }
-
-  let providerId = ""
-  let model = ""
-  const target = req.provider
-  if (target !== undefined && target !== "") {
-    const split = splitTargetString(target)
-    providerId = split.provider
-    model = split.model ?? ""
-  } else if (req.model?.includes("/")) {
-    // --model <provider>/<model> shorthand: carries the provider too
-    const split = splitTargetString(req.model)
-    providerId = split.provider
-    model = split.model ?? ""
-  } else {
-    providerId = defaultGenProvider(loadConfig(opts.configPath)) ?? ""
-    if (providerId === "") {
-      fail(
-        "no <provider> given and no default provider configured; " +
-          "set defaults.gen.provider via `creatifact config set defaults.gen.provider <id>`, " +
-          "or use --model <provider>/<model>",
-      )
-    }
-  }
-  if (req.model !== undefined && req.model !== "" && !req.model.includes("/")) {
-    model = req.model
-  }
-
+  const { providerId, model } = resolveTargetIds(req, opts)
   const provider = await createProvider(providerId, providerOpts(opts))
-  if (model === "") {
-    const picked = pickModelForTask(provider, req.task)
-    if (picked.warned) {
-      console.error(
-        `note: '${picked.model}' is not marked as supporting ${req.task} in ${provider.id}'s verified list; passing through`,
-      )
-    }
-    model = picked.model
-  }
-  return { provider, model }
+  return { provider, model: await resolveModelForTask(provider, req.task, model, opts) }
 }
 
 function providerOpts(opts: { configPath?: string | undefined }): { configPath?: string } {
@@ -1268,12 +1639,20 @@ export function buildGenerateCommand(): Command {
 
   for (const task of Object.keys(TASKS) as GenTaskName[]) {
     const cmd = gen.command(task).description(TASK_DESCRIPTIONS[task])
-    addGenerateOptions(cmd)
+    addTaskOptions(cmd, task)
+    addTaskArguments(cmd, task)
     addGlobalOptions(cmd)
-    cmd.argument("[args...]")
-    cmd.addHelpText("after", `\n${TASKS[task].usage}`)
-    cmd.action(async (args: string[], options: GenerateCommandOptions, command: Command) => {
+    // Arguments are declared dynamically, so read positionals from command.args
+    // instead of the action callback's positional parameters.
+    cmd.action(async (...invocation: unknown[]) => {
+      const command = invocation.at(-1) as Command
+      const options = (invocation.at(-2) ?? {}) as GenerateCommandOptions
+      const args = command.args
       const opts = configOpts(command, options.configDir)
+      if (options.listModels === true) {
+        await runListModels(task, args, options, opts)
+        return
+      }
       const overlay = overlayFromParsed(task, args, options, providerContext(opts), {})
       await runGenerateRequest(mergeRequest({ task }, overlay), opts)
     })
@@ -1290,7 +1669,7 @@ export function buildGenerateCommand(): Command {
     if (looksLikeGenRef(head, storeTags)) {
       // The trailing operands include the task flags; parse them here.
       const { options: taskOpts, positionals } = parseArgsWith<GenerateCommandOptions>(
-        buildGenerateTaskCommand("ref"),
+        buildRefTaskCommand(),
         args.slice(1),
       )
       await runGeneratePackage(

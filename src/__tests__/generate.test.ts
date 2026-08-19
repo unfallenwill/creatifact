@@ -90,11 +90,21 @@ test("parseGenerateArgs: resume takes a handle positional", () => {
 })
 
 test("parseGenerateArgs: packageMode disables the provider positional", () => {
-  const o = parseGenerateArgs("text2image", ["a crane", "--image", "x.png"], CTX, {
+  const o = parseGenerateArgs("image2image", ["a crane", "--image", "x.png"], CTX, {
     packageMode: true,
   })
   expect(o.prompt).toBe("a crane")
+  expect(o.images).toEqual(["x.png"])
   expect(o.provider).toBeUndefined()
+})
+
+test("parseGenerateArgs: task-inapplicable flags fail at parse time", () => {
+  expect(() =>
+    parseGenerateArgs("image2text", ["what is this", "--first-frame", "f.png"], CTX),
+  ).toThrow(/unknown option '--first-frame'/)
+  expect(() => parseGenerateArgs("text2text", ["hi", "--no-wait"], CTX)).toThrow(
+    /unknown option '--no-wait'/,
+  )
 })
 
 test("parseGenerateArgs: malformed provider targets and opt values", () => {
@@ -328,7 +338,6 @@ test("TASKS registry is complete and consistent", () => {
     ].sort(),
   )
   for (const spec of Object.values(TASKS)) {
-    expect(spec.usage).toContain(`creatifact generate ${spec.name}`)
     expect(spec.capability === undefined ? "resume" : "x").toBeTruthy()
   }
 })

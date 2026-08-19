@@ -39,7 +39,7 @@ const DURATION_UNITS: Record<string, number> = {
   h: 3_600_000,
 }
 
-/** "90s" / "5m" / "600"(裸数字=秒)→ ms;非法抛错。 */
+/** "90s" / "5m" / "600" (bare number = seconds) → ms; throws on invalid input. */
 export function parseDurationMs(raw: string, flag: string): number {
   const m = /^(\d+)(ms|s|m|h)?$/.exec(raw)
   if (!m || m[1] === undefined) {
@@ -48,7 +48,7 @@ export function parseDurationMs(raw: string, flag: string): number {
   return Number(m[1]) * (DURATION_UNITS[m[2] ?? "s"] ?? 1000)
 }
 
-/** v 合法则 JSON.parse,否则原样字符串(与 `config set` 同语义)。 */
+/** JSON.parse when valid, else the literal string (same semantics as `config set`). */
 export function parseKvValue(raw: string): unknown {
   try {
     return JSON.parse(raw)

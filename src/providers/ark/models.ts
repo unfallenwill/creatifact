@@ -13,13 +13,13 @@ export const ARK_MODELS: VerifiedModel[] = [
     id: "doubao-seed-1-6-250615",
     capabilities: { "text.generate": {} },
     lastVerified: "2026-08",
-    note: "文本对话;以方舟控制台开通的 endpoint/model 为准",
+    note: "text chat; verify the endpoint/model enabled in the Ark console",
   },
   {
     id: "doubao-1-5-pro-32k-250115",
     capabilities: { "text.generate": {} },
     lastVerified: "2026-08",
-    note: "高性价比文本对话",
+    note: "cost-efficient text chat",
   },
   {
     id: "doubao-seedance-1-0-pro-250528",
@@ -27,7 +27,7 @@ export const ARK_MODELS: VerifiedModel[] = [
       "video.generate": { textOnly: false, firstFrame: true, lastFrame: false },
     },
     lastVerified: "2026-08",
-    note: "官方示例模型 ID,使用前以方舟控制台开通的 endpoint/model 为准",
+    note: "official sample id; verify the endpoint/model enabled in the Ark console before use",
   },
   {
     id: "doubao-seedance-2.0",
@@ -35,13 +35,13 @@ export const ARK_MODELS: VerifiedModel[] = [
       "video.generate": { textOnly: false, firstFrame: true, lastFrame: true },
     },
     lastVerified: "2026-08",
-    note: "另有 reference_image role(2.0/2.5)",
+    note: "also supports the reference_image role (2.0/2.5)",
   },
   {
     id: "doubao-seedream-4.0-250828",
     capabilities: { "image.generate": { imageInput: true } },
     lastVerified: "2026-08",
-    note: "传 image 时走图生图/编辑",
+    note: "with an image input it becomes image-to-image / editing",
   },
   {
     id: "doubao-1.5-vision-pro-32k-250115",
@@ -52,6 +52,6 @@ export const ARK_MODELS: VerifiedModel[] = [
     id: "doubao-embedding-large-text-240915",
     capabilities: { embed: {} },
     lastVerified: "2026-08",
-    note: "文本端点无 dimensions;多模态 dimensions 在 /embeddings/multimodal",
+    note: "text endpoint takes no dimensions; multimodal dimensions live at /embeddings/multimodal",
   },
 ]

@@ -317,7 +317,7 @@ test("zhipu sync image with empty data fails loudly", async () => {
 })
 
 test("zhipu async image timeout error carries the task id (recoverable via videoGenerate.poll)", async () => {
-  // 提交成功但 pollTimeoutMs=0 立即触发超时分支;raw 里的 taskId 可续查
+  // Submit succeeds but pollTimeoutMs=0 trips the timeout branch immediately; the raw taskId can be resumed
   const mock = mockFetch([() => jsonResponse(200, { id: "img-task", task_status: "PROCESSING" })])
   const zhipu = createZhipuProvider({ apiKey: "k", pollTimeoutMs: 0 })
 
@@ -369,7 +369,7 @@ test("classifyZhipuError maps business codes and http fallbacks", () => {
   expect(classifyZhipuError(401, { error: { code: "1003", message: "token 过期" } })).toBe("auth")
   expect(classifyZhipuError(500, undefined)).toBe("internal")
   expect(classifyZhipuError(403, undefined)).toBe("auth")
-  // 无业务码时按消息兜底
+  // Message-based fallback when no business code is present
   expect(classifyZhipuError(400, { error: { message: "输入包含敏感内容" } })).toBe("moderation")
   expect(classifyZhipuError(200, { error: { code: "9999", message: "whatever" } })).toBeUndefined()
 })

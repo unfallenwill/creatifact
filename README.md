@@ -133,24 +133,24 @@ Task-oriented generation (`gen` is an alias). CLI flags, `-f` request files,
 and recipe packages are equivalent; when both apply, command-line flags win.
 Progress and notes go to stderr; results go to stdout.
 
-| Task | 中文 | In → out | Key options |
-|------|------|----------|-------------|
-| `text2text` | 文本生成 | text → text | positional prompt, `--system`, `--opt` |
-| `image2text` | 图生文 | image + question → text | `--input` (repeatable), optional prompt |
-| `video2text` | 视频理解 | video + question → text | `--input` (repeatable), optional prompt |
-| `text2image` | 文生图 | text → image | `--opt`, result packaging |
-| `image2image` | 图生图 | image + text → image | `--image` (exactly one), `--opt` |
-| `text2video` | 文生视频 | text → video | `--no-wait`, `--timeout`, `--interval` |
-| `image2video` | 图生视频 | image + text → video | `--image` (becomes the first frame) |
-| `frames2video` | 首尾帧生视频 | first+last frame + text → video | `--first-frame`, `--last-frame` |
-| `embed` | 向量化 | text → vectors | positional inputs or `--input` |
-| `resume` | 续跑 | resume a saved video task | `<handle\|file>`, `--timeout`, `--interval` |
+| Task | Description | In → out | Key options |
+|------|-------------|----------|-------------|
+| `text2text` | Text chat | text → text | positional prompt, `--system`, `--opt` |
+| `image2text` | Image understanding | image + question → text | `--input` (repeatable), optional prompt |
+| `video2text` | Video understanding | video + question → text | `--input` (repeatable), optional prompt |
+| `text2image` | Text-to-image | text → image | `--opt`, result packaging |
+| `image2image` | Image-to-image | image + text → image | `--image` (exactly one), `--opt` |
+| `text2video` | Text-to-video | text → video | `--no-wait`, `--timeout`, `--interval` |
+| `image2video` | Image-to-video | image + text → video | `--image` (becomes the first frame) |
+| `frames2video` | First/last-frame-to-video | first+last frame + text → video | `--first-frame`, `--last-frame` |
+| `embed` | Vectorization | text → vectors | positional inputs or `--input` |
+| `resume` | Resume | resume a saved video task | `<handle\|file>`, `--timeout`, `--interval` |
 
 ```
 # text chat
 creatifact generate text2text zhipu "explain ECC memory in one paragraph"
 creatifact generate text2text ark/doubao-seed-1-6-250615 "hi" --system "be brief"
-creatifact generate text2text minimax "解释一下 Raft 共识" --opt temperature=0.5
+creatifact generate text2text minimax "explain the Raft consensus" --opt temperature=0.5
 
 # text-to-image / image-to-image
 creatifact generate text2image zhipu "a crane" --opt size=1024x1024
@@ -252,13 +252,23 @@ Non-media tasks (text/understand/embed) print to stdout.
 ### `models`
 
 ```
-# List available providers (built-ins + config-declared plugins)
+# List available providers (built-ins + config-declared plugins);
+# task-language coverage per provider, works without credentials
 creatifact models
 
-# List a provider's verified models with capability tags
+# List a provider's verified models with the tasks they support (★ = default)
 creatifact models zhipu
-creatifact models zhipu --json
+creatifact models zhipu --json   # each model carries a derived "tasks" array
+
+# Discover models for one task right where you invoke it
+creatifact generate image2text --list-models
+creatifact generate text2video zhipu --list-models   # scoped to a provider
+creatifact generate image2text --list-models --json
 ```
+
+Model discovery never requires API keys (registries are static; credentials
+are only consumed when a task actually runs). Model-selection errors inline
+the models that DO support the task, so a failed call self-corrects.
 
 ### `build`
 

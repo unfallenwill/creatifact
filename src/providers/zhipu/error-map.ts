@@ -4,19 +4,19 @@ interface ZhipuErrorBody {
   error?: { code?: string | number; message?: string }
 }
 
-// 业务错误码含义:https://docs.bigmodel.cn/cn/api/api-code.md
-// (HTTP 状态码仅是外层包装,内层 error.code 才是权威分类)
+// Business error codes: https://docs.bigmodel.cn/cn/api/api-code.md
+// (the HTTP status is just an outer envelope; the inner error.code is the authoritative classification)
 const CODE_MAP: Record<string, ErrorCategory> = {
-  // 401 身份验证类
+  // 401 authentication family
   "1000": "auth",
   "1001": "auth",
   "1003": "auth",
   "1005": "auth",
-  // 403 无权访问
+  // 403 access denied
   "1220": "auth",
-  // 429 账户欠费/限额类(平台侧配额)
+  // 429 account arrears / platform-side quota family
   "1113": "quota",
-  // 400 参数/模型错误(调用方问题,不应重试)
+  // 400 invalid params/model (caller error; do not retry)
   "1210": "invalid",
   "1211": "invalid",
   "1212": "invalid",
@@ -26,11 +26,11 @@ const CODE_MAP: Record<string, ErrorCategory> = {
   "1221": "invalid",
   "1222": "invalid",
   "1261": "invalid",
-  // 400 内容安全
+  // 400 content safety
   "1301": "moderation",
 }
 
-// 429 限流族(1302-1321 都以 429 返回)
+// 429 rate-limit family (1302-1321 all return as 429)
 function isRateCode(code: string): boolean {
   return code === "1302" || code === "1305" || (Number(code) >= 1308 && Number(code) <= 1321)
 }
@@ -42,7 +42,7 @@ const MESSAGE_MAP: Array<[RegExp, ErrorCategory]> = [
   [/身份验证|鉴权|api.?key|token|authentication|unauthorized/i, "auth"],
 ]
 
-/** error.code(字符串业务码)→分类;429 限流族单独判断。 */
+/** error.code (string business code) → category; the 429 rate-limit family is judged separately. */
 function fromBusinessCode(body: unknown): ErrorCategory | undefined {
   const parsed = (body ?? {}) as ZhipuErrorBody
   const code = parsed.error?.code
@@ -60,7 +60,7 @@ function fromMessage(body: unknown): ErrorCategory | undefined {
   return undefined
 }
 
-/** 智谱错误分类:error.code(字符串业务码)优先,其次 HTTP 状态,最后消息正则兜底。 */
+/** Zhipu error classification: error.code (string business code) first, then HTTP status, then message regex fallback. */
 export function classifyZhipuError(status: number, body: unknown): ErrorCategory | undefined {
   const byCode = fromBusinessCode(body)
   if (byCode) return byCode

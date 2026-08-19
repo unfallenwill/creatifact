@@ -44,7 +44,7 @@ export interface KlingProviderConfig {
   secretKey?: string
   baseUrl?: string
   pollIntervalMs?: number
-  /** 图片生成内部轮询超时(默认 300s) */
+  /** Image generation internal polling timeout (default 300s) */
   pollTimeoutMs?: number
   /** User model declarations from config.json's models.kling (appended; kling has no protocol modes). */
   models?: unknown
@@ -89,7 +89,7 @@ interface KlingImageTask {
   }
 }
 
-// Kling 的 url 字段接受 http(s) URL 或裸 base64,不接受 data URI
+// Kling's url field accepts http(s) URLs or bare base64, not data URIs
 async function toKlingFileUrl(ref: FileRef): Promise<string> {
   if ("url" in ref) return ref.url
   if ("base64" in ref) return ref.base64
@@ -199,11 +199,11 @@ export function createKlingProvider(
     baseUrl: config.baseUrl ?? DEFAULT_BASE_URL,
     headers: () => authHeaders(config, env),
     classifyError: classifyKlingError,
-    // Kling 查询接口有自身限流,统一 1 次重试;提交幂等性由 external_task_id 保证
+    // Kling's query endpoint rate-limits on its own; one retry uniformly; submit idempotency is guaranteed by external_task_id
     retries: 1,
   })
 
-  /** Kling 在 HTTP 200 里用信封 code 报业务错误,必须走分类而不是一律 internal。 */
+  /** Kling reports business errors via an envelope code inside HTTP 200; classify instead of defaulting to internal. */
   function unwrap<T>(envelope: KlingEnvelope<T>): T {
     if (typeof envelope.code === "number" && envelope.code !== 0) {
       const category = classifyKlingError(200, envelope) ?? "internal"
@@ -230,7 +230,7 @@ export function createKlingProvider(
 
   const videoGenerate: VideoGenerateApi<KlingVideoOptions> = {
     async submit(req, ctx) {
-      // API 层事实:新接口没有尾帧入参(对所有模型,含未知 id)
+      // API-level fact: the new endpoint takes no last-frame param (for all models, unknown ids included)
       if (req.lastFrame) {
         throw new ProviderError(
           "invalid",
@@ -282,17 +282,17 @@ export function createKlingProvider(
       if (watermark !== undefined) {
         body["watermark_info"] = { enabled: watermark }
       }
-      // Kling 图片生成端点是旧版任务制,sync 接口内部轮询收口(复用 pollUntil)
+      // Kling's image generation endpoint is the legacy task-based one; the sync API polls internally (reusing pollUntil)
       const submitted = await client.post<KlingEnvelope<KlingImageTask>>(
         "/v1/images/generations",
         body,
         { timeoutMs: SLOW_POST_TIMEOUT_MS },
       )
-      // 信封里的业务错误(余额不足/参数非法等)在这里立即抛出,
-      // 否则会去轮询一个不存在的任务直到 300s 超时
+      // Envelope business errors (insufficient balance / invalid params / ...) throw here immediately,
+      // otherwise we would poll a nonexistent task until the 300s timeout
       unwrap(submitted)
 
-      // 轮询端点 /v1/images/generations/{id} 可手动续查超时任务
+      // The polling endpoint /v1/images/generations/{id} can resume timed-out tasks manually
       return pollToArtifacts(
         async () => {
           const envelope = await client.get<KlingEnvelope<KlingImageTask>>(

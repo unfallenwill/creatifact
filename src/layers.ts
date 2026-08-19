@@ -85,7 +85,7 @@ async function readEntry(stream: ReadableStream): Promise<Buffer> {
 
 async function drainEntry(stream: ReadableStream): Promise<void> {
   for await (const _chunk of stream) {
-    // 丢弃未使用的条目内容
+    // drop unused descriptor contents
   }
 }
 

@@ -156,7 +156,7 @@ test("kling envelope business errors are classified, not blanket internal", asyn
 })
 
 test("kling image create surfaces envelope errors immediately instead of polling 300s", async () => {
-  // HTTP 200 + code != 0:提交即失败(余额不足),不应进入轮询
+  // HTTP 200 + code != 0: submission fails outright (insufficient balance); must not enter polling
   const mock = mockFetch([() => jsonResponse(200, { code: 4011, message: "insufficient balance" })])
   const kling = createKlingProvider({ apiKey: "k", pollIntervalMs: 1 })
 
@@ -168,7 +168,7 @@ test("kling image create surfaces envelope errors immediately instead of polling
 })
 
 test("kling image create timeout error carries the task id for manual recovery", async () => {
-  // 提交成功但永不完成:用 0 超时立即触发超时分支
+  // Submission succeeds but never completes: a 0 timeout trips the timeout branch immediately
   const mock = mockFetch([() => jsonResponse(200, { code: 0, data: {} })])
   const kling = createKlingProvider({ apiKey: "k", pollTimeoutMs: 0 })
 
