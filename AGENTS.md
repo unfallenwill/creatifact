@@ -21,7 +21,22 @@ Creatifact is a TypeScript CLI project (bundled by tsdown, tested with Vitest; t
 
 Enforced by Biome, not Prettier: 2-space indent, double quotes, no semicolons. `useLiteralKeys` is off because tsconfig's `noPropertyAccessFromIndexSignature` requires bracket access to `process.env` — the two rules conflict.
 
+## File operations
+
+All file operations MUST go through these three tools (no `cat`, `sed`, `tee`, shell redirection, or other write paths):
+
+1. `read` — read file contents; supports text and images (jpg/png/gif/webp/bmp); large files are read in segments via offset/limit
+2. `edit` — precise text replacement on a file (`edits[].oldText` must match exactly; one call may apply multiple disjoint edits)
+3. `write` — create a new file or fully overwrite one; parent directories are created automatically
+
+Conventions:
+
+- Prefer `edit` for targeted changes; reserve `write` for new files or complete rewrites.
+- Never rewrite whole files when a surgical `edit` will do — keeps diffs minimal and reviewable.
+- Listing/searching directories (`ls`, `rg`, `find`) is fine via the shell; it is content *reads and writes* that must use the tools above.
+
 ## Tooling conventions
 
+- When a task involves a technology framework and calls for a design or plan, FIRST inventory the available tools and skills, then pick the fitting capability for the job instead of improvising from memory.
 - Use context7 when looking up library/framework/CLI documentation.
 - Use firecrawl skills for web search, scraping, parsing, and bulk content extraction.
