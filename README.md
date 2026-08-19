@@ -370,18 +370,27 @@ Options:
   -h, --help             Show this help message
 ```
 
-### `images`
+### `images` / `package ls` / `package rm`
 
-List tags in the shared store (like `docker images`):
+List tags in the shared store (like `docker images` / `docker image ls`):
 
 ```bash
-$ openmmcli images
+$ openmmcli images          # or: openmmcli package ls
 REF                DIGEST             SIZE  KIND
 gen-output:latest  b196744b7944       363B  gen
 team/app-a:1       0d0e0f1a2b3c       392B  image
 ```
 
 `gen` marks generation result packages; `image` marks regular image layouts.
+
+Remove tags with `package rm`; blobs shared with other tags survive, and the
+last reference deletes the underlying blobs (docker rmi semantics):
+
+```bash
+$ openmmcli package rm gen-output:latest
+Untagged: gen-output:latest
+Deleted: sha256:3f2a...   # only when no other tag references them
+```
 
 ### `auth login` / `auth logout`
 

@@ -4,7 +4,7 @@ import { readdir, readFile, rename, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { Readable, type Readable as ReadableStream, Writable } from "node:stream"
 import { pipeline } from "node:stream/promises"
-import { createGunzip, createGzip } from "node:zlib"
+import { createGunzip, createGzip, type ZlibOptions } from "node:zlib"
 import { type Entry, extract, type Pack, pack } from "tar-stream"
 import { LAYER_MEDIA_TYPE, type OCIDescriptor } from "./oci"
 
@@ -230,7 +230,7 @@ export function selectPaths(
 
 function emitEntry(tarPack: Pack, key: string, entry: FsEntry | undefined): void {
   if (entry === undefined) {
-    tarPack.entry({ name: `${key}/`, type: "directory" })
+    tarPack.entry({ name: `${key}/`, type: "directory", mtime: new Date(0) })
     return
   }
   if (entry.type === "dir") {
@@ -238,19 +238,20 @@ function emitEntry(tarPack: Pack, key: string, entry: FsEntry | undefined): void
     tarPack.entry({
       name: `${key}/`,
       type: "directory",
+      mtime: new Date(0),
       ...(mode === undefined ? {} : { mode }),
     })
     return
   }
   if (entry.type === "symlink") {
-    tarPack.entry({ name: key, type: "symlink", linkname: entry.target })
+    tarPack.entry({ name: key, type: "symlink", linkname: entry.target, mtime: new Date(0) })
     return
   }
   const mode = entry.mode
   if (mode === undefined) {
-    tarPack.entry({ name: key, size: entry.data.length }, entry.data)
+    tarPack.entry({ name: key, size: entry.data.length, mtime: new Date(0) }, entry.data)
   } else {
-    tarPack.entry({ name: key, size: entry.data.length, mode }, entry.data)
+    tarPack.entry({ name: key, size: entry.data.length, mode, mtime: new Date(0) }, entry.data)
   }
 }
 
@@ -272,7 +273,11 @@ async function writeLayerBlob(tarPack: Pack, blobsDir: string): Promise<OCIDescr
   })
 
   tarPack.finalize()
-  await pipeline(tarPack, createGzip(), hashedWriter)
+  // mtime:0 keeps gzip headers deterministic → same dir content always
+  // yields the same layer digest, so the shared store can dedup rebuilds
+  // (runtime gzip option; absent from ZlibOptions typings)
+  const deterministicGzip = { mtime: 0 } as ZlibOptions & { mtime: number }
+  await pipeline(tarPack, createGzip(deterministicGzip), hashedWriter)
 
   const hex = hash.digest("hex")
   const digest = `sha256:${hex}`
@@ -307,7 +312,7 @@ export async function createLayerFromView(
   const sortedKeys = [...new Set([...view.keys(), ...syntheticDirs, ...markerKeys])].sort()
   for (const key of sortedKeys) {
     if (key.endsWith(`/${OPAQUE_MARKER}`)) {
-      tarPack.entry({ name: key, size: 0 }, "")
+      tarPack.entry({ name: key, size: 0, mtime: new Date(0) }, "")
       continue
     }
     emitEntry(tarPack, key, view.get(key))
@@ -339,7 +344,7 @@ export async function createLayerTarball(dir: string, blobsDir: string): Promise
     const fullPath = join(dir, relPath)
     const content = await readFile(fullPath)
     const fileStat = await stat(fullPath)
-    tarPack.entry({ name: relPath, mode: fileStat.mode & 0o777, size: fileStat.size }, content)
+    tarPack.entry({ name: relPath, mode: fileStat.mode & 0o777, size: fileStat.size, mtime: new Date(0) }, content)
   }
 
   return writeLayerBlob(tarPack, blobsDir)

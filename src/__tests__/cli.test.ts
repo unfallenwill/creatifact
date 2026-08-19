@@ -304,6 +304,49 @@ describe("cli push — integration", () => {
 })
 
 describe("cli images / store — integration", () => {
+  it("package ls matches images; package rm untags and GCs blobs", () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-rm-"))
+    const configDir = path.join(tmp, "cfg")
+    const fixture = path.join(tmp, "assets")
+    mkdirSync(configDir, { recursive: true })
+    mkdirSync(fixture, { recursive: true })
+    writeFileSync(path.join(fixture, "a.txt"), "hello")
+    const env = { OPENMMCLI_CONFIG_DIR: configDir }
+    try {
+      run(["build", "--dir", fixture, "-t", "demo/a:1"], undefined, env)
+      run(["build", "--dir", fixture, "-t", "demo/b:1"], undefined, env)
+
+      // package ls == images output
+      const viaPkg = run(["package", "ls"], undefined, env)
+      const viaTop = run(["images"], undefined, env)
+      expect(viaPkg.code).toBe(0)
+      expect(viaPkg.stdout).toBe(viaTop.stdout)
+      expect(viaPkg.stdout).toContain("demo/a:1")
+
+      // rm one tag: shared blobs survive
+      const r1 = run(["package", "rm", "demo/a:1"], undefined, env)
+      expect(r1.code).toBe(0)
+      expect(r1.stdout).toContain("Untagged: demo/a:1")
+      expect(r1.stdout).not.toContain("Deleted:")
+      const after = run(["images"], undefined, env)
+      expect(after.stdout).toContain("demo/b:1")
+      expect(after.stdout).not.toContain("demo/a:1")
+
+      // rm the last tag: blobs collected
+      const r2 = run(["package", "rm", "demo/b:1"], undefined, env)
+      expect(r2.stdout).toContain("Deleted: sha256:")
+      const empty = run(["images"], undefined, env)
+      expect(empty.stdout).toContain("Store is empty")
+
+      // rm of a missing tag fails cleanly
+      const r3 = run(["package", "rm", "nope:1"], undefined, env)
+      expect(r3.code).toBe(1)
+      expect(r3.stderr).toContain("not found in store")
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
   it("images lists store tags after builds; rebuild replaces the same tag", () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-store-"))
     const configDir = path.join(tmp, "cfg")
