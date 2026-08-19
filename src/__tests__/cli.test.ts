@@ -1473,7 +1473,7 @@ describe("cli -f file-driven — integration", () => {
             command: "generate.image2image",
             provider: "demo/demo-image",
             prompt: "make it red",
-            images: ["${s1.artifacts[0].url}"],
+            images: [`\${s1.artifacts[0].url}`],
             output: path.join(dir, "result-2"),
           },
         ],
@@ -1517,7 +1517,7 @@ describe("cli -f file-driven — integration", () => {
         JSON.stringify({
           steps: [
             { name: "a", command: "models" },
-            { command: "models", fields: { v: "${later.x}" } },
+            { command: "models", fields: { v: `\${later.x}` } },
           ],
         }),
       )

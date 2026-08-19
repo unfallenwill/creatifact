@@ -37,7 +37,7 @@ program
   .command("-f <file> [args...]")
   .usage("<file>.json [options] [-- generate flags]")
   .description(
-    "Run a command (or a steps pipeline) described by a JSON file. Pipeline files use {steps:[{name?, command, ...fields}]} and run sequentially with ${step.field} references to earlier results",
+    `Run a command (or a steps pipeline) described by a JSON file. Pipeline files use {steps:[{name?, command, ...fields}]} and run sequentially with \${step.field} references to earlier results`,
   )
   .allowExcessArguments(true)
   .passThroughOptions(true)

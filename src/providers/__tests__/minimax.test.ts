@@ -4,7 +4,11 @@ import { join } from "node:path"
 import { test } from "vitest"
 import { createMiniMaxProvider } from "../minimax"
 import { classifyMinimaxError } from "../minimax/error-map"
-import { MINIMAX_MODELS, MINIMAX_VIDEO_MODEL_MODES } from "../minimax/models"
+import {
+  MINIMAX_DEFAULT_MODELS,
+  MINIMAX_MODELS,
+  MINIMAX_VIDEO_MODEL_MODES,
+} from "../minimax/models"
 import { at, bodyOf, headersOf, jsonResponse, mockFetch } from "./helpers"
 
 const settings = { apiKey: "mm-key" }
@@ -507,4 +511,103 @@ test("override retargets a builtin model's protocol mode", async () => {
   // t2v is a v1 mode → v1 endpoint, not /v2
   expect(at(mock.recorded, 0).url).toBe("https://api.minimaxi.com/v1/video_generation")
   mock.restore()
+})
+
+test("minimax text chat posts to /v1/chat/completions", async () => {
+  const mock = mockFetch([
+    () =>
+      jsonResponse(200, {
+        choices: [{ message: { content: "hello there" } }],
+        usage: { total_tokens: 10, prompt_tokens: 5, completion_tokens: 5 },
+        base_resp: { status_code: 0 },
+      }),
+  ])
+  const minimax = createMiniMaxProvider(settings)
+
+  const result = await minimax.textGenerate.create({
+    model: "MiniMax-M2.7",
+    prompt: "hi",
+    system: "be brief",
+    options: { temperature: 0.5 },
+  })
+
+  expect(result.text).toBe("hello there")
+  expect(result.usage).toEqual({
+    native: { total_tokens: 10, prompt_tokens: 5, completion_tokens: 5 },
+  })
+  const rec = at(mock.recorded, 0)
+  expect(rec.url).toBe("https://api.minimaxi.com/v1/chat/completions")
+  expect(headersOf(rec)["authorization"]).toBe("Bearer mm-key")
+  expect(bodyOf(rec)).toEqual({
+    model: "MiniMax-M2.7",
+    messages: [
+      { role: "system", content: "be brief" },
+      { role: "user", content: "hi" },
+    ],
+    temperature: 0.5,
+  })
+  mock.restore()
+})
+
+test("minimax text chat strips only a leading closed <think> block", async () => {
+  const mock = mockFetch([
+    () =>
+      jsonResponse(200, {
+        choices: [{ message: { content: "<think>reasoning…</think>\nanswer body" } }],
+        base_resp: { status_code: 0 },
+      }),
+    () =>
+      jsonResponse(200, {
+        choices: [{ message: { content: "<think>unterminated" } }],
+        base_resp: { status_code: 0 },
+      }),
+    () =>
+      jsonResponse(200, {
+        choices: [{ message: { content: "use <think> literally" } }],
+        base_resp: { status_code: 0 },
+      }),
+  ])
+  const minimax = createMiniMaxProvider(settings)
+
+  const stripped = await minimax.textGenerate.create({ model: "MiniMax-M2.7", prompt: "x" })
+  expect(stripped.text).toBe("answer body")
+  const unterminated = await minimax.textGenerate.create({ model: "MiniMax-M2.7", prompt: "x" })
+  expect(unterminated.text).toBe("<think>unterminated")
+  const inline = await minimax.textGenerate.create({ model: "MiniMax-M2.7", prompt: "x" })
+  expect(inline.text).toBe("use <think> literally")
+  mock.restore()
+})
+
+test("minimax text chat surfaces base_resp errors", async () => {
+  const mock = mockFetch([
+    () => jsonResponse(200, { base_resp: { status_code: 1004, status_msg: "invalid api key" } }),
+  ])
+  const minimax = createMiniMaxProvider(settings)
+  await expect(
+    minimax.textGenerate.create({ model: "MiniMax-M2.7", prompt: "x" }),
+  ).rejects.toMatchObject({ category: "auth" })
+  mock.restore()
+})
+
+test("minimax registers the documented chat models with a text default", () => {
+  const ids = new Set(MINIMAX_MODELS.map((model) => model.id))
+  for (const id of [
+    "MiniMax-M3",
+    "MiniMax-M2.7",
+    "MiniMax-M2.7-highspeed",
+    "MiniMax-M2.5",
+    "MiniMax-M2.5-highspeed",
+    "MiniMax-M2.1",
+    "MiniMax-M2.1-highspeed",
+    "MiniMax-M2",
+  ]) {
+    expect(ids.has(id)).toBe(true)
+  }
+  expect(MINIMAX_DEFAULT_MODELS["text.generate"]).toBe("MiniMax-M2.7")
+
+  const minimax = createMiniMaxProvider(settings)
+  expect(minimax.defaultModels?.["text.generate"]).toBe("MiniMax-M2.7")
+  expect(
+    minimax.models.find((m) => m.id === "MiniMax-M2.7")?.capabilities["text.generate"],
+  ).toEqual({})
 })

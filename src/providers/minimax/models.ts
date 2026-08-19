@@ -1,6 +1,7 @@
 import type { Capability, VerifiedModel } from "../core/types"
 
 export const MINIMAX_DEFAULT_MODELS: Partial<Record<Capability, string>> = {
+  "text.generate": "MiniMax-M2.7",
   "image.generate": "image-01",
   "video.generate": "MiniMax-H3",
 }
@@ -27,6 +28,54 @@ export const MINIMAX_VIDEO_MODEL_MODES: Record<MiniMaxModelId, MiniMaxVideoMode[
 }
 
 export const MINIMAX_MODELS: VerifiedModel[] = [
+  {
+    id: "MiniMax-M3",
+    capabilities: { "text.generate": {} },
+    lastVerified: "2026-08",
+    note: "旗舰;Coding/Agentic SOTA,1M 上下文,多模态;thinking 可控(options.thinking={type:adaptive|off},默认 adaptive);max_completion_tokens 推荐 131072/上限 524288",
+  },
+  {
+    id: "MiniMax-M2.7",
+    capabilities: { "text.generate": {} },
+    lastVerified: "2026-08",
+    note: "默认文本模型;thinking 不可关闭,content 首部内联 <think> 块(CLI 已剥离);max_completion_tokens 推荐 65536/上限 204800",
+  },
+  {
+    id: "MiniMax-M2.7-highspeed",
+    capabilities: { "text.generate": {} },
+    lastVerified: "2026-08",
+    note: "M2.7 高速版;thinking 不可关闭",
+  },
+  {
+    id: "MiniMax-M2.5",
+    capabilities: { "text.generate": {} },
+    lastVerified: "2026-08",
+    note: "thinking 不可关闭",
+  },
+  {
+    id: "MiniMax-M2.5-highspeed",
+    capabilities: { "text.generate": {} },
+    lastVerified: "2026-08",
+    note: "M2.5 高速版;thinking 不可关闭",
+  },
+  {
+    id: "MiniMax-M2.1",
+    capabilities: { "text.generate": {} },
+    lastVerified: "2026-08",
+    note: "thinking 不可关闭",
+  },
+  {
+    id: "MiniMax-M2.1-highspeed",
+    capabilities: { "text.generate": {} },
+    lastVerified: "2026-08",
+    note: "M2.1 高速版;thinking 不可关闭",
+  },
+  {
+    id: "MiniMax-M2",
+    capabilities: { "text.generate": {} },
+    lastVerified: "2026-08",
+    note: "上代主力;thinking 不可关闭",
+  },
   {
     id: "MiniMax-H3",
     capabilities: {

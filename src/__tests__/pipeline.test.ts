@@ -18,13 +18,17 @@ beforeEach(() => {
   writeFileSync(configPath, JSON.stringify({ version: 1 }))
 })
 
-test("runs build → build chain with ${step.outputDir} interpolation", async () => {
+test(`runs build → build chain with \${step.outputDir} interpolation`, async () => {
   const out1 = join(dir, "one")
   const out2 = join(dir, "two")
   const results = await runPipeline(
     [
       step("build", { tag: "org/a:1", output: out1, annotations: { from: "first" } }, "a"),
-      step("build", { tag: "org/b:1", output: out2, annotations: { note: "after ${a.tag}" } }, "b"),
+      step(
+        "build",
+        { tag: "org/b:1", output: out2, annotations: { note: `after \${a.tag}` } },
+        "b",
+      ),
     ],
     { configPath },
   )
@@ -35,7 +39,7 @@ test("runs build → build chain with ${step.outputDir} interpolation", async ()
   rmSync(dir, { recursive: true, force: true })
 })
 
-test("build → push → pull resolves ${} refs across registry steps (mocked)", async () => {
+test(`build → push → pull resolves \${} refs across registry steps (mocked)`, async () => {
   const out = join(dir, "built")
   const configBody = "{}"
   const configDigest = createHash("sha256").update(configBody).digest("hex")
@@ -79,8 +83,8 @@ test("build → push → pull resolves ${} refs across registry steps (mocked)",
   const results = await runPipeline(
     [
       step("build", { tag: "org/a:1", output: out }, "a"),
-      step("push", { ref: "${a.tag}", layout: "${a.outputDir}" }, "p"),
-      step("pull", { ref: "${a.tag}", output: pulled }, "l"),
+      step("push", { ref: `\${a.tag}`, layout: `\${a.outputDir}` }, "p"),
+      step("pull", { ref: `\${a.tag}`, output: pulled }, "l"),
     ],
     { configPath },
   )
@@ -92,7 +96,7 @@ test("build → push → pull resolves ${} refs across registry steps (mocked)",
   rmSync(dir, { recursive: true, force: true })
 })
 
-test("whole-string ${} keeps the referenced value; interpolation works in arrays", async () => {
+test(`whole-string \${} keeps the referenced value; interpolation works in arrays`, async () => {
   vi.stubGlobal(
     "fetch",
     vi.fn().mockResolvedValue({ ok: true, status: 201, text: () => Promise.resolve("{}") }),
@@ -108,7 +112,7 @@ test("whole-string ${} keeps the referenced value; interpolation works in arrays
 
 test("fails fast: unknown step reference", async () => {
   await expect(
-    runPipeline([step("build", { tag: "x:1", layout: "${ghost.tag}" })], { configPath }),
+    runPipeline([step("build", { tag: "x:1", layout: `\${ghost.tag}` })], { configPath }),
   ).rejects.toThrow(/unknown step 'ghost'/)
   rmSync(dir, { recursive: true, force: true })
 })
@@ -117,7 +121,7 @@ test("fails fast: forward reference", async () => {
   await expect(
     runPipeline(
       [
-        step("build", { tag: "x:1", annotations: { a: "${later.tag}" } }, "early"),
+        step("build", { tag: "x:1", annotations: { a: `\${later.tag}` } }, "early"),
         step("build", { tag: "y:1" }, "later"),
       ],
       { configPath },
@@ -155,7 +159,7 @@ test("fails fast: void step is not referenceable", async () => {
     runPipeline(
       [
         step("config.path", {}, "cfg"),
-        step("build", { tag: "x:1", annotations: { v: "${cfg.anything}" } }),
+        step("build", { tag: "x:1", annotations: { v: `\${cfg.anything}` } }),
       ],
       { configPath },
     ),
@@ -173,7 +177,7 @@ test("wraps step failures with the step label and stops the run", async () => {
     runPipeline(
       [
         step("build", { tag: "org/a:1", output: join(dir, "one") }, "a"),
-        step("push", { ref: "${a.tag}", layout: "${a.outputDir}" }, "pusher"),
+        step("push", { ref: `\${a.tag}`, layout: `\${a.outputDir}` }, "pusher"),
         step("build", { tag: "org/b:1", output: secondEffect }, "b"),
       ],
       { configPath },
@@ -189,7 +193,7 @@ test("rejects non-referenceable fields of a build result", async () => {
     runPipeline(
       [
         step("build", { tag: "x:1", output: join(dir, "o") }, "a"),
-        step("build", { tag: "y:1", annotations: { v: "${a.nonsense}" } }),
+        step("build", { tag: "y:1", annotations: { v: `\${a.nonsense}` } }),
       ],
       { configPath },
     ),

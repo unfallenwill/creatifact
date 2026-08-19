@@ -150,6 +150,7 @@ Progress and notes go to stderr; results go to stdout.
 # text chat
 creatifact generate text2text zhipu "explain ECC memory in one paragraph"
 creatifact generate text2text ark/doubao-seed-1-6-250615 "hi" --system "be brief"
+creatifact generate text2text minimax "解释一下 Raft 共识" --opt temperature=0.5
 
 # text-to-image / image-to-image
 creatifact generate text2image zhipu "a crane" --opt size=1024x1024

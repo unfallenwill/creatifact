@@ -11,6 +11,7 @@ import {
   type JobStatus,
   type Provider,
   ProviderError,
+  type TextGenerateApi,
   type VideoGenerateApi,
   type VideoGenerateRequest,
 } from "../core/types"
@@ -27,6 +28,7 @@ import {
 const DEFAULT_BASE_URL = "https://api.minimaxi.com"
 /** 帧内联上传与同步图像生成,30s 默认超时偏紧。 */
 
+// Chat: https://platform.minimaxi.com/docs/api-reference/text-chat-openai
 // V2 create: https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create
 // V1 create pages (all POST /v1/video_generation):
 //   https://platform.minimaxi.com/docs/api-reference/video-generation-t2v
@@ -38,6 +40,23 @@ const DEFAULT_BASE_URL = "https://api.minimaxi.com"
 export interface MiniMaxSubjectReference {
   type: "character"
   image: string[]
+}
+
+/** 文本对话参数(OpenAI 兼容透传): https://platform.minimaxi.com/docs/api-reference/text-chat-openai */
+export interface MiniMaxChatOptions {
+  /** [0, 2],M3 默认 1、M2.x 默认 1 */
+  temperature?: number
+  /** 核采样 [0, 1];M3 默认 0.95,M2.x 默认 0.9 */
+  top_p?: number
+  /** 生成长度上限;M3 推荐 131072/上限 524288,其余推荐 65536/上限 204800(max_tokens 已弃用) */
+  max_completion_tokens?: number
+  /** M3 thinking 控制 {type: "adaptive" | "off"};M2.x 无法关闭 */
+  thinking?: Record<string, unknown>
+  /** 将 thinking 拆分到 reasoning_content/reasoning_details;只改输出格式,不开关 thinking */
+  reasoning_split?: boolean
+  tools?: Array<Record<string, unknown>>
+  service_tier?: "standard" | "priority"
+  [key: string]: unknown
 }
 
 export interface MiniMaxVideoOptions {
@@ -76,6 +95,7 @@ export interface MiniMaxProviderConfig {
 
 /** The concrete shape createMiniMaxProvider returns. */
 export type MiniMaxProvider = Provider & {
+  textGenerate: TextGenerateApi<MiniMaxChatOptions>
   videoGenerate: VideoGenerateApi<MiniMaxVideoOptions>
   imageGenerate: ImageGenerateApi<MiniMaxImageOptions>
 }
@@ -83,6 +103,12 @@ export type MiniMaxProvider = Provider & {
 interface MiniMaxBaseResp {
   status_code?: number
   status_msg?: string
+}
+
+interface MiniMaxChatResponse {
+  choices?: Array<{ message?: { content?: string } }>
+  usage?: Record<string, unknown>
+  base_resp?: MiniMaxBaseResp
 }
 
 interface MiniMaxV2TaskResponse {
@@ -124,6 +150,18 @@ function checkBaseResp(body: { base_resp?: MiniMaxBaseResp }): void {
     const category = classifyMinimaxError(200, body) ?? "internal"
     throw new ProviderError(category, body.base_resp?.status_msg ?? `code ${code}`, body)
   }
+}
+
+/**
+ * MiniMax 默认把 thinking 内联在 content 首部(<think>…</think>),M2.x 无法关闭。
+ * CLI 交付物只要正文,故剥离首个前导 think 块;未闭合或非前缀的 <think> 原样保留,
+ * 用户传 options.reasoning_split=true 时服务端已拆分,此函数为空操作。
+ */
+function stripLeadingThink(text: string): string {
+  if (!text.startsWith("<think>")) return text
+  const end = text.indexOf("</think>")
+  if (end === -1) return text
+  return text.slice(end + "</think>".length).replace(/^\n+/, "")
 }
 
 /** V1 image fields accept a URL or data URI; bare base64 gets an image/png hint. */
@@ -467,10 +505,34 @@ export function createMiniMaxProvider(
     },
   }
 
+  /** 文本对话: POST /v1/chat/completions(OpenAI 兼容)。 */
+  const textGenerate: TextGenerateApi<MiniMaxChatOptions> = {
+    async create(req, ctx) {
+      const messages: Array<{ role: string; content: string }> = []
+      if (req.system !== undefined) messages.push({ role: "system", content: req.system })
+      messages.push({ role: "user", content: req.prompt })
+      const resp = await client.post<MiniMaxChatResponse>(
+        "/v1/chat/completions",
+        {
+          model: req.model,
+          messages,
+          ...(req.options ?? {}),
+        },
+        { signal: ctx?.signal },
+      )
+      checkBaseResp(resp)
+      return {
+        text: stripLeadingThink(resp.choices?.[0]?.message?.content ?? ""),
+        ...(resp.usage === undefined ? {} : { usage: { native: resp.usage } }),
+      }
+    },
+  }
+
   return {
     id: "minimax",
     models: mergedModels,
     defaultModels: MINIMAX_DEFAULT_MODELS,
+    textGenerate,
     videoGenerate,
     imageGenerate,
   }
