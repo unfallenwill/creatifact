@@ -130,7 +130,7 @@ export function buildRequest(fields: Fields): BuildRequest {
   rejectUnknown(
     fields,
     new Set(["tag", "dir", "file", "output", "annotations", "username", "password", "plainHttp"]),
-    "package.build",
+    "build",
   )
   const annotations: Record<string, string> = {}
   const rawAnnotations = fields["annotations"]
@@ -162,7 +162,7 @@ export function pushRequest(fields: Fields): ParsedPushArgs {
   rejectUnknown(
     fields,
     new Set(["ref", "layout", "username", "password", "plainHttp"]),
-    "package.push",
+    "push",
   )
   return {
     ref: asString(fields["ref"], "ref"),
@@ -178,7 +178,7 @@ export function pullRequest(fields: Fields): ParsedPullArgs {
   rejectUnknown(
     fields,
     new Set(["ref", "output", "username", "password", "plainHttp"]),
-    "package.pull",
+    "pull",
   )
   return {
     ref: asString(fields["ref"], "ref"),
@@ -262,11 +262,11 @@ export function commandRequestFromFields(command: string, fields: Fields): Comma
     return { kind: "generate", req: generateRequest(task, fields) }
   }
   switch (command) {
-    case "package.build":
+    case "build":
       return { kind: "build", req: buildRequest(fields) }
-    case "package.push":
+    case "push":
       return { kind: "push", req: pushRequest(fields) }
-    case "package.pull":
+    case "pull":
       return { kind: "pull", req: pullRequest(fields) }
     case "auth.login":
       return { kind: "login", req: loginRequest(fields) }
@@ -304,7 +304,7 @@ export function commandRequestFromFields(command: string, fields: Fields): Comma
     }
     default:
       throw new Error(
-        `unknown command '${command}' (expected generate.*, package.*, auth.*, config.*, or models)`,
+        `unknown command '${command}' (expected generate.*, build, push, pull, auth.*, config.*, or models)`,
       )
   }
 }

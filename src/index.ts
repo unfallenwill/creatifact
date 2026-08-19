@@ -47,55 +47,35 @@ program
     await runFileFromArgs([file, ...rest], configOpts(command, configDir))
   })
 
-// --- package / pkg: build | push | pull ---
-function buildPackageCommand(): Command {
-  const pkg = new Command("package")
-    .usage("<action>")
-    .description("Build, push, and pull OCI image layouts")
-  addGlobalOptions(pkg)
-  pkg.allowExcessArguments(true)
-
-  pkg.addCommand(
-    buildBuildCommand().action(async (options: BuildCommandOptions, command: Command) => {
+// --- build | push | pull: OCI package lifecycle (top-level, docker-style) ---
+program.addCommand(
+  buildBuildCommand().action(async (options: BuildCommandOptions, command: Command) => {
+    await executeCommand(
+      { kind: "build", req: buildArgsFromOptions(options) },
+      configOpts(command, options.configDir),
+    )
+  }),
+)
+program.addCommand(
+  buildPushCommand().action(
+    async (ref: string | undefined, options: PushCommandOptions, command: Command) => {
       await executeCommand(
-        { kind: "build", req: buildArgsFromOptions(options) },
+        { kind: "push", req: pushArgsFromOptions(ref, options) },
         configOpts(command, options.configDir),
       )
-    }),
-  )
-  pkg.addCommand(
-    buildPushCommand().action(
-      async (ref: string | undefined, options: PushCommandOptions, command: Command) => {
-        await executeCommand(
-          { kind: "push", req: pushArgsFromOptions(ref, options) },
-          configOpts(command, options.configDir),
-        )
-      },
-    ),
-  )
-  pkg.addCommand(
-    buildPullCommand().action(
-      async (ref: string | undefined, options: PullCommandOptions, command: Command) => {
-        await executeCommand(
-          { kind: "pull", req: pullArgsFromOptions(ref, options) },
-          configOpts(command, options.configDir),
-        )
-      },
-    ),
-  )
-
-  pkg.action((_options, command) => {
-    const action = command.args[0]
-    if (action === undefined) {
-      command.help()
-      return
-    }
-    throw new Error(`unknown package action '${action}' (expected build, push, pull)`)
-  })
-  return pkg
-}
-
-program.addCommand(buildPackageCommand().alias("pkg"))
+    },
+  ),
+)
+program.addCommand(
+  buildPullCommand().action(
+    async (ref: string | undefined, options: PullCommandOptions, command: Command) => {
+      await executeCommand(
+        { kind: "pull", req: pullArgsFromOptions(ref, options) },
+        configOpts(command, options.configDir),
+      )
+    },
+  ),
+)
 
 // --- auth: login | logout ---
 program.addCommand(buildAuthCommand())

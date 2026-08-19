@@ -39,9 +39,9 @@
         "generate.frames2video",
         "generate.embed",
         "generate.resume",
-        "package.build",
-        "package.push",
-        "package.pull",
+        "build",
+        "push",
+        "pull",
         "auth.login",
         "auth.logout",
         "config.path",
@@ -106,11 +106,11 @@
       "oneOf": [{ "type": "string" }, { "type": "number", "exclusiveMinimum": 0 }]
     },
     "output": {
-      "description": "Media tasks: result OCI layout directory. Resume / --no-pack: directory to save artifacts. Also used by package.build / package.pull.",
+      "description": "Media tasks: result OCI layout directory. Resume / --no-pack: directory to save artifacts. Also used by build / pull.",
       "type": "string"
     },
     "tag": {
-      "description": "Media tasks only: reference name for the result package (default gen-output:latest). Also package.build's image reference.",
+      "description": "Media tasks only: reference name for the result package (default gen-output:latest). Also build's image reference.",
       "type": "string"
     },
     "noPack": {
@@ -126,24 +126,24 @@
       "oneOf": [{ "type": "object" }, { "type": "string" }]
     },
     "file": {
-      "description": "Build manifest path (package.build).",
+      "description": "Build manifest path (build).",
       "type": "string"
     },
     "dir": {
-      "description": "package.build only: local directory packed as the top layer.",
+      "description": "build only: local directory packed as the top layer.",
       "type": "string"
     },
     "annotations": {
-      "description": "package.build only: manifest annotations.",
+      "description": "build only: manifest annotations.",
       "type": "object",
       "additionalProperties": { "type": "string" }
     },
     "ref": {
-      "description": "package.push / package.pull only: registry reference, e.g. localhost:5000/myrepo:1.0.",
+      "description": "push / pull only: registry reference, e.g. localhost:5000/myrepo:1.0.",
       "type": "string"
     },
     "layout": {
-      "description": "package.push only: OCI layout directory (default ./oci-layout).",
+      "description": "push only: OCI layout directory (default ./oci-layout).",
       "type": "string"
     },
     "registry": {

@@ -31,7 +31,7 @@ export const GEN_SCHEMA_VERSION = 1
 const GEN_TASKS = new Set(Object.keys(TASKS).filter((t) => t !== "resume"))
 
 /**
- * A generation recipe baked into a package by `openmmcli package build`.
+ * A generation recipe baked into a package by `openmmcli build`.
  * Task-oriented (X2Y); never contains credentials — only provider/model ids
  * and parameters. Media references are URLs, local paths, or pkg://paths into
  * the package's own layers.
@@ -167,7 +167,7 @@ export function validateGenSpec(raw: unknown, path: string): GenSpec {
   return spec
 }
 
-/** Parse a package config blob produced by `package build` (gen recipe). */
+/** Parse a package config blob produced by `build` (gen recipe). */
 export function parseGenConfigBlob(data: Buffer, source: string): GenConfigBlob {
   let parsed: unknown
   try {

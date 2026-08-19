@@ -23,9 +23,9 @@ test("runs build → build chain with ${step.outputDir} interpolation", async ()
   const out2 = join(dir, "two")
   const results = await runPipeline(
     [
-      step("package.build", { tag: "org/a:1", output: out1, annotations: { from: "first" } }, "a"),
+      step("build", { tag: "org/a:1", output: out1, annotations: { from: "first" } }, "a"),
       step(
-        "package.build",
+        "build",
         { tag: "org/b:1", output: out2, annotations: { note: "after ${a.tag}" } },
         "b",
       ),
@@ -82,9 +82,9 @@ test("build → push → pull resolves ${} refs across registry steps (mocked)",
   const pulled = join(dir, "pulled")
   const results = await runPipeline(
     [
-      step("package.build", { tag: "org/a:1", output: out }, "a"),
-      step("package.push", { ref: "${a.tag}", layout: "${a.outputDir}" }, "p"),
-      step("package.pull", { ref: "${a.tag}", output: pulled }, "l"),
+      step("build", { tag: "org/a:1", output: out }, "a"),
+      step("push", { ref: "${a.tag}", layout: "${a.outputDir}" }, "p"),
+      step("pull", { ref: "${a.tag}", output: pulled }, "l"),
     ],
     { configPath },
   )
@@ -102,7 +102,7 @@ test("whole-string ${} keeps the referenced value; interpolation works in arrays
     vi.fn().mockResolvedValue({ ok: true, status: 201, text: () => Promise.resolve("{}") }),
   )
   const out = join(dir, "o")
-  const results = await runPipeline([step("package.build", { tag: "org/a:1", output: out }, "a")], {
+  const results = await runPipeline([step("build", { tag: "org/a:1", output: out }, "a")], {
     configPath,
   })
   const a = results.get("a")
@@ -112,7 +112,7 @@ test("whole-string ${} keeps the referenced value; interpolation works in arrays
 
 test("fails fast: unknown step reference", async () => {
   await expect(
-    runPipeline([step("package.build", { tag: "x:1", layout: "${ghost.tag}" })], { configPath }),
+    runPipeline([step("build", { tag: "x:1", layout: "${ghost.tag}" })], { configPath }),
   ).rejects.toThrow(/unknown step 'ghost'/)
   rmSync(dir, { recursive: true, force: true })
 })
@@ -121,8 +121,8 @@ test("fails fast: forward reference", async () => {
   await expect(
     runPipeline(
       [
-        step("package.build", { tag: "x:1", annotations: { a: "${later.tag}" } }, "early"),
-        step("package.build", { tag: "y:1" }, "later"),
+        step("build", { tag: "x:1", annotations: { a: "${later.tag}" } }, "early"),
+        step("build", { tag: "y:1" }, "later"),
       ],
       { configPath },
     ),
@@ -134,8 +134,8 @@ test("fails fast: duplicate step names", async () => {
   await expect(
     runPipeline(
       [
-        step("package.build", { tag: "x:1" }, "same"),
-        step("package.build", { tag: "y:1" }, "same"),
+        step("build", { tag: "x:1" }, "same"),
+        step("build", { tag: "y:1" }, "same"),
       ],
       { configPath },
     ),
@@ -163,7 +163,7 @@ test("fails fast: void step is not referenceable", async () => {
     runPipeline(
       [
         step("config.path", {}, "cfg"),
-        step("package.build", { tag: "x:1", annotations: { v: "${cfg.anything}" } }),
+        step("build", { tag: "x:1", annotations: { v: "${cfg.anything}" } }),
       ],
       { configPath },
     ),
@@ -180,9 +180,9 @@ test("wraps step failures with the step label and stops the run", async () => {
   await expect(
     runPipeline(
       [
-        step("package.build", { tag: "org/a:1", output: join(dir, "one") }, "a"),
-        step("package.push", { ref: "${a.tag}", layout: "${a.outputDir}" }, "pusher"),
-        step("package.build", { tag: "org/b:1", output: secondEffect }, "b"),
+        step("build", { tag: "org/a:1", output: join(dir, "one") }, "a"),
+        step("push", { ref: "${a.tag}", layout: "${a.outputDir}" }, "pusher"),
+        step("build", { tag: "org/b:1", output: secondEffect }, "b"),
       ],
       { configPath },
     ),
@@ -196,8 +196,8 @@ test("rejects non-referenceable fields of a build result", async () => {
   await expect(
     runPipeline(
       [
-        step("package.build", { tag: "x:1", output: join(dir, "o") }, "a"),
-        step("package.build", { tag: "y:1", annotations: { v: "${a.nonsense}" } }),
+        step("build", { tag: "x:1", output: join(dir, "o") }, "a"),
+        step("build", { tag: "y:1", annotations: { v: "${a.nonsense}" } }),
       ],
       { configPath },
     ),
@@ -209,7 +209,7 @@ test("media steps write into the shared store under their own tags", async () =>
   const store = join(dir, "store")
   try {
     const results = await runPipeline(
-      [step("package.build", { tag: "x:1" }, "a"), step("package.build", { tag: "y:1" }, "b")],
+      [step("build", { tag: "x:1" }, "a"), step("build", { tag: "y:1" }, "b")],
       { configPath },
     )
     const a = results.get("a")
@@ -222,7 +222,7 @@ test("media steps write into the shared store under their own tags", async () =>
     )
 
     // reruns replace the same tag instead of failing on a non-empty dir
-    await runPipeline([step("package.build", { tag: "x:1" }, "a")], { configPath })
+    await runPipeline([step("build", { tag: "x:1" }, "a")], { configPath })
     const after = JSON.parse(readFileSync(join(store, "index.json"), "utf8")).manifests as Array<{
       annotations?: Record<string, string>
     }>

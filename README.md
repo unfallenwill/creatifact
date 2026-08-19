@@ -33,15 +33,14 @@ npx openmmcli --version
 ```bash
 # 1. Give openmmcli a creative task
 openmmcli generate text2image zhipu "a paper crane in the rain" \
-  --tag ghcr.io/acme/crane:v1 \
-  --output ./crane
+  --tag ghcr.io/acme/crane:v1
 
 # 2. Publish the resulting OCI package
 openmmcli auth login ghcr.io
-openmmcli package push ghcr.io/acme/crane:v1 --layout ./crane
+openmmcli push ghcr.io/acme/crane:v1
 
 # 3. Another agent can pull the package from the same registry
-openmmcli package pull ghcr.io/acme/crane:v1 -o ./pulled-crane
+openmmcli pull ghcr.io/acme/crane:v1 -o ./pulled-crane
 ```
 
 Agents can invoke the same workflow through a JSON request file, making the
@@ -53,8 +52,7 @@ execution contract explicit and reproducible:
   "command": "generate.text2image",
   "provider": "zhipu",
   "prompt": "a paper crane in the rain",
-  "tag": "ghcr.io/acme/crane:v1",
-  "output": "./crane"
+  "tag": "ghcr.io/acme/crane:v1"
 }
 ```
 
@@ -70,7 +68,7 @@ Every command supports two forms — a subcommand tree and a JSON request file:
 # Form 1: subcommand tree
 openmmcli generate text2image zhipu "a crane" --opt size=1024x1024
 openmmcli generate image2image demo "paint it" --image cat.png
-openmmcli package build -t org/myapp:1.0.0
+openmmcli build -t org/myapp:1.0.0
 
 # Form 2: JSON request file (openmmcli -f <file>.json)
 openmmcli -f request.json
@@ -92,7 +90,7 @@ fields map to that command's arguments. `command` mirrors the subcommand tree:
 `generate.text2text` / `generate.image2text` / `generate.video2text` /
 `generate.text2image` / `generate.image2image` / `generate.text2video` /
 `generate.image2video` / `generate.frames2video` / `generate.embed` /
-`generate.resume`, `package.build` / `package.push` / `package.pull`,
+`generate.resume`, `build` / `push` / `pull`,
 `auth.login` / `auth.logout`, `config.*`, and `models`. For `generate.*`
 commands, flags after the file override the file's fields (CLI wins):
 
@@ -112,7 +110,7 @@ with `${name.field}` placeholders:
     { "name": "gen", "command": "generate.text2image", "provider": "zhipu", "prompt": "a crane" },
     { "name": "edit", "command": "generate.image2image", "provider": "zhipu",
       "prompt": "make it red", "images": ["${gen.artifacts[0].url}"] },
-    { "command": "package.push", "ref": "${gen.tag}", "layout": "${gen.outputDir}" }
+    { "command": "push", "ref": "${gen.tag}", "layout": "${gen.outputDir}" }
   ]
 }
 ```
@@ -194,7 +192,7 @@ or the provider's env vars (`ZHIPU_API_KEY`, `ARK_API_KEY`, ...). See
 
 ### Gen packages
 
-`openmmcli package build` can bake a generation *recipe* (task, provider, model,
+`openmmcli build` can bake a generation *recipe* (task, provider, model,
 and parameters — never API keys) into an OCI package, and
 `openmmcli generate <ref>` runs it:
 
@@ -215,8 +213,8 @@ and parameters — never API keys) into an OCI package, and
 
 ```bash
 # 1. Build and push the recipe package
-openmmcli package build -t example.com/xxxxxx:v1.0
-openmmcli package push example.com/xxxxxx:v1.0
+openmmcli build -t example.com/xxxxxx:v1.0
+openmmcli push example.com/xxxxxx:v1.0
 
 # 2. Run it from anywhere: the task comes from the package
 openmmcli generate example.com/xxxxxx:v1.0 "a red crane" --opt size=2048x2048
@@ -261,12 +259,12 @@ openmmcli models zhipu
 openmmcli models zhipu --json
 ```
 
-### `package build`
+### `build`
 
 Build an OCI image layout from a build manifest (`openmm-build.json` by default; `pkg` is an alias for `package`). The manifest describes the image *content*; everything else (tag, output dir, assets override) is passed via CLI flags.
 
 ```
-Usage: openmmcli package build [options]
+Usage: openmmcli build [options]
 
 Options:
   -t, --tag <repo:tag>   Image reference, e.g. org/myapp:1.0.0 (required)
@@ -333,12 +331,12 @@ Reference the JSON Schema in your manifest (as in the example above), or associa
 }
 ```
 
-### `package push`
+### `push`
 
 Push an OCI image layout to a registry.
 
 ```
-Usage: openmmcli package push <registry>/<repo>:<tag> [options]
+Usage: openmmcli push <registry>/<repo>:<tag> [options]
 
 Arguments:
   <registry>/<repo>:<tag>  Destination reference (e.g. localhost:5000/myrepo:1.0)
@@ -353,12 +351,12 @@ Options:
   -h, --help            Show this help message
 ```
 
-### `package pull`
+### `pull`
 
 Pull an OCI image layout from a registry.
 
 ```
-Usage: openmmcli package pull <registry>/<repo>:<tag> [options]
+Usage: openmmcli pull <registry>/<repo>:<tag> [options]
 
 Arguments:
   <registry>/<repo>:<tag>  Source reference (e.g. localhost:5000/myrepo:1.0)
@@ -404,7 +402,7 @@ Options:
   -h, --help             Show this help message
 ```
 
-`package push`, `package pull`, and `package build` fall back to the saved credentials automatically
+`push`, `pull`, and `build` fall back to the saved credentials automatically
 when `--username`/`--password` are not passed. A complete CLI credential pair
 always wins over the config file.
 

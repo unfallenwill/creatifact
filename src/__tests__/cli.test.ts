@@ -38,7 +38,7 @@ describe("cli — integration", () => {
     expect(code).toBe(0)
     expect(stdout).toContain("openmmcli -f <file>.json")
     expect(stdout).toContain("gen")
-    expect(stdout).toContain("package")
+    expect(stdout).toContain("build")
     expect(stdout).toContain("auth")
     expect(stdout).toContain("config")
   })
@@ -49,24 +49,23 @@ describe("cli — integration", () => {
     expect(stderr).toContain("unknown command: frobnicate")
   })
 
-  it("package --help and auth --help list actions", () => {
-    const pkg = run(["package", "--help"])
-    expect(pkg.code).toBe(0)
-    expect(pkg.stdout).toContain("Usage: openmmcli package|pkg <action>")
-    expect(pkg.stdout).toContain("build")
+  it("build/push/pull --help list options; unknown top-level fails", () => {
+    const build = run(["build", "--help"])
+    expect(build.code).toBe(0)
+    expect(build.stdout).toContain("Usage: openmmcli build")
 
     const auth = run(["auth", "--help"])
     expect(auth.code).toBe(0)
     expect(auth.stdout).toContain("Usage: openmmcli auth <action>")
     expect(auth.stdout).toContain("login")
 
-    const unknown = run(["package", "frobnicate"])
+    const unknown = run(["frobnicate"])
     expect(unknown.code).toBe(1)
-    expect(unknown.stderr).toContain("unknown package action 'frobnicate'")
+    expect(unknown.stderr).toContain("unknown command: frobnicate")
   })
 })
 
-describe("cli package build — integration", () => {
+describe("cli build — integration", () => {
   it("build creates valid OCI layout", () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
     const fixtureDir = path.join(tmp, "fixture")
@@ -76,8 +75,7 @@ describe("cli package build — integration", () => {
 
     try {
       const { stdout, code } = run([
-        "package",
-        "build",
+                "build",
         "--dir",
         fixtureDir,
         "-t",
@@ -97,26 +95,25 @@ describe("cli package build — integration", () => {
   })
 
   it("build --help prints usage and exits 0", () => {
-    const { stdout, code } = run(["package", "build", "--help"])
+    const { stdout, code } = run(["build", "--help"])
     expect(code).toBe(0)
-    expect(stdout).toContain("Usage: openmmcli package build")
+    expect(stdout).toContain("Usage: openmmcli build")
     expect(stdout).toContain("--tag")
     expect(stdout).toContain("--annotation")
     expect(stdout).toContain("--plain-http")
   })
 
   it("build -h prints usage and exits 0", () => {
-    const { stdout, code } = run(["package", "build", "-h"])
+    const { stdout, code } = run(["build", "-h"])
     expect(code).toBe(0)
-    expect(stdout).toContain("Usage: openmmcli package build")
+    expect(stdout).toContain("Usage: openmmcli build")
   })
 
   it("build fails when dir does not exist", () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
     try {
       const { stderr, code } = run([
-        "package",
-        "build",
+                "build",
         "--dir",
         "/nonexistent/path/xyz",
         "-t",
@@ -138,7 +135,7 @@ describe("cli package build — integration", () => {
     writeFileSync(path.join(fixtureDir, "file.txt"), "data")
 
     try {
-      const { stderr, code } = run(["package", "build", "--dir", fixtureDir])
+      const { stderr, code } = run(["build", "--dir", fixtureDir])
       expect(code).toBe(1)
       expect(stderr).toContain("--tag")
     } finally {
@@ -163,8 +160,7 @@ describe("cli package build — integration", () => {
 
     try {
       const { stdout, code } = run([
-        "package",
-        "build",
+                "build",
         "-f",
         descPath,
         "-t",
@@ -199,8 +195,7 @@ describe("cli package build — integration", () => {
 
     try {
       const { code } = run([
-        "package",
-        "build",
+                "build",
         "-f",
         descPath,
         "-t",
@@ -223,8 +218,7 @@ describe("cli package build — integration", () => {
 
     try {
       const first = run([
-        "package",
-        "build",
+                "build",
         "-t",
         "org/source:1.0.0",
         "--dir",
@@ -237,8 +231,7 @@ describe("cli package build — integration", () => {
       const descPath = path.join(tmp, "openmm-build.json")
       writeFileSync(descPath, JSON.stringify({ from: sourceDir }))
       const { code } = run([
-        "package",
-        "build",
+                "build",
         "-f",
         descPath,
         "-t",
@@ -267,7 +260,7 @@ describe("cli package build — integration", () => {
     writeFileSync(descPath, JSON.stringify({ tag: "old/test:1.0", dir: "./x" }))
 
     try {
-      const { stderr, code } = run(["package", "build", "-f", descPath])
+      const { stderr, code } = run(["build", "-f", descPath])
       expect(code).toBe(1)
       expect(stderr).toContain("--tag is required")
     } finally {
@@ -276,25 +269,24 @@ describe("cli package build — integration", () => {
   })
 })
 
-describe("cli package push — integration", () => {
+describe("cli push — integration", () => {
   it("push --help prints usage and exits 0", () => {
-    const { stdout, code } = run(["package", "push", "--help"])
+    const { stdout, code } = run(["push", "--help"])
     expect(code).toBe(0)
-    expect(stdout).toContain("Usage: openmmcli package push")
+    expect(stdout).toContain("Usage: openmmcli push")
     expect(stdout).toContain("--layout")
     expect(stdout).toContain("--plain-http")
   })
 
   it("push -h prints usage and exits 0", () => {
-    const { stdout, code } = run(["package", "push", "-h"])
+    const { stdout, code } = run(["push", "-h"])
     expect(code).toBe(0)
-    expect(stdout).toContain("Usage: openmmcli package push")
+    expect(stdout).toContain("Usage: openmmcli push")
   })
 
   it("push fails when layout directory does not exist", () => {
     const { stderr, code } = run([
-      "package",
-      "push",
+            "push",
       "localhost:5000/test:1.0",
       "--layout",
       "/nonexistent/path/xyz",
@@ -305,9 +297,9 @@ describe("cli package push — integration", () => {
   })
 
   it("pull --help prints usage and exits 0", () => {
-    const { stdout, code } = run(["package", "pull", "--help"])
+    const { stdout, code } = run(["pull", "--help"])
     expect(code).toBe(0)
-    expect(stdout).toContain("Usage: openmmcli package pull")
+    expect(stdout).toContain("Usage: openmmcli pull")
   })
 })
 
@@ -321,11 +313,11 @@ describe("cli images / store — integration", () => {
     writeFileSync(path.join(fixture, "a.txt"), "hello")
     const env = { OPENMMCLI_CONFIG_DIR: configDir }
     try {
-      const r1 = run(["package", "build", "--dir", fixture, "-t", "demo/one:1"], undefined, env)
+      const r1 = run(["build", "--dir", fixture, "-t", "demo/one:1"], undefined, env)
       expect(r1.code).toBe(0)
       expect(r1.stdout).toContain("store")
 
-      const r2 = run(["package", "build", "--dir", fixture, "-t", "demo/two:1"], undefined, env)
+      const r2 = run(["build", "--dir", fixture, "-t", "demo/two:1"], undefined, env)
       expect(r2.code).toBe(0)
 
       const ls = run(["images"], undefined, env)
@@ -334,13 +326,13 @@ describe("cli images / store — integration", () => {
       expect(ls.stdout).toContain("demo/two:1")
 
       // re-tag demo/one:1 → still one entry per tag, index keeps both tags
-      const r3 = run(["package", "build", "--dir", fixture, "-t", "demo/one:1"], undefined, env)
+      const r3 = run(["build", "--dir", fixture, "-t", "demo/one:1"], undefined, env)
       expect(r3.code).toBe(0)
       const index = JSON.parse(readFileSync(path.join(configDir, "store", "index.json"), "utf8"))
       expect(index.manifests).toHaveLength(2)
 
       // push of an unknown store tag fails with a helpful message
-      const push = run(["package", "push", "nope/missing:1"], undefined, env)
+      const push = run(["push", "nope/missing:1"], undefined, env)
       expect(push.code).toBe(1)
       expect(push.stderr + push.stdout).toMatch(/not found in|no image layout/)
     } finally {
@@ -476,7 +468,7 @@ describe("cli config/auth — integration", () => {
       mkdirSync(dir, { recursive: true })
       writeFileSync(file, "{ broken json")
 
-      const pull = run(["package", "pull", "reg.io/x:1.0"], undefined, env)
+      const pull = run(["pull", "reg.io/x:1.0"], undefined, env)
       expect(pull.code).toBe(1)
       expect(pull.stderr).toContain("corrupt")
       expect(pull.stderr).toContain("config reset")
@@ -1001,8 +993,7 @@ describe("cli generate — integration", () => {
     )
     try {
       const built = run([
-        "package",
-        "build",
+                "build",
         "-f",
         manifestPath,
         "-t",
@@ -1087,8 +1078,7 @@ describe("cli generate — integration", () => {
     )
     try {
       const built = run([
-        "package",
-        "build",
+                "build",
         "-f",
         manifestPath,
         "-t",
@@ -1277,7 +1267,7 @@ describe("cli -f file-driven — integration", () => {
     writeFileSync(
       reqPath,
       JSON.stringify({
-        command: "package.build",
+        command: "build",
         tag: "file/test:1.0",
         dir: fixtureDir,
         output: outputDir,
