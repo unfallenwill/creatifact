@@ -102,7 +102,16 @@ export function validateBuildManifest(raw: unknown, filePath: string): BuildMani
     fail(filePath, "top level", "must be a JSON object")
   }
 
-  const knownKeys = new Set(["annotations", "from", "copy", "assets", "gen", ...LEGACY_FIELDS])
+  const knownKeys = new Set([
+    "annotations",
+    "from",
+    "copy",
+    "assets",
+    "gen",
+    // standard JSON-Schema directive; editor tooling, not consumed here
+    "$schema",
+    ...LEGACY_FIELDS,
+  ])
   for (const key of Object.keys(raw)) {
     if (!knownKeys.has(key)) {
       console.warn(`${filePath}: unknown field '${key}' is ignored`)
