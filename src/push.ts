@@ -1,9 +1,13 @@
+import { existsSync } from "node:fs"
+
 import {
   encodeBasicAuth,
+  envForConfigPath,
   type Credentials,
   loadConfig,
   resolvePlainHttp,
   resolveRegistryCredentials,
+  storeDir,
   toCredentials,
 } from "./config"
 import { parseRef, readOciLayout } from "./oci"
@@ -197,7 +201,7 @@ export async function getAuthHeaders(
 
 export interface PushOptions {
   ref: string | undefined
-  layout: string
+  layout: string | undefined
   plainHttp: boolean
   username: string | undefined
   password: string | undefined
@@ -217,7 +221,7 @@ export function buildPushCommand(): Command {
   const cmd = new Command("push")
     .description("Push an OCI image layout to a registry")
     .argument("[ref]", "Destination reference; if omitted, uses ref from index.json")
-    .option("--layout <dir>", "OCI layout directory (default: ./oci-layout)")
+    .option("--layout <dir>", "OCI layout directory (default: ~/.openmmcli/layouts/<repo of ref>)")
     .option(
       "--username <user>",
       "Registry username (falls back to config, see: openmmcli auth login)",
@@ -262,9 +266,24 @@ export interface PushResult {
 }
 
 export async function runPush(options: PushOptions): Promise<PushResult> {
-  const layoutDir = options.layout || "./oci-layout"
+  // --layout pins an explicit layout dir; otherwise the tag is looked up in
+  // the shared store (~/.openmmcli/store).
+  const layoutDir =
+    options.layout ??
+    (options.ref !== undefined ? storeDir(envForConfigPath(options.configPath)) : undefined)
+  if (layoutDir === undefined) {
+    throw new Error("push requires a <ref> (to locate it in ~/.openmmcli/store) or --layout <dir>")
+  }
+  if (!existsSync(layoutDir)) {
+    throw new Error(
+      `no image layout at '${layoutDir}'; build or pull it first, or pass --layout <dir>`,
+    )
+  }
 
-  const layout = await readOciLayout(layoutDir)
+  const layout = await readOciLayout(
+    layoutDir,
+    options.layout === undefined ? options.ref : undefined,
+  )
 
   const effectiveRef = options.ref ?? layout.refName
   if (!effectiveRef) {
@@ -326,7 +345,7 @@ export async function runPushFromParsed(
 ): Promise<PushResult> {
   return runPush({
     ref: parsed.ref,
-    layout: parsed.layout ?? "./oci-layout",
+    layout: parsed.layout,
     plainHttp: parsed.plainHttp,
     username: parsed.username,
     password: await resolvePassword(parsed.password, parsed.passwordStdin),

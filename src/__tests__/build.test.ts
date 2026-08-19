@@ -123,7 +123,7 @@ test("mergeOptions normalizes from and merges annotations", () => {
 
 test("mergeOptions defaults output and empty lists", () => {
   const opts = mergeOptions({ ...emptyCli(), tag: "x:1" }, {})
-  expect(opts.output).toBe("./oci-layout")
+  expect(opts.output).toBeUndefined() // default resolved in runBuild (managed layouts dir)
   expect(opts.from).toEqual([])
   expect(opts.copy).toEqual([])
 })

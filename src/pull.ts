@@ -1,20 +1,27 @@
+import { mkdir } from "node:fs/promises"
+import { join } from "node:path"
+
 import { createHash } from "node:crypto"
 import {
   type LoadedImage,
   MANIFEST_MEDIA_TYPE,
+  materializeBlob,
   type OCIManifest,
   parseRef,
   saveLayout,
+  upsertStoreEntry,
 } from "./oci"
 
 export { saveLayout }
 
 import { Command } from "commander"
 import {
+  envForConfigPath,
   loadConfig,
   type OpenmmCliConfig,
   resolvePlainHttp,
   resolveRegistryCredentials,
+  storeDir,
 } from "./config"
 import { getAuthHeaders, toCredentials } from "./push"
 import { addGlobalOptions, ensureOutputDirEmpty, parseArgsWith, resolvePassword } from "./util"
@@ -123,7 +130,7 @@ export async function fetchBlob(
 
 export interface PullOptions {
   ref: string
-  output: string
+  output: string | undefined
   plainHttp: boolean
   username: string | undefined
   password: string | undefined
@@ -143,7 +150,10 @@ export function buildPullCommand(): Command {
   const cmd = new Command("pull")
     .description("Pull an OCI image layout from a registry")
     .argument("[ref]", "Source reference (e.g. localhost:5000/myrepo:1.0)")
-    .option("-o, --output <dir>", "Output OCI layout directory (default: ./oci-layout)")
+    .option(
+      "-o, --output <dir>",
+      "Output OCI layout directory (default: ~/.openmmcli/layouts/<repo>)",
+    )
     .option(
       "--username <user>",
       "Registry username (falls back to config, see: openmmcli auth login)",
@@ -188,9 +198,14 @@ export interface PullResult {
 }
 
 export async function runPull(options: PullOptions): Promise<PullResult> {
-  const outputDir = options.output || "./oci-layout"
-
-  await ensureOutputDirEmpty(outputDir)
+  // Default target is the shared store (tag = pointer, blobs deduped);
+  // an explicit --output exports a standalone layout (must be empty).
+  const explicit = options.output !== undefined
+  const outputDir =
+    options.output !== undefined ? options.output : storeDir(envForConfigPath(options.configPath))
+  if (explicit) {
+    await ensureOutputDirEmpty(outputDir)
+  }
 
   const image = await fetchImage(options.ref, {
     plainHttp: options.plainHttp,
@@ -199,14 +214,24 @@ export async function runPull(options: PullOptions): Promise<PullResult> {
     config: loadConfig(options.configPath),
   })
 
-  await saveLayout(outputDir, {
-    manifest: image.manifest,
-    manifestData: image.manifestBuffer.toString("utf8"),
-    manifestDigest: image.manifestDescriptor.digest,
-    blobs: image.blobs,
-    ref: options.ref,
-  })
-  console.log(`Pulled ${options.ref} → ${outputDir}`)
+  if (explicit) {
+    await saveLayout(outputDir, {
+      manifest: image.manifest,
+      manifestData: image.manifestBuffer.toString("utf8"),
+      manifestDigest: image.manifestDescriptor.digest,
+      blobs: image.blobs,
+      ref: options.ref,
+    })
+  } else {
+    const blobsDir = join(outputDir, "blobs", "sha256")
+    await mkdir(blobsDir, { recursive: true })
+    for (const [digest, data] of image.blobs) {
+      await materializeBlob(blobsDir, digest, data)
+    }
+    await materializeBlob(blobsDir, image.manifestDescriptor.digest, image.manifestBuffer)
+    await upsertStoreEntry(outputDir, image.manifestDescriptor, options.ref)
+  }
+  console.log(`Pulled ${options.ref} → ${outputDir}${explicit ? "" : " (store)"}`)
   return { outputDir, digest: image.manifestDescriptor.digest }
 }
 
@@ -227,7 +252,7 @@ export async function runPullFromParsed(
 
   return runPull({
     ref: parsed.ref,
-    output: parsed.output ?? "./oci-layout",
+    output: parsed.output,
     plainHttp: parsed.plainHttp,
     username: parsed.username,
     password: await resolvePassword(parsed.password, parsed.passwordStdin),

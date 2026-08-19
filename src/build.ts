@@ -4,7 +4,7 @@ import { isAbsolute, join } from "node:path"
 
 import { Command } from "commander"
 
-import { loadConfig } from "./config"
+import { envForConfigPath, loadConfig, storeDir } from "./config"
 import { GEN_CONFIG_MEDIA_TYPE, GEN_SCHEMA_VERSION, type GenSpec } from "./genPackage"
 import { createLayerFromView, createLayerTarball, mergeImageLayers, selectPaths } from "./layers"
 import { type BuildManifestFile, type CopyEntry, loadBuildManifest } from "./manifest"
@@ -16,6 +16,7 @@ import {
   type OCIDescriptor,
   type OCIManifest,
   readOciLayout,
+  upsertStoreEntry,
   writeBlob,
   writeOciLayout,
 } from "./oci"
@@ -53,7 +54,10 @@ export function buildBuildCommand(): Command {
       'Local directory to pack as the top layer (overrides "assets" in the manifest)',
     )
     .option("-f, --file <path>", "Build manifest path (default: ./openmm-build.json)")
-    .option("-o, --output <dir>", "Output OCI layout directory (default: ./oci-layout)")
+    .option(
+      "-o, --output <dir>",
+      "Export a standalone OCI layout dir (default: shared store ~/.openmmcli/store)",
+    )
     .option(
       "--annotation <k=v>",
       "Add manifest annotation (repeatable, overrides manifest)",
@@ -90,7 +94,7 @@ export function buildArgsFromOptions(o: BuildCommandOptions): ParsedArgs {
 export interface BuildOptions {
   tag: string
   assetsDir: string | undefined
-  output: string
+  output: string | undefined
   annotations: Record<string, string>
   from: string[]
   copy: CopyEntry[]
@@ -130,7 +134,7 @@ export function mergeOptions(cli: ParsedArgs, manifestFile: BuildManifestFile): 
   const options: BuildOptions = {
     tag,
     assetsDir: cli.dir ?? manifestFile.assets,
-    output: cli.output ?? "./oci-layout",
+    output: cli.output,
     annotations: { ...manifestFile.annotations, ...cli.annotations },
     from: manifestFile.from === undefined ? [] : [manifestFile.from].flat(),
     copy: manifestFile.copy ?? [],
@@ -232,9 +236,16 @@ export interface BuildResult {
 }
 
 export async function runBuild(options: BuildOptions): Promise<BuildResult> {
-  await ensureOutputDirEmpty(options.output)
+  // Default target is the shared store (tag = pointer, blobs deduped);
+  // an explicit --output exports a standalone layout (must be empty).
+  const explicit = options.output !== undefined
+  const outputDir =
+    options.output !== undefined ? options.output : storeDir(envForConfigPath(options.configPath))
+  if (explicit) {
+    await ensureOutputDirEmpty(outputDir)
+  }
 
-  const blobsDir = join(options.output, "blobs", "sha256")
+  const blobsDir = join(outputDir, "blobs", "sha256")
   await mkdir(blobsDir, { recursive: true })
 
   const auth: ImageFetchOptions = {
@@ -272,10 +283,14 @@ export async function runBuild(options: BuildOptions): Promise<BuildResult> {
   const manifestBuffer = Buffer.from(JSON.stringify(manifest))
   const manifestDescriptor = await writeBlob(manifestBuffer, blobsDir, MANIFEST_MEDIA_TYPE)
 
-  await writeOciLayout(options.output, manifestDescriptor, options.tag)
+  if (explicit) {
+    await writeOciLayout(outputDir, manifestDescriptor, options.tag)
+  } else {
+    await upsertStoreEntry(outputDir, manifestDescriptor, options.tag)
+  }
 
-  console.log(`Built ${options.tag} → ${options.output}`)
-  return { digest: manifestDescriptor.digest, outputDir: options.output, tag: options.tag }
+  console.log(`Built ${options.tag} → ${outputDir}${explicit ? "" : " (store)"}`)
+  return { digest: manifestDescriptor.digest, outputDir, tag: options.tag }
 }
 
 export async function runBuildFromParsed(

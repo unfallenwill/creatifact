@@ -117,3 +117,53 @@ test("buildResultPackage refuses a non-empty output dir", async () => {
 
   await rm(tmp, { recursive: true, force: true })
 })
+
+test("store mode dedups blobs and replaces the tag entry on rebuild", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "gen-store-"))
+  const store = join(tmp, "store")
+  const spec = { task: "text2image" as const, provider: "zhipu" }
+  const artifact = {
+    base64: Buffer.from("same-bytes").toString("base64"),
+    mimeType: "image/png",
+  }
+
+  const first = await buildResultPackage({
+    outputDir: store,
+    tag: "gen-output:latest",
+    store: true,
+    artifacts: [artifact],
+    spec,
+    createdAt: "2026-08-17T00:00:00.000Z",
+  })
+  const second = await buildResultPackage({
+    outputDir: store,
+    tag: "other:1",
+    store: true,
+    artifacts: [artifact],
+    spec,
+    createdAt: "2026-08-17T00:00:00.000Z",
+  })
+
+  // identical artifacts/config → identical digests: blobs shared, single copy
+  expect(first.digest).toBe(second.digest)
+  const index = JSON.parse(await readFile(join(store, "index.json"), "utf8"))
+  expect(index.manifests).toHaveLength(2)
+
+  // re-tag gen-output:latest → pointer moves, other tags survive
+  await buildResultPackage({
+    outputDir: store,
+    tag: "gen-output:latest",
+    store: true,
+    artifacts: [],
+    spec,
+    createdAt: "2026-08-18T00:00:00.000Z",
+  })
+  const after = JSON.parse(await readFile(join(store, "index.json"), "utf8"))
+  const refs = after.manifests.map(
+    (m: { annotations?: Record<string, string> }) =>
+      m.annotations?.["org.opencontainers.image.ref.name"],
+  )
+  expect(refs.sort()).toEqual(["gen-output:latest", "other:1"])
+
+  await rm(tmp, { recursive: true, force: true })
+})

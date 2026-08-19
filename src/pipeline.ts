@@ -216,8 +216,9 @@ function refValue(ref: ParsedRef, results: Map<string, CommandResult>, stepIndex
  * Run request-file steps sequentially: fail fast, register each named step's
  * CommandResult, and resolve `${step.field}` placeholders (including
  * `artifacts[N].url`) before each step runs. Media steps (build / generate)
- * without an explicit output write to `oci-layout-step-<n>` so they never
- * collide inside one pipeline.
+ * without an explicit output write into the shared store under their own tag,
+ * so `${s1.outputDir}` (the store) and `${s1.tag}` stay referenceable and
+ * reruns replace the same tag instead of colliding with stale output.
  */
 export async function runPipeline(
   steps: PipelineStep[],
@@ -235,12 +236,6 @@ export async function runPipeline(
 
     const fields = resolvePlaceholders(step.fields, results, i) as Fields
     const request = commandRequestFromFields(step.command, fields)
-    if (
-      (request.kind === "build" || request.kind === "generate") &&
-      request.req.output === undefined
-    ) {
-      request.req.output = `oci-layout-step-${i + 1}`
-    }
 
     try {
       const result = await executeCommand(request, { configPath: opts.configPath })

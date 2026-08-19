@@ -220,10 +220,11 @@ openmmcli package push example.com/xxxxxx:v1.0
 
 # 2. Run it from anywhere: the task comes from the package
 openmmcli generate example.com/xxxxxx:v1.0 "a red crane" --opt size=2048x2048
-openmmcli generate ./oci-layout "a crane"      # local layout also works
+openmmcli generate org/myresult:1.0 "a crane"  # a tag in the local store also works
 ```
 
-`generate <ref>` accepts a registry reference or a local OCI layout path. CLI
+`generate <ref>` accepts a registry reference, a tag from the local store, or a
+local OCI layout path. CLI
 flags (positional prompt, `--prompt`/`--opt`/`--image`/frames/`--input`,
 `--provider`/`--model`) override the package: scalars override, arrays replace,
 `--opt` merges per key.
@@ -234,15 +235,16 @@ http(s)/data URL, a local path, or a `pkg://path` into the package's layers
 to the provider; the result package records the original `pkg://` reference for
 provenance.
 
-Media tasks write their **result as an OCI package** (default `./oci-layout`,
-override with `--output`, name it with `--tag`). The artifact becomes a layer,
-and the config blob records the *effective* generation parameters plus result
-metadata (usage, timestamp, source ref) — so anyone can see exactly how the
+Media tasks write their **result as an OCI package** into the shared store
+under `--tag` (default `gen-output:latest`); pass `--output` to export a
+standalone layout dir instead. The artifact becomes a layer, and the config
+blob records the *effective* generation parameters plus result metadata
+(usage, timestamp, source ref) — so anyone can see exactly how the
 image/video was produced:
 
 ```bash
 openmmcli generate example.com/xxxxxx:v1.0 "a red crane" --tag org/myresult:1.0
-# → ./oci-layout (index.json + blobs + a config blob with provenance)
+# → store tag org/myresult:1.0 (index.json + blobs + a config blob with provenance)
 ```
 
 Pass `--no-pack` to print artifacts without building a result package.
@@ -271,7 +273,7 @@ Options:
       --dir <path>       Local directory to pack as the top layer
                          (overrides "assets" in the manifest)
   -f, --file <path>      Build manifest path (default: ./openmm-build.json)
-  -o, --output <dir>     Output OCI layout directory (default: ./oci-layout)
+  -o, --output <dir>     Export a standalone layout dir (default: shared store)
       --annotation k=v   Add manifest annotation (repeatable, overrides manifest)
       --username <user>  Registry username for from/copy sources
       --password <pw>    Registry password (prefer --password-stdin)
@@ -343,7 +345,7 @@ Arguments:
                            If omitted, uses ref from index.json
 
 Options:
-  --layout <dir>        OCI layout directory (default: ./oci-layout)
+  --layout <dir>        OCI layout dir (default: the tag's entry in the shared store)
   --username <user>     Registry username
   --password <pw>       Registry password (prefer --password-stdin)
   --password-stdin      Read password from stdin
@@ -362,13 +364,26 @@ Arguments:
   <registry>/<repo>:<tag>  Source reference (e.g. localhost:5000/myrepo:1.0)
 
 Options:
-  -o, --output <dir>     Output OCI layout directory (default: ./oci-layout)
+  -o, --output <dir>     Export a standalone layout dir (default: shared store)
   --username <user>      Registry username
   --password <pw>        Registry password (prefer --password-stdin)
   --password-stdin       Read password from stdin
   --plain-http           Use HTTP instead of HTTPS (for local registries)
   -h, --help             Show this help message
 ```
+
+### `images`
+
+List tags in the shared store (like `docker images`):
+
+```bash
+$ openmmcli images
+REF                DIGEST             SIZE  KIND
+gen-output:latest  b196744b7944       363B  gen
+team/app-a:1       0d0e0f1a2b3c       392B  image
+```
+
+`gen` marks generation result packages; `image` marks regular image layouts.
 
 ### `auth login` / `auth logout`
 
@@ -411,6 +426,11 @@ Actions:
 The config file lives at `~/.openmmcli/config.json` (override with the
 `OPENMMCLI_CONFIG_DIR` environment variable). It is shared by all commands and
 by other openmmcli modules (e.g. provider API keys under `providers`).
+Built/pulled/generated images live in a **shared content store** at
+`~/.openmmcli/store` — one OCI layout where blobs are deduplicated by digest
+and tags are pointers in `index.json` (docker-style). Rebuilding the same tag
+repoints it and never touches other tags; `openmmcli images` lists them, and
+`--output`/`--layout` still pin/export an explicit standalone directory.
 A per-invocation override is also available: pass `--config-dir <dir>` to any
 subcommand to use `<dir>/config.json` (takes precedence over the env var).
 

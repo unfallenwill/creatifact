@@ -9,6 +9,7 @@ import {
   deleteConfig,
   encodeAuth,
   encodeBasicAuth,
+  envForConfigPath,
   getConfigValue,
   isValidRegistry,
   loadConfig,
@@ -18,6 +19,7 @@ import {
   resolveRegistryCredentials,
   saveConfig,
   setConfigValue,
+  storeDir,
   toCredentials,
 } from "../config"
 
@@ -209,4 +211,15 @@ test("toCredentials requires a complete pair; encodeBasicAuth reuses encodeAuth"
   expect(encodeBasicAuth({ username: "u", password: "p" })).toBe(
     `Basic ${Buffer.from("u:p").toString("base64")}`,
   )
+})
+
+test("storeDir lives under the config dir", () => {
+  const env = { OPENMMCLI_CONFIG_DIR: "/cfg" }
+  expect(storeDir(env)).toBe("/cfg/store")
+  expect(storeDir()).toBe(join(homedir(), ".openmmcli", "store"))
+})
+
+test("envForConfigPath prefers the explicit config dir", () => {
+  expect(envForConfigPath(undefined)).toBe(process.env)
+  expect(envForConfigPath("/x/config.json")).toEqual({ OPENMMCLI_CONFIG_DIR: "/x" })
 })

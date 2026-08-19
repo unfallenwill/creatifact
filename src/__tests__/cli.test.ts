@@ -311,6 +311,44 @@ describe("cli package push — integration", () => {
   })
 })
 
+describe("cli images / store — integration", () => {
+  it("images lists store tags after builds; rebuild replaces the same tag", () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-store-"))
+    const configDir = path.join(tmp, "cfg")
+    const fixture = path.join(tmp, "assets")
+    mkdirSync(configDir, { recursive: true })
+    mkdirSync(fixture, { recursive: true })
+    writeFileSync(path.join(fixture, "a.txt"), "hello")
+    const env = { OPENMMCLI_CONFIG_DIR: configDir }
+    try {
+      const r1 = run(["package", "build", "--dir", fixture, "-t", "demo/one:1"], undefined, env)
+      expect(r1.code).toBe(0)
+      expect(r1.stdout).toContain("store")
+
+      const r2 = run(["package", "build", "--dir", fixture, "-t", "demo/two:1"], undefined, env)
+      expect(r2.code).toBe(0)
+
+      const ls = run(["images"], undefined, env)
+      expect(ls.code).toBe(0)
+      expect(ls.stdout).toContain("demo/one:1")
+      expect(ls.stdout).toContain("demo/two:1")
+
+      // re-tag demo/one:1 → still one entry per tag, index keeps both tags
+      const r3 = run(["package", "build", "--dir", fixture, "-t", "demo/one:1"], undefined, env)
+      expect(r3.code).toBe(0)
+      const index = JSON.parse(readFileSync(path.join(configDir, "store", "index.json"), "utf8"))
+      expect(index.manifests).toHaveLength(2)
+
+      // push of an unknown store tag fails with a helpful message
+      const push = run(["package", "push", "nope/missing:1"], undefined, env)
+      expect(push.code).toBe(1)
+      expect(push.stderr + push.stdout).toMatch(/not found in|no image layout/)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+})
+
 describe("cli config/auth — integration", () => {
   function configEnv(): { dir: string; env: Record<string, string>; file: string } {
     const dir = mkdtempSync(path.join(tmpdir(), "openmmcli-home-"))

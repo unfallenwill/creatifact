@@ -49,6 +49,24 @@ export function configPath(env: Record<string, string | undefined> = process.env
   return join(configDir(env), "config.json")
 }
 
+/**
+ * Env view that honors an explicit --config-dir (as configPath) over
+ * OPENMMCLI_CONFIG_DIR, for path helpers shared by run functions.
+ */
+export function envForConfigPath(
+  configPath: string | undefined,
+): Record<string, string | undefined> {
+  return configPath === undefined ? process.env : { OPENMMCLI_CONFIG_DIR: dirname(configPath) }
+}
+
+/**
+ * Shared content store: one OCI layout holding every built/pulled/generated
+ * image, blobs deduped by digest and tags as index pointers (docker-style).
+ */
+export function storeDir(env: Record<string, string | undefined> = process.env): string {
+  return join(configDir(env), "store")
+}
+
 export function loadConfig(path?: string): OpenmmCliConfig {
   const file = path ?? configPath()
   let raw: string

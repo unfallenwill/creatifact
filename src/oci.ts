@@ -22,6 +22,9 @@ export const INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json"
 export const EMPTY_CONFIG_MEDIA_TYPE = "application/vnd.oci.empty.v1+json"
 export const LAYER_MEDIA_TYPE = "application/vnd.oci.image.layer.v1.tar+gzip"
 
+/** OCI annotation carrying the tag on an index entry. */
+export const REF_NAME_ANNOTATION = "org.opencontainers.image.ref.name"
+
 export interface LoadedImage {
   manifestDescriptor: OCIDescriptor
   manifest: OCIManifest
@@ -72,7 +75,12 @@ export async function writeBlob(
   const hash = createHash("sha256")
   hash.update(data)
   const hex = hash.digest("hex")
-  await writeFile(join(blobsDir, hex), data)
+  // Content-addressed: same digest means same bytes — skip existing so shared
+  // stores dedup blobs across images (docker-style global content store).
+  const dest = join(blobsDir, hex)
+  if (!existsSync(dest)) {
+    await writeFile(dest, data)
+  }
   return {
     mediaType,
     digest: `sha256:${hex}`,
@@ -95,7 +103,7 @@ export async function writeOciLayout(
         mediaType: manifestDescriptor.mediaType,
         digest: manifestDescriptor.digest,
         size: manifestDescriptor.size,
-        annotations: { "org.opencontainers.image.ref.name": ref },
+        annotations: { [REF_NAME_ANNOTATION]: ref },
       },
     ],
   }
@@ -103,14 +111,79 @@ export async function writeOciLayout(
   await writeFile(join(outputDir, "index.json"), JSON.stringify(index, null, 2))
 }
 
-export async function readOciLayout(layoutDir: string): Promise<LoadedImage> {
+export interface IndexEntry extends OCIDescriptor {
+  annotations?: Record<string, string>
+}
+
+/** Read index.json manifests from a layout dir; [] when absent. */
+export async function readIndexEntries(layoutDir: string): Promise<IndexEntry[]> {
+  const indexPath = join(layoutDir, "index.json")
+  if (!existsSync(indexPath)) return []
+  try {
+    const index = JSON.parse(await readFile(indexPath, "utf8")) as { manifests?: IndexEntry[] }
+    return Array.isArray(index.manifests) ? index.manifests : []
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Upsert a tagged manifest into a shared store layout (docker-style: the tag
+ * is a pointer). Blobs are never deleted — replacing a tag just repoints it;
+ * unreferenced blobs may be pruned later. Keeps every other tag's entry.
+ */
+export async function upsertStoreEntry(
+  storeDir: string,
+  manifestDescriptor: OCIDescriptor,
+  ref: string,
+): Promise<void> {
+  const marker = join(storeDir, "oci-layout")
+  if (!existsSync(marker)) {
+    await mkdir(storeDir, { recursive: true })
+    await writeFile(marker, JSON.stringify({ imageLayoutVersion: "1.0.0" }))
+  }
+
+  const entry: IndexEntry = {
+    mediaType: manifestDescriptor.mediaType,
+    digest: manifestDescriptor.digest,
+    size: manifestDescriptor.size,
+    annotations: { [REF_NAME_ANNOTATION]: ref },
+  }
+  const others = (await readIndexEntries(storeDir)).filter(
+    (m) => m.annotations?.[REF_NAME_ANNOTATION] !== ref,
+  )
+  const index = {
+    schemaVersion: 2,
+    mediaType: INDEX_MEDIA_TYPE,
+    manifests: [...others, entry],
+  }
+  await writeFile(join(storeDir, "index.json"), JSON.stringify(index, null, 2))
+}
+
+export async function readOciLayout(
+  layoutDir: string,
+  preferredRef?: string,
+): Promise<LoadedImage> {
   const indexRaw = await readFile(join(layoutDir, "index.json"), "utf8")
   const index = JSON.parse(indexRaw) as {
     manifests: Array<OCIDescriptor & { annotations?: Record<string, string> }>
   }
-  const manifestEntry = index.manifests[0]
+  const all = index.manifests
+  // A shared store holds many tags; prefer the requested one, else first entry
+  const manifestEntry =
+    (preferredRef !== undefined &&
+      all.find((m) => m.annotations?.[REF_NAME_ANNOTATION] === preferredRef)) ||
+    all[0]
   if (!manifestEntry) {
     throw new Error("No manifest found in index.json")
+  }
+  if (
+    preferredRef !== undefined &&
+    manifestEntry.annotations?.[REF_NAME_ANNOTATION] !== preferredRef
+  ) {
+    throw new Error(
+      `tag '${preferredRef}' not found in ${layoutDir}; build or pull it first, or pass --layout`,
+    )
   }
 
   const manifestDigest = manifestEntry.digest
@@ -134,7 +207,7 @@ export async function readOciLayout(layoutDir: string): Promise<LoadedImage> {
     },
     manifest,
     manifestBuffer,
-    refName: manifestEntry.annotations?.["org.opencontainers.image.ref.name"],
+    refName: manifestEntry.annotations?.[REF_NAME_ANNOTATION],
     blobs,
   }
 }
@@ -153,9 +226,9 @@ export async function saveLayout(outputDir: string, layout: SaveLayoutInput): Pr
   await mkdir(blobsDir, { recursive: true })
 
   for (const [digest, data] of blobs) {
-    await writeFile(join(blobsDir, digestHex(digest)), data)
+    await materializeBlob(blobsDir, digest, data)
   }
-  await writeFile(join(blobsDir, digestHex(manifestDigest)), manifestData)
+  await materializeBlob(blobsDir, manifestDigest, Buffer.from(manifestData, "utf8"))
 
   await writeOciLayout(
     outputDir,

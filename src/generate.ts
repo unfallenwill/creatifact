@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Command } from "commander"
-import { defaultGenProvider, loadConfig } from "./config"
+import { defaultGenProvider, envForConfigPath, loadConfig, storeDir } from "./config"
 import {
   buildResultPackage,
   GEN_CONFIG_MEDIA_TYPE,
@@ -125,7 +125,10 @@ export function addGenerateOptions(cmd: Command): Command {
     .option("--opt <k=v>", "Repeatable provider option (JSON-parsed when valid)", collectValue)
     .option("--timeout <dur>", "Polling timeout (e.g. 90s, 5m); video tasks and resume only")
     .option("--interval <dur>", "Polling interval (e.g. 1s); video tasks and resume only")
-    .option("--output <dir>", "Result OCI layout directory (default ./oci-layout)")
+    .option(
+      "--output <dir>",
+      "Export a standalone result layout dir (default: store ~/.openmmcli/store)",
+    )
     .option("--tag <repo:tag>", "Reference name for the result package (default gen-output:latest)")
     .option("--provider <id>", "Provider id (alternative to the positional provider)")
     .option("--model <id>", "Model id (requires --provider or a provider positional)")
@@ -1027,6 +1030,7 @@ async function executeAndPackage(opts: {
   provider: Provider
   model: string
   fromRef?: string
+  configPath?: string
 }): Promise<GenerateResult> {
   const { req, runReq, provider, model } = opts
   const controller = new AbortController()
@@ -1044,11 +1048,13 @@ async function executeAndPackage(opts: {
       return { artifacts: result.artifacts }
     }
 
-    const outputDir = req.output ?? "./oci-layout"
     const resultTag = req.tag ?? "gen-output:latest"
+    // Default target is the shared store (tag = pointer); --output exports.
+    const outputDir = req.output ?? storeDir(envForConfigPath(opts.configPath))
     const pkg = await buildResultPackage({
       outputDir,
       tag: resultTag,
+      ...(req.output === undefined ? { store: true } : {}),
       ...(opts.fromRef === undefined ? {} : { fromRef: opts.fromRef }),
       artifacts: result.artifacts,
       spec: effectiveGenSpec(req, provider.id, model),
@@ -1071,15 +1077,38 @@ export async function runGenerateRequest(
   if (req.task === "resume") return runResumeTask(req, opts)
   rejectPkgRefsOutsidePackageMode(req)
   const { provider, model } = await resolveProviderForTask(req, opts)
-  return executeAndPackage({ req, runReq: req, provider, model })
+  return executeAndPackage({
+    req,
+    runReq: req,
+    provider,
+    model,
+    ...(opts.configPath === undefined ? {} : { configPath: opts.configPath }),
+  })
 }
 
 // ---------------------------------------------------------------------------
 // Package (recipe) mode
 
+/** Sync set of tags in the shared store, for ref-vs-task routing (empty on any error). */
+function storeTagSet(configPath?: string): Set<string> {
+  try {
+    const index = JSON.parse(
+      readFileSync(join(storeDir(envForConfigPath(configPath)), "index.json"), "utf8"),
+    ) as { manifests?: Array<{ annotations?: Record<string, string> }> }
+    return new Set(
+      (index.manifests ?? [])
+        .map((m) => m.annotations?.["org.opencontainers.image.ref.name"])
+        .filter((r): r is string => r !== undefined),
+    )
+  } catch {
+    return new Set()
+  }
+}
+
 /** True when the first positional is a package ref rather than a task. */
-function looksLikeGenRef(arg: string): boolean {
+function looksLikeGenRef(arg: string, storeTags?: Set<string>): boolean {
   if (isLocalRef(arg)) return true
+  if (storeTags?.has(arg)) return true
   return looksLikeRegistryRef(arg)
 }
 
@@ -1163,7 +1192,14 @@ async function runGeneratePackage(
   const { req: runReq, cleanup } = await materializePackageMedia(req, image)
 
   try {
-    return await executeAndPackage({ req, runReq, provider, model, fromRef: ref })
+    return await executeAndPackage({
+      req,
+      runReq,
+      provider,
+      model,
+      fromRef: ref,
+      ...(opts.configPath === undefined ? {} : { configPath: opts.configPath }),
+    })
   } finally {
     cleanup()
   }
@@ -1242,7 +1278,8 @@ export function buildGenerateCommand(): Command {
       return
     }
     const head = args[0] as string
-    if (looksLikeGenRef(head)) {
+    const storeTags = storeTagSet(configOpts(command, options.configDir).configPath)
+    if (looksLikeGenRef(head, storeTags)) {
       // The trailing operands include the task flags; parse them here.
       const { options: taskOpts, positionals } = parseArgsWith<GenerateCommandOptions>(
         buildGenerateTaskCommand("ref"),

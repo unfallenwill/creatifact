@@ -1,14 +1,17 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { loadConfig } from "./config"
+import { envForConfigPath, loadConfig, storeDir } from "./config"
 import { createLayerTarball, type FsView, mergeImageLayers } from "./layers"
 import {
   type LoadedImage,
   MANIFEST_MEDIA_TYPE,
   type OCIDescriptor,
   type OCIManifest,
+  readIndexEntries,
   readOciLayout,
+  REF_NAME_ANNOTATION,
+  upsertStoreEntry,
   writeBlob,
   writeOciLayout,
 } from "./oci"
@@ -183,7 +186,11 @@ export function parseGenConfigBlob(data: Buffer, source: string): GenConfigBlob 
   return { schemaVersion: GEN_SCHEMA_VERSION, gen: validateGenSpec(parsed["gen"], source) }
 }
 
-/** Load a gen package image: a local layout path is read directly, a ref is fetched. */
+/**
+ * Load a gen package image: a local layout path is read directly, a store
+ * tag is resolved from the shared store index, anything else is fetched from
+ * a registry.
+ */
 export async function loadGenImage(
   ref: string,
   opts: { plainHttp: boolean; configPath?: string | undefined },
@@ -191,6 +198,14 @@ export async function loadGenImage(
 ): Promise<LoadedImage> {
   if (isLocalRef(ref)) {
     return readOciLayout(ref)
+  }
+  // Store tags first (docker-style local image lookup), then the registry.
+  const store = storeDir(envForConfigPath(opts.configPath))
+  const inStore = (await readIndexEntries(store)).some(
+    (m) => m.annotations?.[REF_NAME_ANNOTATION] === ref,
+  )
+  if (inStore) {
+    return readOciLayout(store, ref)
   }
   return fetchImage(ref, {
     plainHttp: opts.plainHttp,
@@ -223,10 +238,12 @@ const MIME_EXT: Record<string, string> = {
 }
 
 export interface ResultPackageOptions {
-  /** Output OCI layout directory. */
+  /** Layout dir: shared store (with store:true) or standalone export dir. */
   outputDir: string
   /** Reference name stored in index.json (e.g. org/myresult:1.0). */
   tag: string
+  /** Store mode: dedup blobs, replace the index entry with the same tag. */
+  store?: boolean
   /** Input package ref for provenance. */
   fromRef?: string
   artifacts: Artifact[]
@@ -242,7 +259,9 @@ export interface ResultPackageOptions {
  * so anyone can see exactly how the image/video was produced.
  */
 export async function buildResultPackage(opts: ResultPackageOptions): Promise<{ digest: string }> {
-  await ensureOutputDirEmpty(opts.outputDir)
+  if (opts.store !== true) {
+    await ensureOutputDirEmpty(opts.outputDir)
+  }
 
   const blobsDir = join(opts.outputDir, "blobs", "sha256")
   await mkdir(blobsDir, { recursive: true })
@@ -308,6 +327,10 @@ export async function buildResultPackage(opts: ResultPackageOptions): Promise<{ 
     MANIFEST_MEDIA_TYPE,
   )
 
-  await writeOciLayout(opts.outputDir, manifestDescriptor, opts.tag)
+  if (opts.store === true) {
+    await upsertStoreEntry(opts.outputDir, manifestDescriptor, opts.tag)
+  } else {
+    await writeOciLayout(opts.outputDir, manifestDescriptor, opts.tag)
+  }
   return { digest: manifestDescriptor.digest }
 }

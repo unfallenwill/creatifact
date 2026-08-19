@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createHash } from "node:crypto"
@@ -205,20 +205,34 @@ test("rejects non-referenceable fields of a build result", async () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-test("media steps derive a unique default output dir", async () => {
-  const prevCwd = process.cwd()
-  process.chdir(dir)
+test("media steps write into the shared store under their own tags", async () => {
+  const store = join(dir, "store")
   try {
-    await runPipeline(
+    const results = await runPipeline(
       [step("package.build", { tag: "x:1" }, "a"), step("package.build", { tag: "y:1" }, "b")],
       { configPath },
     )
-    expect(existsSync(join(dir, "oci-layout-step-1", "index.json"))).toBe(true)
-    expect(existsSync(join(dir, "oci-layout-step-2", "index.json"))).toBe(true)
+    const a = results.get("a")
+    expect(a?.kind === "build" && a.outputDir).toBe(store)
+    const entries = JSON.parse(readFileSync(join(store, "index.json"), "utf8")).manifests as Array<{
+      annotations?: Record<string, string>
+    }>
+    expect(entries.map((m) => m.annotations?.["org.opencontainers.image.ref.name"]).sort()).toEqual(
+      ["x:1", "y:1"],
+    )
+
+    // reruns replace the same tag instead of failing on a non-empty dir
+    await runPipeline([step("package.build", { tag: "x:1" }, "a")], { configPath })
+    const after = JSON.parse(readFileSync(join(store, "index.json"), "utf8")).manifests as Array<{
+      annotations?: Record<string, string>
+    }>
+    expect(after.map((m) => m.annotations?.["org.opencontainers.image.ref.name"]).sort()).toEqual([
+      "x:1",
+      "y:1",
+    ])
   } finally {
-    process.chdir(prevCwd)
+    rmSync(dir, { recursive: true, force: true })
   }
-  rmSync(dir, { recursive: true, force: true })
 })
 
 test("sha256 helper sanity for imports", () => {

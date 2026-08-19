@@ -9,6 +9,7 @@ import { buildConfigCommand } from "./configCmd"
 import { executeCommand } from "./execute"
 import { runFileFromArgs } from "./fileCmd"
 import { buildGenerateCommand } from "./generate"
+import { buildImagesCommand, runImages } from "./images"
 import { buildAuthCommand } from "./login"
 import { buildModelsCommand, type ModelsCommandOptions, modelsArgsFromOptions } from "./models"
 import { buildPullCommand, type PullCommandOptions, pullArgsFromOptions } from "./pull"
@@ -116,6 +117,13 @@ program.addCommand(
 
 // --- generate / gen ---
 program.addCommand(buildGenerateCommand().alias("gen"))
+
+// --- images (list store tags) ---
+program.addCommand(
+  buildImagesCommand().action(async (options: { configDir?: string }, command: Command) => {
+    await runImages(configOpts(command, options.configDir))
+  }),
+)
 
 // --- bare invocation / unknown top-level command ---
 program.action((_options, command) => {

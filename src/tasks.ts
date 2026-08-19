@@ -140,7 +140,7 @@ Arguments:
 Options:
     --prompt <text>   Alternative to the positional prompt
     --opt <k=v>       Repeatable provider option
-    --output <dir>    Result OCI layout directory (default ./oci-layout)
+    --output <dir>    Result OCI layout directory (default ~/.openmmcli/layouts/<repo>)
     --tag <repo:tag>  Reference name for the result package
     --no-pack         Print artifacts only; do not build a result package
     --json            Print structured JSON to stdout
@@ -168,7 +168,7 @@ Options:
     --image <ref>     Reference image (required): http(s)/data URL, local
                       path, or pkg://path into a recipe package
     --opt <k=v>       Repeatable provider option
-    --output <dir>    Result OCI layout directory (default ./oci-layout)
+    --output <dir>    Result OCI layout directory (default ~/.openmmcli/layouts/<repo>)
     --tag <repo:tag>  Reference name for the result package
     --no-pack         Print artifacts only; do not build a result package
     --json            Print structured JSON to stdout
@@ -196,7 +196,7 @@ Options:
     --no-wait         Submit and print the task handle, then exit
     --timeout <dur>   Polling timeout (default 10m; e.g. 90s, 5m, 600)
     --interval <dur>  Polling interval (default 5s)
-    --output <dir>    Result OCI layout directory (default ./oci-layout)
+    --output <dir>    Result OCI layout directory (default ~/.openmmcli/layouts/<repo>)
     --tag <repo:tag>  Reference name for the result package
     --no-pack         Print artifacts only; do not build a result package
     --json            Print structured JSON to stdout
@@ -226,7 +226,7 @@ Options:
     --no-wait         Submit and print the task handle, then exit
     --timeout <dur>   Polling timeout (default 10m)
     --interval <dur>  Polling interval (default 5s)
-    --output <dir>    Result OCI layout directory (default ./oci-layout)
+    --output <dir>    Result OCI layout directory (default ~/.openmmcli/layouts/<repo>)
     --tag <repo:tag>  Reference name for the result package
     --no-pack         Print artifacts only; do not build a result package
     --json            Print structured JSON to stdout
@@ -258,7 +258,7 @@ Options:
     --no-wait            Submit and print the task handle, then exit
     --timeout <dur>      Polling timeout (default 10m)
     --interval <dur>     Polling interval (default 5s)
-    --output <dir>       Result OCI layout directory (default ./oci-layout)
+    --output <dir>       Result OCI layout directory (default ~/.openmmcli/layouts/<repo>)
     --tag <repo:tag>     Reference name for the result package
     --no-pack            Print artifacts only; skip the result package
     --json               Print structured JSON to stdout
