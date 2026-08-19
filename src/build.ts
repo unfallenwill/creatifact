@@ -5,6 +5,7 @@ import { isAbsolute, join } from "node:path"
 import { Command } from "commander"
 
 import { envForConfigPath, loadConfig, storeDir } from "./config"
+import { ok } from "./format"
 import { GEN_CONFIG_MEDIA_TYPE, GEN_SCHEMA_VERSION, type GenSpec } from "./genPackage"
 import { createLayerFromView, createLayerTarball, mergeImageLayers, selectPaths } from "./layers"
 import { type BuildManifestFile, type CopyEntry, loadBuildManifest } from "./manifest"
@@ -292,6 +293,7 @@ export async function runBuild(options: BuildOptions): Promise<BuildResult> {
   }
 
   console.log(`Built ${options.tag} → ${outputDir}${explicit ? "" : " (store)"}`)
+  ok(`built ${options.tag}`)
   return { digest: manifestDescriptor.digest, outputDir, tag: options.tag }
 }
 

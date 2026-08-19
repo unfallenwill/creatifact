@@ -19,6 +19,25 @@ const colorEnabled =
 /** The shared color instance; identity functions when color is disabled. */
 export const pc = createColors(colorEnabled)
 
+/**
+ * The two-channel output contract:
+ *   - stdout is the machine interface (urls, paths, json, payload text)
+ *     and is NEVER colored;
+ *   - stderr is the human channel (status, warnings, progress) and may be.
+ * These helpers keep that boundary auditable at every call site.
+ */
+export function status(message: string): void {
+  process.stderr.write(`${pc.cyan("●")} ${message}\n`)
+}
+
+export function warn(message: string): void {
+  process.stderr.write(`${pc.yellow("⚠")} ${message}\n`)
+}
+
+export function ok(message: string): void {
+  process.stderr.write(`${pc.green("✓")} ${message}\n`)
+}
+
 /** Strip ANSI escape sequences (SGR) from a string. */
 export function stripAnsi(text: string): string {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping ANSI needs the ESC literal

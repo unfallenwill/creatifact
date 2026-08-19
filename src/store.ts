@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { Command } from "commander"
 
 import { envForConfigPath, storeDir } from "./config"
+import { status } from "./format"
 import { GEN_CONFIG_MEDIA_TYPE } from "./genPackage"
 import {
   digestHex,
@@ -161,8 +162,8 @@ export function buildPackageCommand(): Command {
   rmCmd.action(async (refs: string[], options: { configDir?: string }, command: Command) => {
     const { configPath } = configOpts(command, options.configDir)
     const { untagged, deletedBlobs } = await removeStoreRefs(refs, configPath)
-    for (const ref of untagged) console.log(`Untagged: ${ref}`)
-    for (const digest of deletedBlobs) console.log(`Deleted: ${digest}`)
+    for (const ref of untagged) status(`untagged ${ref}`)
+    for (const digest of deletedBlobs) status(`deleted ${digest}`)
   })
   pkg.addCommand(rmCmd)
 

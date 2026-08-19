@@ -442,7 +442,7 @@ describe("cli package store — integration", () => {
       // rm one tag: shared blobs survive
       const r1 = run(["package", "rm", "demo/a:1"], undefined, env)
       expect(r1.code).toBe(0)
-      expect(r1.stdout).toContain("Untagged: demo/a:1")
+      expect(r1.stderr).toContain("untagged demo/a:1")
       expect(r1.stdout).not.toContain("Deleted:")
       const after = run(["package", "ls"], undefined, env)
       expect(after.stdout).toContain("demo/b:1")
@@ -450,7 +450,7 @@ describe("cli package store — integration", () => {
 
       // rm the last tag: blobs collected
       const r2 = run(["package", "rm", "demo/b:1"], undefined, env)
-      expect(r2.stdout).toContain("Deleted: sha256:")
+      expect(r2.stderr).toContain("deleted sha256:")
       const empty = run(["package", "ls"], undefined, env)
       expect(empty.stdout).toContain("Store is empty")
 
@@ -526,7 +526,7 @@ describe("cli config/auth — integration", () => {
         env,
       )
       expect(login.code).toBe(0)
-      expect(login.stdout).toContain("Login succeeded")
+      expect(login.stderr).toContain("login succeeded")
 
       const config = JSON.parse(readFileSync(file, "utf8")) as {
         auths: Record<string, { auth: string; username: string }>
@@ -567,7 +567,7 @@ describe("cli config/auth — integration", () => {
         env,
       )
       expect(login.code).toBe(0)
-      expect(login.stdout).toContain("Login succeeded (reg.example.com)")
+      expect(login.stderr).toContain("login succeeded (reg.example.com)")
 
       const again = run(["auth", "logout", "reg.example.com"], undefined, env)
       expect(again.code).toBe(0)
@@ -859,7 +859,7 @@ describe("cli generate — integration", () => {
       )
       expect(r.code).toBe(0)
       expect(r.stdout).toContain("https://cdn.test/out.mp4")
-      expect(r.stderr).toContain("Built org/v:1")
+      expect(r.stderr).toContain("built org/v:1")
       const req = lastRequest(recordPath)
       expect(req["model"]).toBe("demo-video")
       expect((req["firstFrame"] as { localPath: string }).localPath).toBe(img)
@@ -1208,7 +1208,7 @@ describe("cli generate — integration", () => {
       )
       expect(gen.code, gen.stderr).toBe(0)
       expect(gen.stdout).toContain("https://cdn.test/out.png")
-      expect(gen.stderr).toContain("Built org/result:1.0")
+      expect(gen.stderr).toContain("built org/result:1.0")
 
       const req = lastRequest(recordPath)
       expect(req["prompt"]).toBe("override crane")
@@ -1360,7 +1360,7 @@ describe("cli generate — integration", () => {
 
       // explicit model that exists but supports a different capability → warning + suggestions
       const w = run(["generate", "text2text", "demo/demo-image", "hi"], undefined, env)
-      expect(w.stderr).toContain("warning: 'demo-image' is not marked as supporting text2text")
+      expect(w.stderr).toContain("'demo-image' is not marked as supporting text2text")
       expect(w.stderr).toContain("demo/demo-text")
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -1560,7 +1560,7 @@ describe("cli -f file-driven — integration", () => {
       )
       const login = run(["-f", loginPath], undefined, env)
       expect(login.code).toBe(0)
-      expect(login.stdout).toContain("Login succeeded")
+      expect(login.stderr).toContain("login succeeded")
 
       const setPath = path.join(dir, "set.json")
       writeFileSync(

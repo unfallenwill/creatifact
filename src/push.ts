@@ -10,6 +10,7 @@ import {
   storeDir,
   toCredentials,
 } from "./config"
+import { ok, status } from "./format"
 import { parseRef, readOciLayout } from "./oci"
 
 export { type Credentials, encodeBasicAuth, toCredentials } from "./config"
@@ -316,7 +317,7 @@ export async function runPush(options: PushOptions): Promise<PushResult> {
         throw new Error(`Blob ${desc.digest} not found in layout`)
       }
       await uploadBlob(baseUrl, parsed.repository, desc.digest, blobData, authHeaders)
-      console.log(`Uploaded ${desc.digest} (${desc.size} bytes)`)
+      status(`uploaded ${desc.digest} (${desc.size} bytes)`)
     }
   }
 
@@ -329,6 +330,7 @@ export async function runPush(options: PushOptions): Promise<PushResult> {
     authHeaders,
   )
   console.log(`Pushed ${effectiveRef}`)
+  ok(`pushed ${effectiveRef}`)
   return { digest: layout.manifestDescriptor.digest, tag: effectiveRef }
 }
 

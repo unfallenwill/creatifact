@@ -1,5 +1,6 @@
 import type { CommandResult } from "./execute"
 import { executeCommand } from "./execute"
+import { status } from "./format"
 import { commandRequestFromFields, type Fields } from "./requestFile"
 
 /** One pipeline step: a request-file command plus an optional reference name. */
@@ -269,7 +270,7 @@ export async function runPipeline(
       throw new Error(`pipeline aborted before step ${i + 1}/${steps.length}`)
     }
     const label = step.name ?? `step-${i + 1}`
-    console.error(`[${i + 1}/${steps.length}] ${label} · ${step.command}`)
+    status(`[${i + 1}/${steps.length}] ${label} · ${step.command}`)
 
     const fields = resolvePlaceholders(step.fields, results, i) as Fields
     const request = commandRequestFromFields(step.command, fields)

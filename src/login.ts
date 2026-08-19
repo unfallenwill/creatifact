@@ -10,6 +10,7 @@ import {
   type RegistryAuthEntry,
   saveConfig,
 } from "./config"
+import { ok, status } from "./format"
 import { addGlobalOptions, configOpts, parseArgsWith, resolvePassword } from "./util"
 
 interface RunOpts {
@@ -38,7 +39,7 @@ export async function runLogin(
   const existing = auths[normalized] ?? {}
   auths[normalized] = { ...existing, username, auth: encodeAuth(username, password) }
   saveConfig(config, opts?.configPath)
-  console.log(`Login succeeded (${normalized})`)
+  ok(`login succeeded (${normalized})`)
 }
 
 /** Core logout: drop credentials but keep the entry's insecure flag. Returns false if absent. */
@@ -62,7 +63,7 @@ export async function runLogout(registry: string, opts?: RunOpts): Promise<boole
     delete auths[normalized]
   }
   saveConfig(config, opts?.configPath)
-  console.log(`Removed login credentials for ${normalized}`)
+  status(`removed login credentials for ${normalized}`)
   return true
 }
 

@@ -22,6 +22,7 @@ import {
   resolveRegistryCredentials,
   storeDir,
 } from "./config"
+import { ok, status } from "./format"
 import { getAuthHeaders, toCredentials } from "./push"
 import { addGlobalOptions, ensureOutputDirEmpty, parseArgsWith, resolvePassword } from "./util"
 
@@ -67,7 +68,7 @@ export async function fetchImage(ref: string, opts: ImageFetchOptions): Promise<
       throw new Error(`Blob digest mismatch: expected ${desc.digest}, got ${computed}`)
     }
     blobs.set(desc.digest, blobData)
-    console.log(`Downloaded ${desc.digest} (${desc.size} bytes)`)
+    status(`downloaded ${desc.digest} (${desc.size} bytes)`)
   }
 
   const manifestDigest = `sha256:${createHash("sha256").update(manifestData).digest("hex")}`
@@ -231,6 +232,7 @@ export async function runPull(options: PullOptions): Promise<PullResult> {
     await upsertStoreEntry(outputDir, image.manifestDescriptor, options.ref)
   }
   console.log(`Pulled ${options.ref} → ${outputDir}${explicit ? "" : " (store)"}`)
+  ok(`pulled ${options.ref}`)
   return { outputDir, digest: image.manifestDescriptor.digest }
 }
 

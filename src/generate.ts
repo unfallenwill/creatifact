@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { Command } from "commander"
 
 import { defaultGenProvider, envForConfigPath, loadConfig, storeDir } from "./config"
-import { displayWidth, pc } from "./format"
+import { displayWidth, ok, pc, status, warn } from "./format"
 import {
   buildResultPackage,
   GEN_CONFIG_MEDIA_TYPE,
@@ -855,7 +855,7 @@ async function runListModels(
     return
   }
   if (result.entries.length === 0) {
-    console.error(
+    warn(
       `no verified model supports ${task}${scope !== undefined ? ` on '${scope}'` : ""}; run \`creatifact models\` for the full catalog`,
     )
     return
@@ -945,8 +945,8 @@ async function resolveModelForTask(
     const known = provider.models.find((m) => m.id === model)
     if (known !== undefined && !modelSupportsTask(known, task)) {
       const suggestion = await suggestModelsForTask(task, opts)
-      console.error(
-        `warning: '${model}' is not marked as supporting ${task} in ${provider.id}'s verified list; passing through` +
+      warn(
+        `'${model}' is not marked as supporting ${task} in ${provider.id}'s verified list; passing through` +
           (suggestion === "" ? "" : `\n${suggestion}`),
       )
     }
@@ -963,8 +963,8 @@ async function resolveModelForTask(
   }
   if (picked === undefined) fail("unreachable: pickModelForTask returned nothing")
   if (picked.warned) {
-    console.error(
-      `note: '${picked.model}' is not marked as supporting ${task} in ${provider.id}'s verified list; passing through`,
+    warn(
+      `'${picked.model}' is not marked as supporting ${task} in ${provider.id}'s verified list; passing through`,
     )
   }
   return picked.model
@@ -1049,9 +1049,7 @@ export function printArtifacts(
     }
     if (a.base64 === undefined) return
     if (opts.outputDir === undefined) {
-      console.error(
-        `artifact ${i + 1}: base64 ${a.mimeType ?? "unknown"} (pass --output <dir> to save)`,
-      )
+      warn(`artifact ${i + 1}: base64 ${a.mimeType ?? "unknown"} (pass --output <dir> to save)`)
       return
     }
     mkdirSync(opts.outputDir, { recursive: true })
@@ -1184,9 +1182,7 @@ async function runVideoTask(ctx: ExecCtx): Promise<MediaRunResult | null> {
     timeoutMs,
     signal,
     onStatus: (s) =>
-      console.error(
-        `polling... ${describeStatus(s)} (${Math.round((Date.now() - startedAt) / 1000)}s)`,
-      ),
+      status(`polling... ${describeStatus(s)} (${Math.round((Date.now() - startedAt) / 1000)}s)`),
   }).catch((e: unknown) => {
     if (signal.aborted || e instanceof JobTimeoutError) {
       throw new Error(`${(e as Error).message}; task handle: ${JSON.stringify(handle)}`)
@@ -1283,7 +1279,7 @@ async function runResumeTask(
       timeoutMs,
       signal: controller.signal,
       onStatus: (s) =>
-        console.error(
+        status(
           `polling... ${s.state}${s.state === "running" && s.progress !== undefined ? ` ${s.progress}%` : ""} (${Math.round((Date.now() - startedAt) / 1000)}s)`,
         ),
     }).catch((e: unknown) => {
@@ -1392,7 +1388,7 @@ function printPackagedResult(
     const ext = (a.mimeType && MIME_EXT[a.mimeType]) || "bin"
     console.log(`artifact-${i + 1}.${ext}`)
   })
-  console.error(`Built ${packageRef} → ${packageDir}`)
+  ok(`built ${packageRef} → ${packageDir}`)
 }
 
 export interface GenerateResult {
