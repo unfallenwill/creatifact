@@ -4,6 +4,8 @@ import { join } from "node:path"
 
 import { type Command, CommanderError } from "commander"
 
+import { pc } from "./format"
+
 export async function ensureOutputDirEmpty(outputDir: string): Promise<void> {
   if (existsSync(outputDir)) {
     const entries = await readdir(outputDir)
@@ -81,7 +83,26 @@ export function parseArgsWith<T extends object = Record<string, unknown>>(
   return { options: cmd.opts() as T, positionals: cmd.args }
 }
 
+/**
+ * Wire commander's help formatter into the CLI's TTY-gated color instance:
+ * section titles bold, argument/option/subcommand terms cyan, descriptions
+ * plain. Piped output stays byte-identical plain text — help is the first
+ * thing agents read, so the same color contract as every other surface
+ * applies here too.
+ */
+function styleHelp(cmd: Command): Command {
+  return cmd.configureHelp({
+    styleTitle: (t) => pc.bold(t),
+    styleUsage: (t) => pc.bold(t),
+    styleCommandText: (t) => pc.bold(t),
+    styleArgumentTerm: (t) => pc.cyan(t),
+    styleOptionTerm: (t) => pc.cyan(t),
+    styleSubcommandTerm: (t) => pc.cyan(t),
+  })
+}
+
 export function addGlobalOptions(cmd: Command): Command {
+  styleHelp(cmd)
   return cmd.option(
     "--config-dir <dir>",
     "Use <dir>/config.json instead of ~/.creatifact/config.json (takes precedence over CREATIFACT_CONFIG_DIR)",
