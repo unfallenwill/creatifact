@@ -23,7 +23,11 @@ Enforced by Biome, not Prettier: 2-space indent, double quotes, no semicolons. `
 
 ## File operations
 
-All file operations MUST go through these three tools (no `cat`, `sed`, `tee`, shell redirection, or other write paths):
+All file operations MUST go through these three tools. Forbidden write paths include:
+
+- `cat`, `sed -i`, `tee`, and shell redirection (`>`, `>>`, `<>`)
+- heredocs that mutate files (`python3 - << 'EOF' ...`, `bash << 'EOF'`, `cat << 'EOF' > file`, `node -e` writing files)
+- any scripting language invoked via the shell to read or modify file content (`perl -i`, `awk` writing, inline `node`/`python` file scripts)
 
 1. `read` — read file contents; supports text and images (jpg/png/gif/webp/bmp); large files are read in segments via offset/limit
 2. `edit` — precise text replacement on a file (`edits[].oldText` must match exactly; one call may apply multiple disjoint edits)
@@ -33,7 +37,9 @@ Conventions:
 
 - Prefer `edit` for targeted changes; reserve `write` for new files or complete rewrites.
 - Never rewrite whole files when a surgical `edit` will do — keeps diffs minimal and reviewable.
+- For batch changes, issue one `edit` call with multiple `edits[]` entries (or several `edit` calls) — never route batches through a shell script just because there are many replacements.
 - Listing/searching directories (`ls`, `rg`, `find`) is fine via the shell; it is content *reads and writes* that must use the tools above.
+- Shell is still fine for: running builds/tests (`npm run qa`), git, `grep`-style read-only inspection, and commands whose stdout you merely observe — as long as they do not write or modify files.
 
 ## Tooling conventions
 
