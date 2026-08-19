@@ -580,16 +580,28 @@ export async function resolveProviderForTask(
     const split = splitTargetString(target)
     providerId = split.provider
     model = split.model ?? ""
+  } else if (req.model !== undefined && req.model.includes("/")) {
+    // --model <provider>/<model> shorthand: carries the provider too
+    const split = splitTargetString(req.model)
+    providerId = split.provider
+    model = split.model ?? ""
   } else {
     providerId = defaultGenProvider(loadConfig(opts.configPath)) ?? ""
     if (providerId === "") {
       fail(
         "no <provider> given and no default provider configured; " +
-          "set defaults.gen.provider via `creatifact config set defaults.gen.provider <id>`",
+          "set defaults.gen.provider via `creatifact config set defaults.gen.provider <id>`, " +
+          "or use --model <provider>/<model>",
       )
     }
   }
-  if (req.model !== undefined && req.model !== "") model = req.model
+  if (
+    req.model !== undefined &&
+    req.model !== "" &&
+    !req.model.includes("/")
+  ) {
+    model = req.model
+  }
 
   const provider = await createProvider(providerId, providerOpts(opts))
   if (model === "") {

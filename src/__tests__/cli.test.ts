@@ -1008,6 +1008,33 @@ describe("cli generate — integration", () => {
     }
   })
 
+  it("--model <provider>/<model> shorthand resolves the provider too", () => {
+    const { env, dir, recordPath } = demoEnv()
+    try {
+      const r = run(
+        ["generate", "text2image", "a crane", "--model", "demo/demo-image", "--no-pack"],
+        undefined,
+        env,
+      )
+      expect(r.code).toBe(0)
+      const last = lastRequest(recordPath)
+      expect(last["model"]).toBe("demo-image")
+      expect(r.stderr).not.toContain("no <provider> given")
+
+      // bare --model without provider still needs a default provider
+      const bare = run(
+        ["generate", "text2image", "a crane", "--model", "demo-image", "--no-pack"],
+        undefined,
+        env,
+      )
+      expect(bare.code).toBe(1)
+      expect(bare.stderr).toContain("no <provider> given")
+      expect(bare.stderr).toContain("--model <provider>/<model>")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it("errors on missing credentials for real providers", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "creatifact-empty-"))
     try {

@@ -67,7 +67,7 @@ Every command supports two forms — a subcommand tree and a JSON request file:
 ```bash
 # Form 1: subcommand tree
 creatifact generate text2image zhipu "a crane" --opt size=1024x1024
-creatifact generate image2image demo "paint it" --image cat.png
+creatifact generate image2image "paint it" --model demo/my-model --image cat.png  # provider/model shorthand
 creatifact build -t org/myapp:1.0.0
 
 # Form 2: JSON request file (creatifact -f <file>.json)
