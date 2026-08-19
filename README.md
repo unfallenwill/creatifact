@@ -1,6 +1,20 @@
 # openmmcli
 
-A lightweight CLI tool for building, pushing, and pulling [OCI image layouts](https://github.com/opencontainers/image-spec/blob/main/image-layout.md). No Docker daemon required.
+**An agent-native multimodal creation runtime, powered by portable OCI artifacts.**
+
+openmmcli gives AI agents a composable CLI and JSON interface for generating,
+understanding, and transforming text, images, and video across model providers.
+Creation recipes, assets, results, and provenance can travel as
+[OCI artifacts](https://github.com/opencontainers/image-spec/blob/main/image-layout.md)
+through any OCI-compatible registry. No Docker daemon is required.
+
+Agents handle creative planning and iteration; openmmcli handles task
+execution, provider integration, artifact packaging, and delivery.
+
+- **Agent-native** — CLI commands, JSON request files, pipelines, and structured output
+- **Multimodal** — text, image, video, understanding, transformation, and embeddings
+- **Portable** — move recipes and results through existing OCI registries
+- **Extensible** — built-in model providers plus runtime-loaded provider plugins
 
 ## Install
 
@@ -17,17 +31,35 @@ npx openmmcli --version
 ## Quick Start
 
 ```bash
-# 1. Build an OCI image layout from a build manifest
-openmmcli package build -t org/myapp:1.0.0
+# 1. Give openmmcli a creative task
+openmmcli generate text2image zhipu "a paper crane in the rain" \
+  --tag ghcr.io/acme/crane:v1 \
+  --output ./crane
 
-# 2. Log in to a registry once (credentials are saved to the config file)
-openmmcli auth login localhost:5000
+# 2. Publish the resulting OCI package
+openmmcli auth login ghcr.io
+openmmcli package push ghcr.io/acme/crane:v1 --layout ./crane
 
-# 3. Push to a registry (no more --username/--password on every call)
-openmmcli package push localhost:5000/org/myapp:1.0.0
+# 3. Another agent can pull the package from the same registry
+openmmcli package pull ghcr.io/acme/crane:v1 -o ./pulled-crane
+```
 
-# 4. Pull from a registry
-openmmcli package pull localhost:5000/org/myapp:1.0.0 -o ./pulled-layout
+Agents can invoke the same workflow through a JSON request file, making the
+execution contract explicit and reproducible:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/unfallenwill/openmmcli/main/schemas/openmm-request.schema.json",
+  "command": "generate.text2image",
+  "provider": "zhipu",
+  "prompt": "a paper crane in the rain",
+  "tag": "ghcr.io/acme/crane:v1",
+  "output": "./crane"
+}
+```
+
+```bash
+openmmcli -f request.json
 ```
 
 ## Command forms
