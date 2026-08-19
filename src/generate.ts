@@ -4,7 +4,8 @@ import { join } from "node:path"
 import { Command } from "commander"
 
 import { defaultGenProvider, envForConfigPath, loadConfig, storeDir } from "./config"
-import { displayWidth, ok, pc, status, warn } from "./format"
+import { CliError, usageError } from "./errors"
+import { ok, status, warn } from "./format"
 import {
   buildResultPackage,
   GEN_CONFIG_MEDIA_TYPE,
@@ -14,6 +15,7 @@ import {
   packageFsView,
   parseGenConfigBlob,
 } from "./genPackage"
+import { emitResult } from "./output"
 import {
   type Artifact,
   type Capability,
@@ -39,6 +41,7 @@ import {
   parseArgsWith,
   parseDurationMs,
   parseKvValue,
+  prettyOpts,
   readPasswordFromStdin,
 } from "./util"
 
@@ -73,9 +76,8 @@ export interface GenRequest {
   output?: string
   /** Reference name for the result package (default gen-output:latest). */
   tag?: string
-  /** Skip building a result package; print artifacts only. */
+  /** Skip building a result package; return artifacts only. */
   noPack?: boolean
-  json?: boolean
   /** resume only: inline handle JSON or a file path. */
   handle?: string
 }
@@ -106,7 +108,6 @@ export interface GenerateCommandOptions {
   pack?: boolean
   /** Meta flag: list models supporting the task, then exit. */
   listModels?: boolean
-  json?: boolean
   plainHttp?: boolean
   configDir?: string
 }
@@ -137,9 +138,8 @@ export function addGenerateOptions(cmd: Command): Command {
     .option("--tag <repo:tag>", "Reference name for the result package (default gen-output:latest)")
     .option("--provider <id>", "Provider id (alternative to the positional provider)")
     .option("--model <id>", "Model id (requires --provider or a provider positional)")
-    .option("--no-wait", "Submit a video task and print the handle without polling")
-    .option("--no-pack", "Print artifacts only; do not build a result package")
-    .option("--json", "Print structured JSON to stdout")
+    .option("--no-wait", "Submit a video task and return the handle without polling")
+    .option("--no-pack", "Return artifacts only; do not build a result package")
     .option("--plain-http", "Use HTTP for the registry (gen packages)")
 }
 
@@ -204,7 +204,7 @@ const TASK_FLAGS: TaskFlagSpec[] = [
   },
   {
     when: (s) => s.optional.noWait === true,
-    add: (cmd) => cmd.option("--no-wait", "Submit and print the task handle, then exit"),
+    add: (cmd) => cmd.option("--no-wait", "Submit and return the task handle, then exit"),
   },
   {
     when: (s) => s.optional.timeout === true,
@@ -226,7 +226,7 @@ const TASK_FLAGS: TaskFlagSpec[] = [
         "Result OCI layout directory (default ~/.creatifact/layouts/<repo>)",
       )
       cmd.option("--tag <repo:tag>", "Reference name for the result package")
-      cmd.option("--no-pack", "Print artifacts only; do not build a result package")
+      cmd.option("--no-pack", "Return artifacts only; do not build a result package")
     },
   },
   {
@@ -244,7 +244,6 @@ export function addTaskOptions(cmd: Command, task: GenTaskName): Command {
   for (const flag of TASK_FLAGS) {
     if (flag.when(spec, task)) flag.add(cmd, task)
   }
-  cmd.option("--json", "Print structured JSON to stdout")
   return cmd
 }
 
@@ -299,7 +298,7 @@ function parseOptRepeats(raw: string[]): Record<string, unknown> {
     const eq = item.indexOf("=")
     const key = eq === -1 ? "" : item.slice(0, eq)
     if (eq === -1 || key === "") {
-      throw new Error(`invalid --opt '${item}' (expected k=v)`)
+      throw usageError(`invalid --opt '${item}' (expected k=v)`)
     }
     out[key] = parseKvValue(item.slice(eq + 1))
   }
@@ -446,7 +445,6 @@ function collectFlagFields(
   if (Object.keys(options).length > 0) overlay.options = options
   if (o.wait === false) overlay.noWait = true
   if (o.pack === false) overlay.noPack = true
-  if (o.json === true) overlay.json = true
 }
 
 function collectScalarFlagFields(o: GenerateCommandOptions, overlay: RequestOverlay): void {
@@ -510,7 +508,7 @@ export function parseGenerateArgs(
 // Validation
 
 function fail(message: string): never {
-  throw new Error(message)
+  throw usageError(message)
 }
 
 function hasValue(v: string | undefined): boolean {
@@ -707,22 +705,6 @@ export function pickModelForTask(provider: Provider, task: GenTaskName): PickedM
   return { model: fallback, warned: true }
 }
 
-/** A copy-paste call template for one provider/model on a task, from its spec. */
-function callTemplateForTask(task: GenTaskName, target: string): string {
-  const spec = TASKS[task]
-  const parts = ["creatifact generate", task, target]
-  if (spec.payload === "inputs") {
-    parts.push("<text...>")
-  } else if (spec.required.prompt || spec.optional.prompt) {
-    parts.push('"<prompt>"')
-  }
-  if (spec.required.inputs === true && task !== "embed") parts.push("--input <file>")
-  if (spec.required.images !== undefined) parts.push("--image <file>")
-  if (spec.required.firstFrame === true) parts.push("--first-frame <img>")
-  if (spec.required.lastFrame === true) parts.push("--last-frame <img>")
-  return parts.join(" ")
-}
-
 export interface ListModelsResult {
   provider: string
   model: string
@@ -795,52 +777,13 @@ export async function listModelsForTask(
   return { providers: ids, entries, ...(fallback === undefined ? {} : { fallback }) }
 }
 
-/**
- * Human-readable block for --list-models. The reference column is aligned
- * like the `models` catalog (whole-list column widths), notes clamp to the
- * terminal width, and each call template indents under its reference so the
- * block scans as one table.
- */
-function printListModelsHuman(
-  task: GenTaskName,
-  result: { entries: ListModelsResult[]; fallback?: ListModelsResult },
-): void {
-  // Model lines use the full <provider>/<model-id> reference — the same
-  // syntax the CLI accepts positionally — so the listing needs zero
-  // inference about which part is the provider and which is the model id.
-  // The default model leads its provider group; on a TTY it is the only
-  // green line, so no badge or marker is needed in plain text either.
-  console.log(pc.bold(`models supporting ${task}:`))
-  const termWidth = process.stdout.columns ?? 100
-  const refs = result.entries.map((e) => `${e.provider}/${e.model}`)
-  const refWidth = Math.max(...refs.map(displayWidth), 0)
-  const noteBudget = Math.max(20, termWidth - refWidth - 6)
-  for (const [i, e] of result.entries.entries()) {
-    const ref = refs[i] ?? ""
-    const pad = " ".repeat(refWidth - displayWidth(ref))
-    const head = e.default ? pc.green(pc.bold(ref)) : pc.bold(ref)
-    const note =
-      e.note !== undefined
-        ? pc.dim(`  ${e.note.length > noteBudget ? `${e.note.slice(0, noteBudget - 1)}…` : e.note}`)
-        : ""
-    console.log(`  ${head}${pad}${note}`)
-    console.log(`  ${pc.dim(`${" ".repeat(refWidth + 2)}${callTemplateForTask(task, ref)}`)}`)
-  }
-  const f = result.fallback
-  if (f !== undefined) {
-    console.log(
-      `  note: ${f.provider}/${f.model} is the declared default but does not pass the ${task} filter; it runs with a warning`,
-    )
-  }
-}
-
-/** Print the --list-models output (human) or dump it (--json). */
+/** The --list-models payload: supported models plus the fallback default. */
 async function runListModels(
   task: GenTaskName,
   positionals: string[],
   options: GenerateCommandOptions,
   opts: { configPath?: string | undefined },
-): Promise<void> {
+): Promise<GenerateResult> {
   const ctx = providerContext(opts)
   const { target } = splitProviderPositional(positionals, ctx)
   const scope =
@@ -850,17 +793,18 @@ async function runListModels(
     scope,
     opts.configPath === undefined ? {} : { configPath: opts.configPath },
   )
-  if (options.json) {
-    console.log(JSON.stringify(result, null, 2))
-    return
-  }
   if (result.entries.length === 0) {
     warn(
       `no verified model supports ${task}${scope !== undefined ? ` on '${scope}'` : ""}; run \`creatifact models\` for the full catalog`,
     )
-    return
   }
-  printListModelsHuman(task, result)
+  return {
+    task,
+    models: {
+      entries: result.entries,
+      ...(result.fallback === undefined ? {} : { fallback: result.fallback }),
+    },
+  }
 }
 
 /** Cross-provider suggestion block for errors/warnings; "" when nothing helps. */
@@ -1015,7 +959,7 @@ const URL_RE = /^(https?:|data:)/
 export function toFileRef(value: string, flag: string): FileRef {
   if (URL_RE.test(value)) return { url: value }
   if (!existsSync(value)) {
-    throw new Error(`${flag} file not found: ${value} (or pass an http(s)/data URL)`)
+    throw usageError(`${flag} file not found: ${value} (or pass an http(s)/data URL)`)
   }
   return { localPath: value }
 }
@@ -1038,29 +982,21 @@ const MIME_EXT: Record<string, string> = {
   "video/mp4": "mp4",
 }
 
-export function printArtifacts(
-  artifacts: Artifact[],
-  opts: { outputDir?: string | undefined },
-): void {
+/** Write base64-only artifacts into `outputDir` (--output); returns the file paths. */
+function saveArtifacts(artifacts: Artifact[], outputDir: string): string[] {
+  mkdirSync(outputDir, { recursive: true })
+  const saved: string[] = []
   artifacts.forEach((a, i) => {
-    if (a.url !== undefined) {
-      console.log(a.url)
-      return
-    }
-    if (a.base64 === undefined) return
-    if (opts.outputDir === undefined) {
-      warn(`artifact ${i + 1}: base64 ${a.mimeType ?? "unknown"} (pass --output <dir> to save)`)
-      return
-    }
-    mkdirSync(opts.outputDir, { recursive: true })
+    if (a.url !== undefined || a.base64 === undefined) return
     const ext = (a.mimeType && MIME_EXT[a.mimeType]) || "bin"
-    const file = `${opts.outputDir}/artifact-${i + 1}.${ext}`
+    const file = `${outputDir}/artifact-${i + 1}.${ext}`
     writeFileSync(file, Buffer.from(a.base64, "base64"))
-    console.log(file)
+    saved.push(file)
   })
+  return saved
 }
 
-async function runTextTask(ctx: ExecCtx): Promise<void> {
+async function runTextTask(ctx: ExecCtx): Promise<GenerateResult> {
   const { req, provider, model, signal } = ctx
   const api = provider.textGenerate
   if (api === undefined) fail(`provider '${provider.id}' implements no text generation`)
@@ -1073,20 +1009,17 @@ async function runTextTask(ctx: ExecCtx): Promise<void> {
     },
     { signal },
   )
-  if (req.json) {
-    console.log(
-      JSON.stringify(
-        { provider: provider.id, model, capability: "text.generate", ...result },
-        null,
-        2,
-      ),
-    )
-  } else {
-    console.log(result.text)
+  return {
+    task: req.task,
+    provider: provider.id,
+    model,
+    capability: "text.generate",
+    text: result.text,
+    ...(result.usage === undefined ? {} : { usage: result.usage }),
   }
 }
 
-async function runUnderstandTask(ctx: ExecCtx): Promise<void> {
+async function runUnderstandTask(ctx: ExecCtx): Promise<GenerateResult> {
   const { req, provider, model, signal } = ctx
   const api = req.task === "image2text" ? provider.imageUnderstand : provider.videoUnderstand
   const kind = req.task === "image2text" ? "image" : "video"
@@ -1103,20 +1036,17 @@ async function runUnderstandTask(ctx: ExecCtx): Promise<void> {
     },
     { signal },
   )
-  if (req.json) {
-    console.log(
-      JSON.stringify(
-        { provider: provider.id, model, capability: `${kind}.understand`, ...result },
-        null,
-        2,
-      ),
-    )
-  } else {
-    console.log(result.text)
+  return {
+    task: req.task,
+    provider: provider.id,
+    model,
+    capability: `${kind}.understand`,
+    text: result.text,
+    ...(result.usage === undefined ? {} : { usage: result.usage }),
   }
 }
 
-async function runEmbedTask(ctx: ExecCtx): Promise<void> {
+async function runEmbedTask(ctx: ExecCtx): Promise<GenerateResult> {
   const { req, provider, model, signal } = ctx
   const api = provider.embed
   if (api === undefined) fail(`provider '${provider.id}' implements no embeddings`)
@@ -1124,17 +1054,19 @@ async function runEmbedTask(ctx: ExecCtx): Promise<void> {
     { model, inputs: req.inputs ?? [], options: req.options ?? {} },
     { signal },
   )
-  if (req.json) {
-    console.log(
-      JSON.stringify({ provider: provider.id, model, capability: "embed", ...result }, null, 2),
-    )
-  } else {
-    const dims = result.dimensions ?? result.vectors[0]?.length ?? "?"
-    console.log(`Generated ${result.vectors.length} vector(s) of ${dims} dimensions`)
+  return {
+    task: req.task,
+    provider: provider.id,
+    model,
+    capability: "embed",
+    vectors: result.vectors,
+    ...(result.dimensions === undefined ? {} : { dimensions: result.dimensions }),
   }
 }
 
-async function runImageTask(ctx: ExecCtx): Promise<MediaRunResult> {
+async function runImageTask(
+  ctx: ExecCtx,
+): Promise<{ artifacts: Artifact[]; usage: Usage | undefined }> {
   const { req, provider, model, signal } = ctx
   const api = provider.imageGenerate
   if (api === undefined) fail(`provider '${provider.id}' implements no image generation`)
@@ -1151,7 +1083,9 @@ async function runImageTask(ctx: ExecCtx): Promise<MediaRunResult> {
   return { artifacts: result.artifacts, usage: result.usage }
 }
 
-async function runVideoTask(ctx: ExecCtx): Promise<MediaRunResult | null> {
+async function runVideoTask(
+  ctx: ExecCtx,
+): Promise<{ artifacts: Artifact[]; usage: Usage | undefined } | { handle: JobHandle }> {
   const { req, provider, model, signal } = ctx
   const api = provider.videoGenerate
   if (api === undefined) fail(`provider '${provider.id}' implements no video generation`)
@@ -1169,8 +1103,7 @@ async function runVideoTask(ctx: ExecCtx): Promise<MediaRunResult | null> {
     { signal },
   )
   if (req.noWait === true) {
-    console.log(JSON.stringify(handle))
-    return null
+    return { handle }
   }
 
   const timeoutMs = req.timeout === undefined ? 600_000 : parseDurationMs(req.timeout, "--timeout")
@@ -1185,7 +1118,13 @@ async function runVideoTask(ctx: ExecCtx): Promise<MediaRunResult | null> {
       status(`polling... ${describeStatus(s)} (${Math.round((Date.now() - startedAt) / 1000)}s)`),
   }).catch((e: unknown) => {
     if (signal.aborted || e instanceof JobTimeoutError) {
-      throw new Error(`${(e as Error).message}; task handle: ${JSON.stringify(handle)}`)
+      throw new CliError(
+        "E_TIMEOUT",
+        `${(e as Error).message}; task handle: ${JSON.stringify(handle)}`,
+        {
+          handle,
+        },
+      )
     }
     throw e
   })
@@ -1200,18 +1139,19 @@ async function runVideoTask(ctx: ExecCtx): Promise<MediaRunResult | null> {
 }
 
 /** Run a task; media tasks return their artifacts/usage for result packaging. */
-async function executeTask(ctx: ExecCtx): Promise<MediaRunResult | null> {
+async function executeTask(
+  ctx: ExecCtx,
+): Promise<
+  GenerateResult | { artifacts: Artifact[]; usage: Usage | undefined } | { handle: JobHandle }
+> {
   switch (ctx.req.task) {
     case "text2text":
-      await runTextTask(ctx)
-      return null
+      return runTextTask(ctx)
     case "image2text":
     case "video2text":
-      await runUnderstandTask(ctx)
-      return null
+      return runUnderstandTask(ctx)
     case "embed":
-      await runEmbedTask(ctx)
-      return null
+      return runEmbedTask(ctx)
     case "text2image":
     case "image2image":
       return runImageTask(ctx)
@@ -1284,7 +1224,13 @@ async function runResumeTask(
         ),
     }).catch((e: unknown) => {
       if (controller.signal.aborted || e instanceof JobTimeoutError) {
-        throw new Error(`${(e as Error).message}; task handle: ${JSON.stringify(handle)}`)
+        throw new CliError(
+          "E_TIMEOUT",
+          `${(e as Error).message}; task handle: ${JSON.stringify(handle)}`,
+          {
+            handle,
+          },
+        )
       }
       throw e
     })
@@ -1300,20 +1246,15 @@ async function runResumeTask(
       final.error.raw,
     )
   }
-  if (req.json) {
-    console.log(
-      JSON.stringify(
-        { provider: provider.id, artifacts: final.artifacts, usage: final.usage },
-        null,
-        2,
-      ),
-    )
-  } else {
-    printArtifacts(final.artifacts, { outputDir: req.output })
-  }
+  const savedFiles =
+    req.output === undefined ? undefined : saveArtifacts(final.artifacts, req.output)
   return {
+    task: "resume",
+    provider: provider.id,
     artifacts: final.artifacts,
+    ...(final.usage === undefined ? {} : { usage: final.usage }),
     ...(req.output === undefined ? {} : { outputDir: req.output }),
+    ...(savedFiles === undefined || savedFiles.length === 0 ? {} : { savedFiles }),
   }
 }
 
@@ -1333,69 +1274,55 @@ export function effectiveGenSpec(req: GenRequest, providerId: string, model: str
   return spec
 }
 
-function printResult(req: GenRequest, providerId: string, result: MediaRunResult): void {
+function mediaResultFields(
+  req: GenRequest,
+  result: { artifacts: Artifact[]; usage: Usage | undefined },
+): { capability: Capability; artifacts: Artifact[]; usage?: Usage } {
   const capability: Capability =
     req.task === "text2image" || req.task === "image2image" ? "image.generate" : "video.generate"
-  if (req.json) {
-    console.log(
-      JSON.stringify(
-        {
-          provider: providerId,
-          capability,
-          artifacts: result.artifacts,
-          usage: result.usage,
-        },
-        null,
-        2,
-      ),
-    )
-    return
+  return {
+    capability,
+    artifacts: result.artifacts,
+    ...(result.usage === undefined ? {} : { usage: result.usage }),
   }
-  printArtifacts(result.artifacts, { outputDir: undefined })
 }
 
-function printPackagedResult(
+function mediaResult(
   req: GenRequest,
   providerId: string,
-  result: MediaRunResult,
-  packageRef: string,
-  packageDir: string,
-): void {
-  if (req.json) {
-    const capability: Capability =
-      req.task === "text2image" || req.task === "image2image" ? "image.generate" : "video.generate"
-    console.log(
-      JSON.stringify(
-        {
-          provider: providerId,
-          capability,
-          artifacts: result.artifacts,
-          usage: result.usage,
-          package: { ref: packageRef, dir: packageDir },
-        },
-        null,
-        2,
-      ),
-    )
-    return
+  model: string,
+  result: { artifacts: Artifact[]; usage: Usage | undefined },
+): GenerateResult {
+  return {
+    task: req.task,
+    provider: providerId,
+    model,
+    ...mediaResultFields(req, result),
   }
-  result.artifacts.forEach((a, i) => {
-    if (a.url !== undefined) {
-      console.log(a.url)
-      return
-    }
-    if (a.base64 === undefined) return
-    const ext = (a.mimeType && MIME_EXT[a.mimeType]) || "bin"
-    console.log(`artifact-${i + 1}.${ext}`)
-  })
-  ok(`built ${packageRef} → ${packageDir}`)
 }
 
+/** Everything a generate command can produce; the envelope's `data`. */
 export interface GenerateResult {
+  task: GenTaskName
+  provider?: string
+  model?: string
+  capability?: Capability
+  /** text2text / image2text / video2text output. */
+  text?: string
+  /** embed output. */
+  vectors?: number[][]
+  dimensions?: number
+  /** --no-wait submit handle. */
+  handle?: JobHandle
   artifacts?: Artifact[]
+  usage?: Usage
+  /** resume --output: files written from base64-only artifacts. */
+  savedFiles?: string[]
   outputDir?: string
   tag?: string
   digest?: string
+  /** --list-models payload. */
+  models?: { entries: ListModelsResult[]; fallback?: ListModelsResult }
 }
 
 /** Execute a validated request: run the task and package media results. */
@@ -1416,11 +1343,15 @@ async function executeAndPackage(opts: {
   try {
     const ctx: ExecCtx = { req: runReq, provider, model, signal: controller.signal }
     const result = await executeTask(ctx)
-    if (result === null) return {}
+    // Text/understand/embed already carry a complete result.
+    if ("task" in result) return result
+    // --no-wait submit: the handle is the payload.
+    if ("handle" in result) {
+      return { task: req.task, provider: provider.id, model, handle: result.handle }
+    }
 
     if (req.noPack === true || !TASKS[req.task].media) {
-      printResult(req, provider.id, result)
-      return { artifacts: result.artifacts }
+      return mediaResult(req, provider.id, model, result)
     }
 
     const resultTag = req.tag ?? "gen-output:latest"
@@ -1435,8 +1366,13 @@ async function executeAndPackage(opts: {
       spec: effectiveGenSpec(req, provider.id, model),
       usage: result.usage,
     })
-    printPackagedResult(req, provider.id, result, resultTag, outputDir)
-    return { artifacts: result.artifacts, outputDir, tag: resultTag, digest: pkg.digest }
+    ok(`built ${resultTag} → ${outputDir}`)
+    return {
+      ...mediaResult(req, provider.id, model, result),
+      outputDir,
+      tag: resultTag,
+      digest: pkg.digest,
+    }
   } finally {
     process.off("SIGINT", onSignal)
     process.off("SIGTERM", onSignal)
@@ -1646,11 +1582,13 @@ export function buildGenerateCommand(): Command {
       const args = command.args
       const opts = configOpts(command, options.configDir)
       if (options.listModels === true) {
-        await runListModels(task, args, options, opts)
+        const result = await runListModels(task, args, options, opts)
+        emitResult("generate", result, prettyOpts(command))
         return
       }
       const overlay = overlayFromParsed(task, args, options, providerContext(opts), {})
-      await runGenerateRequest(mergeRequest({ task }, overlay), opts)
+      const result = await runGenerateRequest(mergeRequest({ task }, overlay), opts)
+      emitResult("generate", result, prettyOpts(command))
     })
   }
 
@@ -1668,12 +1606,13 @@ export function buildGenerateCommand(): Command {
         buildRefTaskCommand(),
         args.slice(1),
       )
-      await runGeneratePackage(
+      const result = await runGeneratePackage(
         head,
         positionals,
         taskOpts,
         configOpts(command, taskOpts.configDir, options.configDir),
       )
+      emitResult("generate", result, prettyOpts(command))
       return
     }
     fail(`unknown generate task '${head}' (expected ${TASK_LIST}, or a gen package ref)`)

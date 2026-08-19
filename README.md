@@ -16,6 +16,49 @@ execution, provider integration, artifact packaging, and delivery.
 - **Portable** — move recipes and results through existing OCI registries
 - **Extensible** — built-in model providers plus runtime-loaded provider plugins
 
+## Output contract
+
+**Every command prints exactly one JSON document to stdout** — the envelope —
+regardless of terminal or pipe. Progress and warnings go to stderr; a failing
+command prints its error envelope as the **last non-empty line of stderr** and
+exits non-zero.
+
+Success (compact by default):
+
+```json
+{"ok":true,"kind":"generate","data":{"task":"text2image","provider":"zhipu","model":"cogview-4","capability":"image.generate","artifacts":[{"url":"https://..."}],"usage":{},"tag":"ghcr.io/acme/crane:v1","outputDir":"...","digest":"sha256:..."}}
+```
+
+Failure:
+
+```json
+{"ok":false,"kind":"generate","error":{"code":"E_PROVIDER","message":"...","details":{"category":"quota","status":429}}}
+```
+
+- `kind` is the command: `build` · `push` · `pull` · `generate` · `login` ·
+  `logout` · `models` · `config` · `package.list` · `package.rm` · `pipeline`
+  (a `-f` steps file). Parse-time errors (unknown command/option) omit `kind`.
+- `--pretty` (global flag) switches stdout to indented JSON, colorized on
+  interactive terminals; piped `--pretty` stays byte-identical plain JSON.
+- `--help` / `--version` / bare invocation stay human text (meta output).
+
+Error codes and exit statuses:
+
+| code | exit | meaning |
+|---|---|---|
+| `E_USAGE` | 2 | bad arguments, unknown command/option/task, invalid request-file fields, missing input files |
+| `E_CONFIG` | 3 | config read/write/validation, unknown configured provider key |
+| `E_AUTH` | 4 | missing/invalid credentials, not logged in |
+| `E_NETWORK` | 5 | fetch/connection failures |
+| `E_PROVIDER` | 6 | provider API errors (`details.category`/`status` when known) |
+| `E_IO` | 7 | filesystem errors (`details.errno`) |
+| `E_TIMEOUT` | 8 | polling timeouts (`details.handle` carries the resume handle) |
+| `E_INTERNAL` | 1 | anything unclassified — a bug |
+
+> **Breaking change (v0.1.3):** all output is JSON now; the legacy `--json`
+> flags (generate tasks, `models`, request-file `json` fields) were removed.
+> Scripts that parsed human text output or `--json` must switch to the envelope.
+
 ## Install
 
 ```bash
@@ -121,9 +164,10 @@ Referenceable fields per command: `build` → `tag`/`digest`/`outputDir`,
 string like `"${gen.tag}"` keeps the referenced value; references inside a
 larger string interpolate. `steps` and `command` are mutually exclusive; CLI
 flags after the file are not supported in pipeline mode; `generate` steps may
-not use `noWait` or `json`. Media steps without an explicit `output` write to
-`oci-layout-step-<n>` so they never collide inside one pipeline. Progress
-lines go to stderr; each command's own output is unchanged.
+not use `noWait`. Media steps without an explicit `output` write to the shared
+store under their own tag. A pipeline run returns
+`{"ok":true,"kind":"pipeline","data":{"steps":[{name?,command,kind,data}...]}}`
+— every step's full result. Progress lines go to stderr.
 
 ## Commands
 
@@ -183,7 +227,7 @@ the provider:
 
 ```
 $ creatifact generate text2video demo x --first-frame a.png
-error: text2video does not take --first-frame; use `generate image2video --image <img>`
+{"ok":false,"error":{"code":"E_USAGE","message":"text2video does not take --first-frame; use `generate image2video --image <img>`"}}
 ```
 
 `--opt k=v` values are JSON-parsed when valid (`5` → 5, `true` → true), else
@@ -246,8 +290,11 @@ creatifact generate example.com/xxxxxx:v1.0 "a red crane" --tag org/myresult:1.0
 # → store tag org/myresult:1.0 (index.json + blobs + a config blob with provenance)
 ```
 
-Pass `--no-pack` to print artifacts without building a result package.
-Non-media tasks (text/understand/embed) print to stdout.
+Pass `--no-pack` to return artifacts without building a result package.
+Non-media tasks (text/understand/embed) return their payload (`data.text` /
+`data.vectors`) in the envelope. `generate ... --no-wait` returns
+`data.handle`; `generate resume <handle>` returns `data.artifacts` (+ `savedFiles`
+with `--output`).
 
 ### `models`
 
@@ -258,13 +305,17 @@ creatifact models
 
 # List a provider's verified models with the tasks they support (★ = default)
 creatifact models zhipu
-creatifact models zhipu --json   # each model carries a derived "tasks" array
 
 # Discover models for one task right where you invoke it
 creatifact generate image2text --list-models
 creatifact generate text2video zhipu --list-models   # scoped to a provider
-creatifact generate image2text --list-models --json
 ```
+
+`models` always returns JSON: `creatifact models` →
+`{"providers":[{provider, defaults, models:[{id, tasks, ...}]}]}` (unavailable
+providers carry an `error` field); `creatifact models <id>` → the single
+provider's catalog with per-model derived `tasks`. `--list-models` returns
+`data.models.entries` with a `default` flag per model.
 
 Model discovery never requires API keys (registries are static; credentials
 are only consumed when a task actually runs). Model-selection errors inline
@@ -387,9 +438,7 @@ List tags in the shared store (like `docker image ls`):
 
 ```bash
 $ creatifact package ls
-REF                DIGEST             SIZE  KIND
-gen-output:latest  b196744b7944       363B  gen
-team/app-a:1       0d0e0f1a2b3c       392B  image
+{"ok":true,"kind":"package.list","data":{"entries":[{"ref":"gen-output:latest","digest":"sha256:b196...","size":363,"kind":"gen"}]}}
 ```
 
 `gen` marks generation result packages; `image` marks regular image layouts.
@@ -399,8 +448,7 @@ last reference deletes the underlying blobs (docker rmi semantics):
 
 ```bash
 $ creatifact package rm gen-output:latest
-Untagged: gen-output:latest
-Deleted: sha256:3f2a...   # only when no other tag references them
+{"ok":true,"kind":"package.rm","data":{"untagged":["gen-output:latest"],"deletedBlobs":["sha256:3f2a..."]}}
 ```
 
 ### `auth login` / `auth logout`
@@ -438,6 +486,11 @@ Actions:
   set <key> <value>     Set a value (value parsed as JSON if valid, else string)
   reset                 Delete the config file
 ```
+
+Each action returns its payload in the envelope: `config path` →
+`data.path`, `config get` → `data.value` (secret keys come back as `"***"`
+with `data.secret: true`), `config set` → `data.value`, `config reset` →
+`data.removed`.
 
 ## Configuration
 

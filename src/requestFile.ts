@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs"
 import type { ParsedArgs as BuildRequest } from "./build"
+import { usageError } from "./errors"
 import type { CommandRequest } from "./execute"
 import type { GenRequest, GenTaskName } from "./generate"
 import type { ParsedLoginArgs } from "./login"
@@ -12,7 +13,7 @@ export type Fields = Record<string, unknown>
 
 export function asString(value: unknown, field: string): string {
   if (typeof value !== "string" || value === "") {
-    throw new Error(`field '${field}' must be a non-empty string`)
+    throw usageError(`field '${field}' must be a non-empty string`)
   }
   return value
 }
@@ -24,7 +25,7 @@ export function asOptionalString(value: unknown, field: string): string | undefi
 
 export function asBool(value: unknown, field: string): boolean {
   if (typeof value !== "boolean") {
-    throw new Error(`field '${field}' must be a boolean`)
+    throw usageError(`field '${field}' must be a boolean`)
   }
   return value
 }
@@ -36,7 +37,7 @@ export function asOptionalBool(value: unknown, field: string): boolean | undefin
 
 export function asRecord(value: unknown, field: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error(`field '${field}' must be an object`)
+    throw usageError(`field '${field}' must be an object`)
   }
   return value as Record<string, unknown>
 }
@@ -46,7 +47,7 @@ function asStringArray(value: unknown, field: string): string[] {
   if (Array.isArray(value) && value.every((v) => typeof v === "string" && v !== "")) {
     return value as string[]
   }
-  throw new Error(`field '${field}' must be a string or an array of non-empty strings`)
+  throw usageError(`field '${field}' must be a string or an array of non-empty strings`)
 }
 
 function asOptionalStringArray(value: unknown, field: string): string[] | undefined {
@@ -60,13 +61,13 @@ function durationArg(value: unknown, field: string): string {
   if (typeof value === "number" && Number.isFinite(value) && value > 0) {
     return value % 1000 === 0 ? `${Math.round(value / 1000)}s` : `${Math.round(value)}ms`
   }
-  throw new Error(`field '${field}' must be a duration string (e.g. "5m") or milliseconds`)
+  throw usageError(`field '${field}' must be a duration string (e.g. "5m") or milliseconds`)
 }
 
 export function rejectUnknown(fields: Fields, allowed: ReadonlySet<string>, command: string): void {
   for (const key of Object.keys(fields)) {
     if (!allowed.has(key)) {
-      throw new Error(
+      throw usageError(
         `unknown field '${key}' for command '${command}' (allowed: ${[...allowed].sort().join(", ")})`,
       )
     }
@@ -98,7 +99,7 @@ function readGenerateListFields(fields: Fields, req: GenRequest): void {
 }
 
 function readGenerateFlagFields(fields: Fields, req: GenRequest): void {
-  for (const field of ["noWait", "noPack", "json"] as const) {
+  for (const field of ["noWait", "noPack"] as const) {
     const value = asOptionalBool(fields[field], field)
     if (value !== undefined) req[field] = value
   }
@@ -200,30 +201,30 @@ export function readRequestFile(
   try {
     raw = readFileSync(file, "utf8")
   } catch (e) {
-    throw new Error(`cannot read request file '${file}': ${(e as Error).message}`)
+    throw usageError(`cannot read request file '${file}': ${(e as Error).message}`)
   }
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
   } catch (e) {
-    throw new Error(`'${file}' is not valid JSON: ${(e as Error).message}`)
+    throw usageError(`'${file}' is not valid JSON: ${(e as Error).message}`)
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error(`'${file}' must contain a JSON object`)
+    throw usageError(`'${file}' must contain a JSON object`)
   }
   const root = { ...(parsed as Fields) }
   delete root["$schema"]
 
   if (root["steps"] !== undefined) {
     if (root["command"] !== undefined) {
-      throw new Error(`'${file}' cannot have both 'command' and 'steps'`)
+      throw usageError(`'${file}' cannot have both 'command' and 'steps'`)
     }
     if (!Array.isArray(root["steps"])) {
-      throw new Error(`'steps' in '${file}' must be an array`)
+      throw usageError(`'steps' in '${file}' must be an array`)
     }
     const steps: PipelineStep[] = root["steps"].map((raw, i) => {
       if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-        throw new Error(`steps[${i}] in '${file}' must be an object`)
+        throw usageError(`steps[${i}] in '${file}' must be an object`)
       }
       const entry = { ...(raw as Fields) }
       const command = asString(entry["command"], `steps[${i}].command`)
@@ -249,7 +250,7 @@ export function commandRequestFromFields(command: string, fields: Fields): Comma
   if (command.startsWith("generate.")) {
     const task = command.slice("generate.".length) as GenTaskName
     if (TASKS[task] === undefined) {
-      throw new Error(`unknown generate task '${task}' in command '${command}'`)
+      throw usageError(`unknown generate task '${task}' in command '${command}'`)
     }
     return { kind: "generate", req: generateRequest(task, fields) }
   }
@@ -280,22 +281,19 @@ export function commandRequestFromFields(command: string, fields: Fields): Comma
       rejectUnknown(fields, new Set(["key", "value"]), command)
       const key = asString(fields["key"], "key")
       if (fields["value"] === undefined) {
-        throw new Error("command 'config.set' requires field 'value'")
+        throw usageError("command 'config.set' requires field 'value'")
       }
       return { kind: "config", action: "set", rest: [key, JSON.stringify(fields["value"])] }
     }
     case "models": {
-      rejectUnknown(fields, new Set(["provider", "json"]), command)
+      rejectUnknown(fields, new Set(["provider"]), command)
       return {
         kind: "models",
-        req: {
-          provider: asOptionalString(fields["provider"], "provider"),
-          json: asOptionalBool(fields["json"], "json") === true,
-        },
+        req: { provider: asOptionalString(fields["provider"], "provider") },
       }
     }
     default:
-      throw new Error(
+      throw usageError(
         `unknown command '${command}' (expected generate.*, build, push, pull, auth.*, config.*, or models)`,
       )
   }

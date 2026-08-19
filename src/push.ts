@@ -10,6 +10,7 @@ import {
   storeDir,
   toCredentials,
 } from "./config"
+import { usageError } from "./errors"
 import { ok, status } from "./format"
 import { parseRef, readOciLayout } from "./oci"
 
@@ -273,10 +274,12 @@ export async function runPush(options: PushOptions): Promise<PushResult> {
     options.layout ??
     (options.ref !== undefined ? storeDir(envForConfigPath(options.configPath)) : undefined)
   if (layoutDir === undefined) {
-    throw new Error("push requires a <ref> (to locate it in ~/.creatifact/store) or --layout <dir>")
+    throw usageError(
+      "push requires a <ref> (to locate it in ~/.creatifact/store) or --layout <dir>",
+    )
   }
   if (!existsSync(layoutDir)) {
-    throw new Error(
+    throw usageError(
       `no image layout at '${layoutDir}'; build or pull it first, or pass --layout <dir>`,
     )
   }

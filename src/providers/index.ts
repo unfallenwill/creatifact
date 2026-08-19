@@ -1,4 +1,5 @@
 import { type CreatifactConfig, loadConfig } from "../config"
+import { CliError } from "../errors"
 import { type ArkProviderConfig, createArkProvider } from "./ark"
 import { expandEnvRefs } from "./core/modelRegistry"
 import type { Env, Provider } from "./core/types"
@@ -198,7 +199,7 @@ export async function createProvider(
   }
   if (!builtin) {
     const available = [...new Set([...Object.keys(FACTORIES), ...configuredPluginIds(config)])]
-    throw new Error(`unknown provider '${id}' (available: ${available.join(", ")})`)
+    throw new CliError("E_USAGE", `unknown provider '${id}' (available: ${available.join(", ")})`)
   }
   return builtin(expanded, env)
 }

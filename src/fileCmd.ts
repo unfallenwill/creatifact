@@ -1,5 +1,6 @@
 import { defaultGenProvider, loadConfig } from "./config"
-import { executeCommand } from "./execute"
+import { usageError } from "./errors"
+import { type CommandResult, executeCommand, resultData } from "./execute"
 import {
   type GenerateResult,
   type GenTaskName,
@@ -16,6 +17,14 @@ import {
   generateRequest,
   readRequestFile,
 } from "./requestFile"
+
+/** A pipeline summary: per-step kind + data (the envelope's data). */
+export interface PipelineSummary {
+  kind: "pipeline"
+  steps: Array<{ name?: string; command: string; kind: string; data: Record<string, unknown> }>
+}
+
+export type FileRunResult = CommandResult | PipelineSummary
 
 export interface FileRunOptions {
   configPath?: string
@@ -38,7 +47,7 @@ async function runFileGenerate(
 ): Promise<GenerateResult> {
   const task = command.slice("generate.".length) as GenTaskName
   if (TASKS[task] === undefined) {
-    throw new Error(`unknown generate task '${task}' in command '${command}'`)
+    throw usageError(`unknown generate task '${task}' in command '${command}'`)
   }
   // Command-line flags after the file override the file's fields.
   const overlay = parseGenerateArgs(task, args, fileOverlayContext(opts), {
@@ -47,26 +56,37 @@ async function runFileGenerate(
   return runGenerateRequest(mergeRequest(generateRequest(task, fields), overlay), opts)
 }
 
-export async function runFileFromArgs(args: string[], opts: FileRunOptions = {}): Promise<void> {
+export async function runFileFromArgs(
+  args: string[],
+  opts: FileRunOptions = {},
+): Promise<FileRunResult> {
   const file = args[0]
   if (file === undefined || file === "") {
-    throw new Error("-f requires a JSON file path, e.g. creatifact -f request.json")
+    throw usageError("-f requires a JSON file path, e.g. creatifact -f request.json")
   }
   const parsed = readRequestFile(file)
 
   if ("steps" in parsed) {
     if (args.length > 1) {
-      throw new Error("command-line flags are not supported with a steps file")
+      throw usageError("command-line flags are not supported with a steps file")
     }
-    await runPipeline(parsed.steps, opts)
-    return
+    const run = await runPipeline(parsed.steps, opts)
+    return {
+      kind: "pipeline",
+      steps: run.steps.map((s) => ({
+        ...(s.name === undefined ? {} : { name: s.name }),
+        command: s.command,
+        kind: s.result.kind,
+        data: resultData(s.result),
+      })),
+    }
   }
 
   const { command, fields } = parsed
   if (command.startsWith("generate.")) {
-    await runFileGenerate(command, fields, args.slice(1), opts)
-    return
+    const r = await runFileGenerate(command, fields, args.slice(1), opts)
+    return { kind: "generate", ...r }
   }
 
-  await executeCommand(commandRequestFromFields(command, fields), opts)
+  return executeCommand(commandRequestFromFields(command, fields), opts)
 }

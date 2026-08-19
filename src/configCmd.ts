@@ -10,7 +10,17 @@ import {
   saveConfig,
   setConfigValue,
 } from "./config"
-import { addGlobalOptions, configOpts } from "./util"
+import { usageError } from "./errors"
+import { emitResult } from "./output"
+import { addGlobalOptions, configOpts, prettyOpts } from "./util"
+
+/** The data payload of a `config` command (envelope data, minus `kind`). */
+export type ConfigActionResult =
+  | { action: "path"; path: string }
+  | { action: "list"; config: Record<string, unknown> }
+  | { action: "get"; key: string; value: unknown; secret?: boolean }
+  | { action: "set"; key: string; value: unknown }
+  | { action: "reset"; path: string; removed: boolean }
 
 export function parseConfigArgs(args: string[]): {
   action: string | undefined
@@ -23,55 +33,49 @@ export function runConfigAction(
   action: string,
   rest: string[],
   opts: { configPath?: string } = {},
-): void {
+): ConfigActionResult {
   const file = opts.configPath ?? configPath()
 
   switch (action) {
     case "path":
       expectNoArgs(rest, "config path")
-      console.log(file)
-      return
+      return { action: "path", path: file }
 
-    case "list":
+    case "list": {
       expectNoArgs(rest, "config list")
-      console.log(JSON.stringify(maskForPrint(loadConfig(file)), null, 2))
-      return
+      return { action: "list", config: maskForPrint(loadConfig(file)) as Record<string, unknown> }
+    }
 
     case "get": {
       const key = requireKey(rest, "config get")
       const { found, value } = getConfigValue(loadConfig(file), key)
       if (!found) {
-        throw new Error(`config key not found: ${key}`)
+        throw usageError(`config key not found: ${key}`)
       }
       if (isSecretKey(key)) {
-        console.log("***")
-        return
+        return { action: "get", key, value: "***", secret: true }
       }
-      console.log(typeof value === "string" ? value : JSON.stringify(value))
-      return
+      return { action: "get", key, value }
     }
 
     case "set": {
       const key = requireKey(rest.slice(0, 1), "config set")
       const rawValue = requireKey(rest.slice(1), "config set")
+      const value = parseValue(rawValue)
       const config = loadConfig(file)
-      setConfigValue(config, key, parseValue(rawValue))
+      setConfigValue(config, key, value)
       saveConfig(config, file)
-      console.log(`Set ${key}`)
-      return
+      return { action: "set", key, value }
     }
 
-    case "reset":
+    case "reset": {
       expectNoArgs(rest, "config reset")
-      if (deleteConfig(file)) {
-        console.log(`Removed ${file}`)
-      } else {
-        console.log(`No config file at ${file}`)
-      }
-      return
+      const removed = deleteConfig(file)
+      return { action: "reset", path: file, removed }
+    }
 
     default:
-      throw new Error(
+      throw usageError(
         action === ""
           ? "config requires an action: path, list, get, set, reset"
           : `unknown config action: ${action}`,
@@ -82,9 +86,20 @@ export function runConfigAction(
 export async function runConfigFromArgs(
   args: string[],
   opts: { configPath?: string } = {},
-): Promise<void> {
+): Promise<ConfigActionResult> {
   const { action, rest } = parseConfigArgs(args)
-  runConfigAction(action ?? "", rest, opts)
+  return runConfigAction(action ?? "", rest, opts)
+}
+
+/** Run one config action and emit its result envelope. */
+function emitConfigAction(
+  action: string,
+  rest: string[],
+  command: Command,
+  configDir?: string,
+): void {
+  const result = runConfigAction(action, rest, configOpts(command, configDir))
+  emitResult("config", result, prettyOpts(command))
 }
 
 export function buildConfigCommand(): Command {
@@ -99,25 +114,17 @@ export function buildConfigCommand(): Command {
   config
     .command("path")
     .description("Print the config file path")
-    .action((options, command) =>
-      runConfigAction("path", [], configOpts(command, options.configDir)),
-    )
+    .action((options, command) => emitConfigAction("path", [], command, options.configDir))
   config
     .command("list")
     .description("Print the config with secret values masked")
-    .action((options, command) =>
-      runConfigAction("list", [], configOpts(command, options.configDir)),
-    )
+    .action((options, command) => emitConfigAction("list", [], command, options.configDir))
   config
     .command("get")
     .description("Print a value (dotted key, e.g. auths.localhost:5000.username)")
     .argument("[key]")
     .action((key: string | undefined, options, command) =>
-      runConfigAction(
-        "get",
-        key === undefined ? [] : [key],
-        configOpts(command, options.configDir),
-      ),
+      emitConfigAction("get", key === undefined ? [] : [key], command, options.configDir),
     )
   config
     .command("set")
@@ -128,14 +135,12 @@ export function buildConfigCommand(): Command {
     .argument("[value]")
     .action((key: string | undefined, value: string | undefined, options, command) => {
       const rest = [key, value].filter((v): v is string => v !== undefined)
-      runConfigAction("set", rest, configOpts(command, options.configDir))
+      emitConfigAction("set", rest, command, options.configDir)
     })
   config
     .command("reset")
     .description("Delete the config file")
-    .action((options, command) =>
-      runConfigAction("reset", [], configOpts(command, options.configDir)),
-    )
+    .action((options, command) => emitConfigAction("reset", [], command, options.configDir))
 
   config.action((_opts, command) => {
     const action = command.args[0]
@@ -143,21 +148,21 @@ export function buildConfigCommand(): Command {
       command.help()
       return
     }
-    throw new Error(`unknown config action: ${action}`)
+    throw usageError(`unknown config action: ${action}`)
   })
   return config
 }
 
 function expectNoArgs(rest: string[], action: string): void {
   if (rest.length > 0) {
-    throw new Error(`${action} takes no arguments`)
+    throw usageError(`${action} takes no arguments`)
   }
 }
 
 function requireKey(parts: string[], action: string): string {
   const value = parts[0]
   if (value === undefined) {
-    throw new Error(`${action} requires a key argument`)
+    throw usageError(`${action} requires a key argument`)
   }
   return value
 }

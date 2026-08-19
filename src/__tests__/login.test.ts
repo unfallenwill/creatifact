@@ -88,7 +88,7 @@ test("runLogout removes credentials but keeps the insecure flag", async () => {
   writeFileSync(path, JSON.stringify(before))
 
   const removed = await runLogout("reg.io", { configPath: path })
-  expect(removed).toBe(true)
+  expect(removed).toEqual({ registry: "reg.io" })
 
   const config = readConfig(path)
   const auths = config["auths"] as Record<string, { insecure?: boolean; auth?: string }>
@@ -96,9 +96,9 @@ test("runLogout removes credentials but keeps the insecure flag", async () => {
   expect(auths["other.io"]).toBeDefined()
 })
 
-test("runLogout returns false when not logged in", async () => {
+test("runLogout errors when not logged in", async () => {
   const path = tmpConfigPath()
-  expect(await runLogout("reg.io", { configPath: path })).toBe(false)
+  await expect(runLogout("reg.io", { configPath: path })).rejects.toThrow(/Not logged in/)
 })
 
 test("runLogoutFromArgs errors when not logged in", async () => {

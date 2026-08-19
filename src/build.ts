@@ -5,6 +5,7 @@ import { isAbsolute, join } from "node:path"
 import { Command } from "commander"
 
 import { envForConfigPath, loadConfig, storeDir } from "./config"
+import { usageError } from "./errors"
 import { ok } from "./format"
 import { GEN_CONFIG_MEDIA_TYPE, GEN_SCHEMA_VERSION, type GenSpec } from "./genPackage"
 import { createLayerFromView, createLayerTarball, mergeImageLayers, selectPaths } from "./layers"
@@ -128,10 +129,10 @@ export function parseBuildArgs(args: string[]): ParsedArgs {
 export function mergeOptions(cli: ParsedArgs, manifestFile: BuildManifestFile): BuildOptions {
   const tag = cli.tag
   if (tag === undefined) {
-    throw new Error("--tag is required (provide via -t/--tag)")
+    throw usageError("--tag is required (provide via -t/--tag)")
   }
   if (!tag.includes(":")) {
-    throw new Error(`--tag must be in format 'repo:tag', got: ${tag}`)
+    throw usageError(`--tag must be in format 'repo:tag', got: ${tag}`)
   }
 
   const options: BuildOptions = {
@@ -157,7 +158,7 @@ export async function resolveImageSource(
   const localPath = isAbsolute(spec) ? spec : join(baseDir, spec)
   if (isLocalRef(spec) || (existsSync(localPath) && (await stat(localPath)).isDirectory())) {
     if (!existsSync(localPath)) {
-      throw new Error(`local layout '${spec}' not found`)
+      throw usageError(`local layout '${spec}' not found`)
     }
     return readOciLayout(localPath)
   }
@@ -167,14 +168,14 @@ export async function resolveImageSource(
 
 async function validateAssetsDir(dir: string): Promise<void> {
   if (!existsSync(dir)) {
-    throw new Error(`--dir '${dir}' does not exist`)
+    throw usageError(`--dir '${dir}' does not exist`)
   }
   const dirStat = await stat(dir)
   if (!dirStat.isDirectory()) {
-    throw new Error(`--dir '${dir}' is not a directory`)
+    throw usageError(`--dir '${dir}' is not a directory`)
   }
   if ((await readdir(dir)).length === 0) {
-    throw new Error(`--dir '${dir}' is empty`)
+    throw usageError(`--dir '${dir}' is empty`)
   }
 }
 

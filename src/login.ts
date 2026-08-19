@@ -10,8 +10,9 @@ import {
   type RegistryAuthEntry,
   saveConfig,
 } from "./config"
-import { ok, status } from "./format"
-import { addGlobalOptions, configOpts, parseArgsWith, resolvePassword } from "./util"
+import { authError, usageError } from "./errors"
+import { emitResult } from "./output"
+import { addGlobalOptions, configOpts, parseArgsWith, prettyOpts, resolvePassword } from "./util"
 
 interface RunOpts {
   configPath?: string
@@ -23,10 +24,10 @@ export async function runLogin(
   username: string,
   password: string,
   opts?: RunOpts,
-): Promise<void> {
+): Promise<{ registry: string; username: string }> {
   const normalized = normalizeRegistry(registry)
   if (!isValidRegistry(registry)) {
-    throw new Error(
+    throw usageError(
       `"${registry}" is not a registry host (expected e.g. localhost:5000 or registry.example.com)`,
     )
   }
@@ -39,14 +40,14 @@ export async function runLogin(
   const existing = auths[normalized] ?? {}
   auths[normalized] = { ...existing, username, auth: encodeAuth(username, password) }
   saveConfig(config, opts?.configPath)
-  ok(`login succeeded (${normalized})`)
+  return { registry: normalized, username }
 }
 
-/** Core logout: drop credentials but keep the entry's insecure flag. Returns false if absent. */
-export async function runLogout(registry: string, opts?: RunOpts): Promise<boolean> {
+/** Core logout: drop credentials but keep the entry's insecure flag. Throws when absent. */
+export async function runLogout(registry: string, opts?: RunOpts): Promise<{ registry: string }> {
   const normalized = normalizeRegistry(registry)
   if (!isValidRegistry(registry)) {
-    throw new Error(
+    throw usageError(
       `"${registry}" is not a registry host (expected e.g. localhost:5000 or registry.example.com)`,
     )
   }
@@ -54,7 +55,7 @@ export async function runLogout(registry: string, opts?: RunOpts): Promise<boole
   const config = loadConfig(opts?.configPath)
   const entry = config.auths?.[normalized]
   if (entry === undefined) {
-    return false
+    throw authError(`Not logged in to ${normalized}`)
   }
   const auths = config.auths as Record<string, RegistryAuthEntry>
   if (entry.insecure === true) {
@@ -63,8 +64,7 @@ export async function runLogout(registry: string, opts?: RunOpts): Promise<boole
     delete auths[normalized]
   }
   saveConfig(config, opts?.configPath)
-  status(`removed login credentials for ${normalized}`)
-  return true
+  return { registry: normalized }
 }
 
 export interface LoginCommandOptions {
@@ -112,13 +112,19 @@ function isInteractive(): boolean {
   return process.stdin.isTTY === true && process.stdout.isTTY === true
 }
 
-export async function runLoginFromArgs(args: string[], opts?: RunOpts): Promise<void> {
-  await runLoginFromParsed(parseLoginArgs(args), opts)
+export async function runLoginFromArgs(
+  args: string[],
+  opts?: RunOpts,
+): Promise<{ registry: string; username: string }> {
+  return runLoginFromParsed(parseLoginArgs(args), opts)
 }
 
-export async function runLoginFromParsed(parsed: ParsedLoginArgs, opts?: RunOpts): Promise<void> {
+export async function runLoginFromParsed(
+  parsed: ParsedLoginArgs,
+  opts?: RunOpts,
+): Promise<{ registry: string; username: string }> {
   if (!parsed.registry) {
-    throw new Error(
+    throw usageError(
       "login requires a <registry> argument, e.g. creatifact auth login localhost:5000",
     )
   }
@@ -126,16 +132,16 @@ export async function runLoginFromParsed(parsed: ParsedLoginArgs, opts?: RunOpts
   const username = parsed.username ?? (await promptUsername())
   const password = await resolveLoginPassword(parsed)
 
-  await runLogin(parsed.registry, username, password, opts)
+  return runLogin(parsed.registry, username, password, opts)
 }
 
 async function promptUsername(): Promise<string> {
   if (!isInteractive()) {
-    throw new Error("login requires --username when not interactive")
+    throw usageError("login requires --username when not interactive")
   }
   const answer = await text({ message: "Username:" })
   if (isCancel(answer) || answer.trim() === "") {
-    throw new Error("login cancelled")
+    throw usageError("login cancelled")
   }
   return answer.trim()
 }
@@ -144,7 +150,7 @@ async function resolveLoginPassword(parsed: ParsedLoginArgs): Promise<string> {
   if (parsed.passwordStdin) {
     const fromStdin = await resolvePassword(undefined, true)
     if (fromStdin === undefined) {
-      throw new Error("no password received on stdin")
+      throw usageError("no password received on stdin")
     }
     return fromStdin
   }
@@ -152,11 +158,11 @@ async function resolveLoginPassword(parsed: ParsedLoginArgs): Promise<string> {
     return parsed.password
   }
   if (!isInteractive()) {
-    throw new Error("login requires --password-stdin or --password when not interactive")
+    throw usageError("login requires --password-stdin or --password when not interactive")
   }
   const answer = await passwordPrompt({ message: "Password:" })
   if (isCancel(answer)) {
-    throw new Error("login cancelled")
+    throw usageError("login cancelled")
   }
   return answer
 }
@@ -177,24 +183,24 @@ export function parseLogoutArgs(args: string[]): { registry: string | undefined 
   return { registry: positionals[0] }
 }
 
-export async function runLogoutFromArgs(args: string[], opts?: RunOpts): Promise<void> {
-  await runLogoutFromParsed(parseLogoutArgs(args), opts)
+export async function runLogoutFromArgs(
+  args: string[],
+  opts?: RunOpts,
+): Promise<{ registry: string }> {
+  return runLogoutFromParsed(parseLogoutArgs(args), opts)
 }
 
 export async function runLogoutFromParsed(
   parsed: { registry: string | undefined },
   opts?: RunOpts,
-): Promise<void> {
+): Promise<{ registry: string }> {
   if (!parsed.registry) {
-    throw new Error(
+    throw usageError(
       "logout requires a <registry> argument, e.g. creatifact auth logout localhost:5000",
     )
   }
 
-  const removed = await runLogout(parsed.registry, opts)
-  if (!removed) {
-    throw new Error(`Not logged in to ${normalizeRegistry(parsed.registry)}`)
-  }
+  return runLogout(parsed.registry, opts)
 }
 
 export function buildAuthCommand(): Command {
@@ -207,17 +213,19 @@ export function buildAuthCommand(): Command {
   auth.addCommand(
     buildLoginCommand().action(
       async (registry: string | undefined, opts: LoginCommandOptions, command: Command) => {
-        await runLoginFromParsed(
+        const result = await runLoginFromParsed(
           loginArgsFromOptions(registry, opts),
           configOpts(command, opts.configDir),
         )
+        emitResult("login", result, prettyOpts(command))
       },
     ),
   )
   auth.addCommand(
     buildLogoutCommand().action(
       async (registry: string | undefined, opts: LogoutCommandOptions, command: Command) => {
-        await runLogoutFromParsed({ registry }, configOpts(command, opts.configDir))
+        const result = await runLogoutFromParsed({ registry }, configOpts(command, opts.configDir))
+        emitResult("logout", result, prettyOpts(command))
       },
     ),
   )
@@ -228,7 +236,7 @@ export function buildAuthCommand(): Command {
       command.help()
       return
     }
-    throw new Error(`unknown auth action '${action}' (expected login, logout)`)
+    throw usageError(`unknown auth action '${action}' (expected login, logout)`)
   })
   return auth
 }

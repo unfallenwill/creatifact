@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { Command } from "commander"
 
 import { envForConfigPath, storeDir } from "./config"
-import { status } from "./format"
+import { usageError } from "./errors"
 import { GEN_CONFIG_MEDIA_TYPE } from "./genPackage"
 import {
   digestHex,
@@ -13,7 +13,8 @@ import {
   REF_NAME_ANNOTATION,
   readIndexEntries,
 } from "./oci"
-import { addGlobalOptions, configOpts } from "./util"
+import { emitResult } from "./output"
+import { addGlobalOptions, configOpts, prettyOpts } from "./util"
 
 export interface StoreEntry {
   ref: string
@@ -21,7 +22,6 @@ export interface StoreEntry {
   size: number
   kind: "gen" | "image"
 }
-
 /** Read the shared store index; manifest blobs refine the entry kind. */
 export async function listStoreEntries(configPath?: string): Promise<StoreEntry[]> {
   const dir = storeDir(envForConfigPath(configPath))
@@ -42,30 +42,6 @@ export async function listStoreEntries(configPath?: string): Promise<StoreEntry[
     out.push({ ref, digest: e.digest, size: e.size, kind })
   }
   return out
-}
-
-export function formatStoreEntries(entries: StoreEntry[]): string {
-  const rows = entries.map((e) => ({
-    ref: e.ref,
-    digest: e.digest.slice("sha256:".length, "sha256:".length + 12),
-    size: formatSize(e.size),
-    kind: e.kind,
-  }))
-  const refW = Math.max(8, ...rows.map((r) => r.ref.length)) + 2
-  const digW = 14
-  const lines = rows.map(
-    (r) => `${r.ref.padEnd(refW)}${r.digest.padEnd(digW)}${r.size.padStart(9)}  ${r.kind}`,
-  )
-  return [
-    `${"REF".padEnd(refW)}${"DIGEST".padEnd(digW)}${"SIZE".padStart(9)}  KIND`,
-    ...lines,
-  ].join("\n")
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}kB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
 }
 
 /** Blobs reachable from a manifest entry: itself, its config, its layers. */
@@ -109,7 +85,7 @@ export async function removeStoreRefs(refs: string[], configPath?: string): Prom
     (r) => !removed.some((e) => e.annotations?.[REF_NAME_ANNOTATION] === r),
   )
   if (missing.length > 0) {
-    throw new Error(`tag(s) not found in store: ${missing.join(", ")}`)
+    throw usageError(`tag(s) not found in store: ${missing.join(", ")}`)
   }
 
   // GC: delete blobs unreachable from the remaining entries
@@ -152,7 +128,8 @@ export function buildPackageCommand(): Command {
     .alias("ls")
     .description("List tags in the shared store (~/.creatifact/store)")
   ls.action(async (options: { configDir?: string }, command: Command) => {
-    await runPackageList(configOpts(command, options.configDir))
+    const entries = await listStoreEntries(configOpts(command, options.configDir).configPath)
+    emitResult("package.list", { entries }, prettyOpts(command))
   })
   pkg.addCommand(ls)
 
@@ -161,9 +138,8 @@ export function buildPackageCommand(): Command {
     .argument("<ref...>", "Store tag(s) to remove")
   rmCmd.action(async (refs: string[], options: { configDir?: string }, command: Command) => {
     const { configPath } = configOpts(command, options.configDir)
-    const { untagged, deletedBlobs } = await removeStoreRefs(refs, configPath)
-    for (const ref of untagged) status(`untagged ${ref}`)
-    for (const digest of deletedBlobs) status(`deleted ${digest}`)
+    const result = await removeStoreRefs(refs, configPath)
+    emitResult("package.rm", result, prettyOpts(command))
   })
   pkg.addCommand(rmCmd)
 
@@ -173,16 +149,14 @@ export function buildPackageCommand(): Command {
       command.help()
       return
     }
-    throw new Error(`unknown package action '${action}' (expected list, rm)`)
+    throw usageError(`unknown package action '${action}' (expected list, rm)`)
   })
   return pkg
 }
 
-export async function runPackageList(opts: { configPath?: string } = {}): Promise<void> {
-  const entries = await listStoreEntries(opts.configPath)
-  if (entries.length === 0) {
-    console.log("Store is empty (build, pull, or generate to populate it)")
-    return
-  }
-  console.log(formatStoreEntries(entries))
+/** List the shared store's tags as data (empty list when the store is empty). */
+export async function runPackageList(opts: { configPath?: string } = {}): Promise<{
+  entries: StoreEntry[]
+}> {
+  return { entries: await listStoreEntries(opts.configPath) }
 }

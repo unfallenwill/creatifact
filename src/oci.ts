@@ -3,6 +3,8 @@ import { existsSync } from "node:fs"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 
+import { usageError } from "./errors"
+
 export interface OCIDescriptor {
   mediaType: string
   digest: string
@@ -181,7 +183,7 @@ export async function readOciLayout(
     preferredRef !== undefined &&
     manifestEntry.annotations?.[REF_NAME_ANNOTATION] !== preferredRef
   ) {
-    throw new Error(
+    throw usageError(
       `tag '${preferredRef}' not found in ${layoutDir}; build or pull it first, or pass --layout`,
     )
   }

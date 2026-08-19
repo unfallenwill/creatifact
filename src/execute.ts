@@ -1,8 +1,8 @@
 import { type ParsedArgs as BuildRequest, type BuildResult, runBuildFromParsed } from "./build"
-import { runConfigAction } from "./configCmd"
+import { type ConfigActionResult, runConfigAction } from "./configCmd"
 import { type GenerateResult, type GenRequest, runGenerateRequest } from "./generate"
 import { type ParsedLoginArgs, runLoginFromParsed, runLogoutFromParsed } from "./login"
-import { runModelsFromParsed } from "./models"
+import { type ModelsResult, runModelsFromParsed } from "./models"
 import { type ParsedPullArgs, type PullResult, runPullFromParsed } from "./pull"
 import { type ParsedPushArgs, type PushResult, runPushFromParsed } from "./push"
 
@@ -13,7 +13,7 @@ export type CommandRequest =
   | { kind: "generate"; req: GenRequest }
   | { kind: "login"; req: ParsedLoginArgs }
   | { kind: "logout"; req: { registry: string | undefined } }
-  | { kind: "models"; req: { provider: string | undefined; json: boolean } }
+  | { kind: "models"; req: { provider: string | undefined } }
   | { kind: "config"; action: string; rest: string[] }
 
 export type CommandResult =
@@ -21,7 +21,10 @@ export type CommandResult =
   | ({ kind: "push" } & PushResult)
   | ({ kind: "pull" } & PullResult)
   | ({ kind: "generate" } & GenerateResult)
-  | { kind: "void" }
+  | ({ kind: "config" } & ConfigActionResult)
+  | ({ kind: "login" } & { registry: string; username: string })
+  | ({ kind: "logout" } & { registry: string })
+  | ({ kind: "models" } & ModelsResult)
 
 export interface ExecuteContext {
   configPath?: string | undefined
@@ -49,16 +52,18 @@ export async function executeCommand(
     case "generate":
       return { kind: "generate", ...(await runGenerateRequest(request.req, opts)) }
     case "login":
-      await runLoginFromParsed(request.req, opts)
-      return { kind: "void" }
+      return { kind: "login", ...(await runLoginFromParsed(request.req, opts)) }
     case "logout":
-      await runLogoutFromParsed(request.req, opts)
-      return { kind: "void" }
+      return { kind: "logout", ...(await runLogoutFromParsed(request.req, opts)) }
     case "models":
-      await runModelsFromParsed(request.req, opts)
-      return { kind: "void" }
+      return { kind: "models", ...(await runModelsFromParsed(request.req, opts)) }
     case "config":
-      runConfigAction(request.action, request.rest, opts)
-      return { kind: "void" }
+      return { kind: "config", ...runConfigAction(request.action, request.rest, opts) }
   }
+}
+
+/** The envelope payload of a result: its own fields, minus the `kind` tag. */
+export function resultData(result: CommandResult): Record<string, unknown> {
+  const { kind: _kind, ...data } = result
+  return data as Record<string, unknown>
 }

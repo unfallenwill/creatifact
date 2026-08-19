@@ -168,7 +168,7 @@ export const TASKS: Record<GenTaskName, TaskSpec> = {
 /** JSON request field names a task accepts (for `-f` files and the schema). */
 export function requestFieldsForTask(task: GenTaskName): Set<string> {
   const spec = TASKS[task]
-  const fields = new Set<string>(["provider", "model", "json"])
+  const fields = new Set<string>(["provider", "model"])
   if (spec.required.prompt || spec.optional.prompt) fields.add("prompt")
   if (spec.optional.system === true) fields.add("system")
   if (spec.required.images !== undefined) fields.add("images")

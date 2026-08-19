@@ -2,20 +2,21 @@
 
 import { readFileSync } from "node:fs"
 
-import { Command } from "commander"
+import { Command, CommanderError } from "commander"
 
 import { type BuildCommandOptions, buildArgsFromOptions, buildBuildCommand } from "./build"
 import { buildConfigCommand } from "./configCmd"
-import { executeCommand } from "./execute"
-import { runFileFromArgs } from "./fileCmd"
-import { pc } from "./format"
+import { usageError } from "./errors"
+import { executeCommand, resultData } from "./execute"
+import { type FileRunResult, runFileFromArgs } from "./fileCmd"
 import { buildGenerateCommand } from "./generate"
 import { buildAuthCommand } from "./login"
 import { buildModelsCommand, type ModelsCommandOptions, modelsArgsFromOptions } from "./models"
+import { emitError, emitResult } from "./output"
 import { buildPullCommand, type PullCommandOptions, pullArgsFromOptions } from "./pull"
 import { buildPushCommand, type PushCommandOptions, pushArgsFromOptions } from "./push"
 import { buildPackageCommand } from "./store"
-import { addGlobalOptions, configOpts } from "./util"
+import { addGlobalOptions, configOpts, prettyOpts } from "./util"
 
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
   version: string
@@ -31,6 +32,15 @@ const program = new Command()
   .enablePositionalOptions()
   .allowExcessArguments(true)
 
+// Route every failure through the JSON error envelope: commander's own
+// stderr text is captured (not written) so stderr carries exactly one JSON
+// document, and exits are intercepted so the process status comes from the
+// error code mapping. Help/version text still goes to stdout untouched.
+program.exitOverride()
+program.configureOutput({
+  writeErr: () => {},
+})
+
 addGlobalOptions(program)
 
 // --- -f <file>.json: run the command described by a JSON file ---
@@ -43,8 +53,9 @@ program
   .allowExcessArguments(true)
   .passThroughOptions(true)
   .action(async (file: string, args: string[], _opts, command: Command) => {
-    const { rest, configDir } = extractConfigDir(args)
-    await runFileFromArgs([file, ...rest], configOpts(command, configDir))
+    const { rest, configDir, pretty } = extractPassthroughFlags(args)
+    const result = await runFileFromArgs([file, ...rest], configOpts(command, configDir))
+    emitCommandResult(result, command, pretty)
   })
 
 // --- build | push | pull: OCI package lifecycle (top-level, docker-style) ---
@@ -87,10 +98,11 @@ program.addCommand(buildConfigCommand())
 program.addCommand(
   buildModelsCommand().action(
     async (provider: string | undefined, options: ModelsCommandOptions, command: Command) => {
-      await executeCommand(
+      const result = await executeCommand(
         { kind: "models", req: modelsArgsFromOptions(provider, options) },
         configOpts(command, options.configDir),
       )
+      emitCommandResult(result, command)
     },
   ),
 )
@@ -108,36 +120,73 @@ program.action((_options, command) => {
     command.help()
     return
   }
-  console.error(`unknown command: ${unknown}`)
-  command.outputHelp({ error: true })
-  process.exit(1)
+  throw usageError(`unknown command: ${unknown} (run 'creatifact --help' to list commands)`)
 })
 
-/** Strip a --config-dir <dir> from -f passthrough args (they bypass commander options). */
-function extractConfigDir(args: string[]): { rest: string[]; configDir?: string } {
+/** Emit a CommandResult (or pipeline summary) as the unified JSON envelope. */
+function emitCommandResult(result: FileRunResult, command: Command, pretty?: boolean): void {
+  const style = pretty === true ? { pretty: true } : prettyOpts(command)
+  if (result.kind === "pipeline") {
+    emitResult("pipeline", { steps: result.steps }, style)
+    return
+  }
+  emitResult(result.kind, resultData(result), style)
+}
+
+/** Strip --config-dir/--pretty from -f passthrough args (they bypass commander options). */
+function extractPassthroughFlags(args: string[]): {
+  rest: string[]
+  configDir?: string
+  pretty?: boolean
+} {
   const rest: string[] = []
   let configDir: string | undefined
+  let pretty: boolean | undefined
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
     if (arg === undefined) continue
     if (arg === "--config-dir") {
-      const dir = args[i + 1]
-      if (dir === undefined || dir === "") {
-        throw new Error("--config-dir requires a directory")
-      }
+      configDir = takePairValue(args, i)
       i++
-      configDir = dir
+      continue
+    }
+    if (arg === "--pretty") {
+      pretty = true
       continue
     }
     rest.push(arg)
   }
-  return configDir === undefined ? { rest } : { rest, configDir }
+  return configDir === undefined && pretty === undefined
+    ? { rest }
+    : {
+        rest,
+        ...(configDir === undefined ? {} : { configDir }),
+        ...(pretty === undefined ? {} : { pretty }),
+      }
+}
+
+/** The value paired with a --flag arg (throws when missing). */
+function takePairValue(args: string[], i: number): string {
+  const dir = args[i + 1]
+  if (dir === undefined || dir === "") {
+    throw usageError("--config-dir requires a directory")
+  }
+  return dir
 }
 
 program.parseAsync(process.argv).then(
   () => process.exit(0),
   (e: unknown) => {
-    console.error(pc.red(`error: ${e instanceof Error ? e.message : String(e)}`))
-    process.exit(1)
+    // Help/version events already wrote their text to stdout; keep exit 0.
+    if (
+      e instanceof CommanderError &&
+      (e.code === "commander.help" ||
+        e.code === "commander.helpDisplayed" ||
+        e.code === "commander.helpCommand" ||
+        e.code === "commander.version")
+    ) {
+      process.exit(0)
+    }
+    process.exit(emitError(undefined, e))
   },
 )

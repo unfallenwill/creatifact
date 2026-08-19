@@ -1,109 +1,56 @@
 import { Command } from "commander"
-
 import { loadConfig } from "./config"
-import { displayWidth, pc } from "./format"
+import { CliError } from "./errors"
+import { warn } from "./format"
 import { listConfiguredProviderIds, listProviderCatalog, type VerifiedModel } from "./providers"
 import { tasksForModel } from "./tasks"
 import { addGlobalOptions, parseArgsWith } from "./util"
 
 export interface ModelsCommandOptions {
-  json?: boolean
   configDir?: string
 }
 
 export function buildModelsCommand(): Command {
   const cmd = new Command("models")
-    .description("List providers and their verified models")
+    .description("List providers and their verified models as JSON")
     .argument("[provider]")
-    .option("--json", "Full metadata as JSON")
   return addGlobalOptions(cmd)
 }
 
 export function modelsArgsFromOptions(
   provider: string | undefined,
-  o: ModelsCommandOptions,
-): { provider: string | undefined; json: boolean } {
-  return { provider, json: o.json === true }
+  _o: ModelsCommandOptions,
+): { provider: string | undefined } {
+  return { provider }
 }
 
-export function parseModelsArgs(args: string[]): { provider: string | undefined; json: boolean } {
+export function parseModelsArgs(args: string[]): { provider: string | undefined } {
   const { options, positionals } = parseArgsWith<ModelsCommandOptions>(buildModelsCommand(), args)
   return modelsArgsFromOptions(positionals[0], options)
 }
 
-function truncate(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max - 1)}…`
+export interface CatalogModel extends VerifiedModel {
+  tasks: string[]
 }
 
-interface CatalogRow {
-  providerId: string
-  model: VerifiedModel
-  isDefault: boolean
+/** One provider's catalog entry; `error` marks an unavailable provider. */
+export interface ProviderCatalogEntry {
+  provider: string
+  defaults?: Record<string, string> | undefined
+  models?: CatalogModel[] | undefined
+  error?: string | undefined
 }
 
-/**
- * The flat catalog listing: one row per model as <provider>/<model-id> (the
- * exact reference syntax the CLI accepts) with aligned columns and no
- * section markers — a pure data table. Notes clamp to the terminal width so
- * lines never wrap mid-column; piped output falls back to a conservative
- * width and stays plain text for agents.
- */
-
-/** Build the raw (uncolored) catalog table with per-provider comment rows. */
-/** Build the flat catalog table: one row per model, no section markers. */
-function buildCatalogTable(rows: CatalogRow[], noteBudget: number): string[][] {
-  return rows.map((r) => {
-    const custom = r.model.source === "custom" ? " (custom)" : ""
-    return [
-      // default rows turn green on TTY; plain piped output has no marker
-      // (`--list-models` names the default explicitly instead)
-      `${r.providerId}/${r.model.id}${custom}`,
-      tasksForModel(r.model).join(", ") || "(—)",
-      r.model.note ? truncate(r.model.note, noteBudget) : "",
-    ]
-  })
-}
-
-/** Color one data row per column and pad to the shared column widths. */
-function colorRow(cells: string[], widths: number[], isDefault = false): string {
-  const last = cells.length - 1
-  return cells
-    .map((cell, col) => {
-      const pad = " ".repeat((widths[col] ?? 0) - displayWidth(cell))
-      const base = isDefault ? pc.green(cell) : cell
-      const colored = col === 0 ? pc.bold(base) : col === 1 ? pc.cyan(base) : pc.dim(base)
-      return col === last ? colored : colored + pad
-    })
-    .join("  ")
-}
-
-function printCatalog(rows: CatalogRow[]): void {
-  const termWidth = process.stdout.columns ?? 100
-  const noteBudget = Math.max(20, termWidth - 58)
-  const table = buildCatalogTable(rows, noteBudget)
-  const widths = columnWidths(table)
-  const defaults = new Set(
-    rows.filter((r) => r.isDefault).map((r) => `${r.providerId}/${r.model.id}`),
-  )
-  for (const row of table) {
-    const isDefault = defaults.has(row[0] ?? "")
-    console.log(`  ${colorRow(row, widths, isDefault)}`)
-  }
-}
-
-/** Column widths of the aligned table (mirrors alignColumns). */
-function columnWidths(rows: string[][]): number[] {
-  const width = Math.max(...rows.map((r) => r.length))
-  return Array.from({ length: width }, (_, col) =>
-    Math.max(...rows.map((r) => displayWidth(r[col] ?? ""))),
-  )
-}
+/** The `models` command payload: one provider, or every configured one. */
+export type ModelsResult =
+  | { provider: string; defaults: Record<string, string>; models: CatalogModel[] }
+  | { providers: ProviderCatalogEntry[] }
 
 export async function runModelsFromParsed(
-  parsed: { provider: string | undefined; json: boolean },
+  parsed: { provider: string | undefined },
   opts: { configPath?: string } = {},
-): Promise<void> {
-  const { provider: id, json } = parsed
+): Promise<ModelsResult> {
+  const id = parsed.provider
 
   // models.<providerId> keys must name known providers; reject loudly so a
   // typo never silently shadows a whole declaration list.
@@ -112,7 +59,8 @@ export async function runModelsFromParsed(
   const known = new Set(listConfiguredProviderIds(opts))
   const unknown = declared.filter((key) => !known.has(key))
   if (unknown.length > 0) {
-    throw new Error(
+    throw new CliError(
+      "E_CONFIG",
       `models config: unknown provider '${unknown.join("', '")}' (available: ${[...known].join(
         ", ",
       )}); remove the key or declare the provider first`,
@@ -120,54 +68,37 @@ export async function runModelsFromParsed(
   }
 
   if (id === undefined) {
-    const rows: CatalogRow[] = []
+    const providers: ProviderCatalogEntry[] = []
     for (const providerId of listConfiguredProviderIds(opts)) {
       try {
         const { provider } = await listProviderCatalog(providerId, opts)
-        const defaults = new Set(Object.values(provider.defaultModels ?? {}))
-        for (const m of provider.models) {
-          rows.push({
-            providerId,
-            model: m,
-            isDefault: defaults.has(m.id),
-          })
-        }
+        providers.push({
+          provider: providerId,
+          defaults: provider.defaultModels,
+          models: provider.models.map((m) => ({ ...m, tasks: tasksForModel(m) })),
+        })
       } catch (e) {
-        console.error(`${providerId}: unavailable (${(e as Error).message})`)
+        const message = (e as Error).message
+        // Unavailable providers stay in the payload (marked) instead of
+        // silently vanishing from the listing; stderr keeps a human note.
+        providers.push({ provider: providerId, error: message })
+        warn(`${providerId}: unavailable (${message})`)
       }
     }
-    printCatalog(rows)
-    return
+    return { providers }
   }
 
   const { provider } = await listProviderCatalog(id, opts)
-  const defaults = new Set(Object.values(provider.defaultModels ?? {}))
-  if (json) {
-    console.log(
-      JSON.stringify(
-        {
-          provider: id,
-          defaults: provider.defaultModels,
-          models: provider.models.map((m) => ({ ...m, tasks: tasksForModel(m) })),
-        },
-        null,
-        2,
-      ),
-    )
-    return
+  return {
+    provider: id,
+    defaults: provider.defaultModels ?? {},
+    models: provider.models.map((m) => ({ ...m, tasks: tasksForModel(m) })),
   }
-  printCatalog(
-    provider.models.map((m) => ({
-      providerId: id,
-      model: m,
-      isDefault: defaults.has(m.id),
-    })),
-  )
 }
 
 export async function runModelsFromArgs(
   args: string[],
   opts: { configPath?: string } = {},
-): Promise<void> {
-  await runModelsFromParsed(parseModelsArgs(args), opts)
+): Promise<ModelsResult> {
+  return runModelsFromParsed(parseModelsArgs(args), opts)
 }

@@ -18,10 +18,9 @@ describe("executeCommand", () => {
     writeFileSync(configPath, JSON.stringify({ version: 1 }))
   })
 
-  test("config path action returns void and prints the file", async () => {
-    await expect(
-      executeCommand({ kind: "config", action: "path", rest: [] }, { configPath }),
-    ).resolves.toEqual({ kind: "void" })
+  test("config path action returns the path", async () => {
+    const r = await executeCommand({ kind: "config", action: "path", rest: [] }, { configPath })
+    expect(r).toMatchObject({ kind: "config", action: "path", path: configPath })
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -55,19 +54,24 @@ describe("executeCommand", () => {
       configPath,
       JSON.stringify({ version: 1, auths: { "localhost:5000": { auth: "eHg=" } } }),
     )
-    await expect(
-      executeCommand(
-        { kind: "config", action: "get", rest: ["auths.localhost:5000.auth"] },
-        { configPath },
-      ),
-    ).resolves.toEqual({ kind: "void" })
+    const r = await executeCommand(
+      { kind: "config", action: "get", rest: ["auths.localhost:5000.auth"] },
+      { configPath },
+    )
+    expect(r).toEqual({
+      kind: "config",
+      action: "get",
+      key: "auths.localhost:5000.auth",
+      value: "***",
+      secret: true,
+    })
     rmSync(dir, { recursive: true, force: true })
   })
 
   test("models lists providers through the dispatch point", async () => {
     await expect(
       executeCommand(
-        { kind: "models", req: { provider: "definitely-not-a-provider", json: false } },
+        { kind: "models", req: { provider: "definitely-not-a-provider" } },
         { configPath },
       ),
     ).rejects.toThrow(/no provider|unknown/i)

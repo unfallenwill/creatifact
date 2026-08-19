@@ -34,8 +34,8 @@ test(`runs build → build chain with \${step.outputDir} interpolation`, async (
   )
   expect(existsSync(join(out1, "index.json"))).toBe(true)
   expect(existsSync(join(out2, "index.json"))).toBe(true)
-  expect(results.get("a")?.kind).toBe("build")
-  expect(results.get("b")?.kind).toBe("build")
+  expect(results.results.get("a")?.kind).toBe("build")
+  expect(results.results.get("b")?.kind).toBe("build")
   rmSync(dir, { recursive: true, force: true })
 })
 
@@ -88,8 +88,8 @@ test(`build → push → pull resolves \${} refs across registry steps (mocked)`
     ],
     { configPath },
   )
-  expect(results.get("p")?.kind).toBe("push")
-  expect(results.get("l")?.kind).toBe("pull")
+  expect(results.results.get("p")?.kind).toBe("push")
+  expect(results.results.get("l")?.kind).toBe("pull")
   expect(fetchMock.mock.calls.some(([u]) => String(u).includes("org/a"))).toBe(true)
 
   vi.unstubAllGlobals()
@@ -105,7 +105,7 @@ test(`whole-string \${} keeps the referenced value; interpolation works in array
   const results = await runPipeline([step("build", { tag: "org/a:1", output: out }, "a")], {
     configPath,
   })
-  const a = results.get("a")
+  const a = results.results.get("a")
   expect(a?.kind).toBe("build")
   rmSync(dir, { recursive: true, force: true })
 })
@@ -154,7 +154,7 @@ test("fails fast: generate step with noWait or json", async () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-test("fails fast: void step is not referenceable", async () => {
+test("fails fast: non-referenceable step results are rejected", async () => {
   await expect(
     runPipeline(
       [
@@ -163,7 +163,7 @@ test("fails fast: void step is not referenceable", async () => {
       ],
       { configPath },
     ),
-  ).rejects.toThrow(/void result/)
+  ).rejects.toThrow(/is not referenceable/)
   rmSync(dir, { recursive: true, force: true })
 })
 
@@ -208,7 +208,7 @@ test("media steps write into the shared store under their own tags", async () =>
       [step("build", { tag: "x:1" }, "a"), step("build", { tag: "y:1" }, "b")],
       { configPath },
     )
-    const a = results.get("a")
+    const a = results.results.get("a")
     expect(a?.kind === "build" && a.outputDir).toBe(store)
     const entries = JSON.parse(readFileSync(join(store, "index.json"), "utf8")).manifests as Array<{
       annotations?: Record<string, string>

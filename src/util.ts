@@ -4,6 +4,7 @@ import { join } from "node:path"
 
 import { type Command, CommanderError } from "commander"
 
+import { CliError } from "./errors"
 import { pc } from "./format"
 
 export async function ensureOutputDirEmpty(outputDir: string): Promise<void> {
@@ -77,7 +78,7 @@ export function parseArgsWith<T extends object = Record<string, unknown>>(
     cmd.exitOverride()
     cmd.parse(args, { from: "user" })
   } catch (e) {
-    if (e instanceof CommanderError) throw new Error(e.message)
+    if (e instanceof CommanderError) throw new CliError("E_USAGE", e.message)
     throw e
   }
   return { options: cmd.opts() as T, positionals: cmd.args }
@@ -103,10 +104,29 @@ function styleHelp(cmd: Command): Command {
 
 export function addGlobalOptions(cmd: Command): Command {
   styleHelp(cmd)
-  return cmd.option(
-    "--config-dir <dir>",
-    "Use <dir>/config.json instead of ~/.creatifact/config.json (takes precedence over CREATIFACT_CONFIG_DIR)",
+  // Subcommands do not inherit the program's output/exit configuration, so
+  // every command that carries global options also reroutes commander's own
+  // errors: stderr text is suppressed (the JSON envelope replaces it) and
+  // exits are intercepted so the process status follows the error taxonomy.
+  cmd.exitOverride()
+  cmd.configureOutput({ writeErr: () => {} })
+  return (
+    cmd
+      .option(
+        "--config-dir <dir>",
+        "Use <dir>/config.json instead of ~/.creatifact/config.json (takes precedence over CREATIFACT_CONFIG_DIR)",
+      )
+      // Opt-in human form of the JSON envelope: indented, colored on TTY.
+      .option("--pretty", "Pretty-print the JSON output (colored on interactive terminals)")
   )
+}
+
+/** Output-style bag for the envelope emitter: --pretty captured anywhere on the command chain. */
+export function prettyOpts(command: Command): { pretty?: boolean } {
+  for (let cmd: Command | null = command; cmd !== null; cmd = cmd.parent) {
+    if (cmd.getOptionValue("pretty") === true) return { pretty: true }
+  }
+  return {}
 }
 
 /**

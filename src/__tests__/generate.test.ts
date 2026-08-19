@@ -41,7 +41,6 @@ test("parseGenerateArgs: provider positional, prompt, repeats, flags", () => {
       "out",
       "--tag",
       "r:1",
-      "--json",
     ],
     CTX,
   )
@@ -54,7 +53,6 @@ test("parseGenerateArgs: provider positional, prompt, repeats, flags", () => {
     options: { quality: "hd", size: "1024x1024" },
     output: "out",
     tag: "r:1",
-    json: true,
   })
 })
 
@@ -202,7 +200,7 @@ test("mergeRequest: scalars override, arrays replace, options shallow-merge", ()
     prompt: "base",
     images: ["a.png", "b.png"],
     options: { size: "1024x1024", quality: "standard" },
-    json: false,
+    noPack: false,
   })
   const merged = mergeRequest(base, {
     prompt: "cli",
@@ -212,15 +210,16 @@ test("mergeRequest: scalars override, arrays replace, options shallow-merge", ()
   expect(merged.prompt).toBe("cli")
   expect(merged.images).toEqual(["c.png"])
   expect(merged.options).toEqual({ size: "1024x1024", quality: "hd" })
-  expect(merged.json).toBe(false)
+  expect(merged.noPack).toBe(false)
 })
 
 test("mergeRequest: absent overlay fields never override", () => {
   const merged = mergeRequest(req("text2image", { prompt: "base", images: ["a.png"] }), {
-    json: true,
+    noPack: true,
   })
   expect(merged.prompt).toBe("base")
   expect(merged.images).toEqual(["a.png"])
+  expect(merged.noPack).toBe(true)
 })
 
 // --- model picking ----------------------------------------------------------
@@ -298,7 +297,7 @@ test("pickModelForTask: image2image prefers imageInput models", () => {
 
 test("requestFieldsForTask matches the task contracts", () => {
   expect([...requestFieldsForTask("text2text")].sort()).toEqual(
-    ["json", "model", "prompt", "provider", "system", "options"].sort(),
+    ["model", "prompt", "provider", "system", "options"].sort(),
   )
   expect(requestFieldsForTask("image2image").has("images")).toBe(true)
   expect(requestFieldsForTask("text2image").has("images")).toBe(false)

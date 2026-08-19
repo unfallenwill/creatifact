@@ -1,3 +1,4 @@
+import { CliError, usageError } from "./errors"
 import type { CommandResult } from "./execute"
 import { executeCommand } from "./execute"
 import { status } from "./format"
@@ -94,7 +95,7 @@ function collectStepNames(steps: PipelineStep[]): Map<string, number> {
   for (const [i, step] of steps.entries()) {
     if (step.name === undefined) continue
     if (seen.has(step.name)) {
-      throw new Error(`duplicate step name '${step.name}' (steps ${seen.get(step.name)} and ${i})`)
+      throw usageError(`duplicate step name '${step.name}' (steps ${seen.get(step.name)} and ${i})`)
     }
     seen.set(step.name, i)
   }
@@ -104,10 +105,7 @@ function collectStepNames(steps: PipelineStep[]): Map<string, number> {
 function validateGenerateStep(step: PipelineStep, stepIndex: number): void {
   if (!step.command.startsWith("generate.")) return
   if (step.fields["noWait"] === true) {
-    throw new Error(`step ${stepIndex}: generate steps cannot use noWait inside a pipeline`)
-  }
-  if (step.fields["json"] === true) {
-    throw new Error(`step ${stepIndex}: generate steps cannot use json inside a pipeline`)
+    throw usageError(`step ${stepIndex}: generate steps cannot use noWait inside a pipeline`)
   }
 }
 
@@ -121,12 +119,12 @@ function validateStepReferences(
   for (const { ref } of refs) {
     const target = seen.get(ref.step)
     if (target === undefined) {
-      throw new Error(
+      throw usageError(
         `step ${stepIndex} references unknown step '${ref.step}' (known: ${[...seen.keys()].join(", ") || "none"})`,
       )
     }
     if (target >= stepIndex) {
-      throw new Error(
+      throw usageError(
         `step ${stepIndex} references '${refLabel(ref)}' which runs later (forward reference)`,
       )
     }
@@ -140,7 +138,7 @@ function validateStepReferences(
  * pipeline's own output).
  */
 function precheck(steps: PipelineStep[]): void {
-  if (steps.length === 0) throw new Error("steps must be a non-empty array")
+  if (steps.length === 0) throw usageError("steps must be a non-empty array")
   const seen = collectStepNames(steps)
   for (const [i, step] of steps.entries()) {
     validateGenerateStep(step, i)
@@ -187,7 +185,7 @@ function resolvePlaceholders(
 }
 
 function notReferenceableError(ref: ParsedRef, allowed: string[], stepIndex: number): Error {
-  return new Error(
+  return usageError(
     `step ${stepIndex}: '${refLabel(ref)}' is not referenceable (allowed for this step: ${allowed.join(", ")})`,
   )
 }
@@ -237,17 +235,25 @@ function resultFieldRefValue(
 function refValue(ref: ParsedRef, results: Map<string, CommandResult>, stepIndex: number): unknown {
   const result = results.get(ref.step)
   if (result === undefined) {
-    throw new Error(`step ${stepIndex}: no result for '${ref.step}'`)
+    throw usageError(`step ${stepIndex}: no result for '${ref.step}'`)
   }
   const allowed = referencableFields(result)
-  if (result.kind === "void") {
-    throw new Error(
-      `step ${stepIndex}: '${ref.step}' produced no referenceable output (void result); referenceable steps return tag/digest/outputDir/artifacts`,
-    )
-  }
   return ref.index === undefined
     ? resultFieldRefValue(ref, result, allowed, stepIndex)
     : artifactRefValue(ref as ParsedRef & { index: number }, result, allowed, stepIndex)
+}
+
+/** One executed pipeline step and its result, for the summary envelope. */
+export interface PipelineStepOutcome {
+  name?: string | undefined
+  command: string
+  result: CommandResult
+}
+
+/** The pipeline run's outcome: ordered step results plus named lookups. */
+export interface PipelineRunResult {
+  steps: PipelineStepOutcome[]
+  results: Map<string, CommandResult>
 }
 
 /**
@@ -261,9 +267,10 @@ function refValue(ref: ParsedRef, results: Map<string, CommandResult>, stepIndex
 export async function runPipeline(
   steps: PipelineStep[],
   opts: PipelineRunOptions = {},
-): Promise<Map<string, CommandResult>> {
+): Promise<PipelineRunResult> {
   precheck(steps)
   const results = new Map<string, CommandResult>()
+  const outcomes: PipelineStepOutcome[] = []
 
   for (const [i, step] of steps.entries()) {
     if (opts.signal?.aborted) {
@@ -271,19 +278,37 @@ export async function runPipeline(
     }
     const label = step.name ?? `step-${i + 1}`
     status(`[${i + 1}/${steps.length}] ${label} · ${step.command}`)
-
-    const fields = resolvePlaceholders(step.fields, results, i) as Fields
-    const request = commandRequestFromFields(step.command, fields)
-
-    try {
-      const result = await executeCommand(request, { configPath: opts.configPath })
-      if (step.name !== undefined) results.set(step.name, result)
-    } catch (e) {
-      throw new Error(
-        `step '${label}' (${i + 1}/${steps.length}) failed: ${e instanceof Error ? e.message : String(e)}`,
-      )
-    }
+    outcomes.push(await runStep(step, label, i, steps.length, results, opts))
   }
 
-  return results
+  return { steps: outcomes, results }
+}
+
+/** Execute one pipeline step, registering its result for later references. */
+async function runStep(
+  step: PipelineStep,
+  label: string,
+  i: number,
+  total: number,
+  results: Map<string, CommandResult>,
+  opts: PipelineRunOptions,
+): Promise<PipelineStepOutcome> {
+  const fields = resolvePlaceholders(step.fields, results, i) as Fields
+  const request = commandRequestFromFields(step.command, fields)
+
+  try {
+    const result = await executeCommand(request, { configPath: opts.configPath })
+    if (step.name !== undefined) results.set(step.name, result)
+    return {
+      command: step.command,
+      ...(step.name === undefined ? {} : { name: step.name }),
+      result,
+    }
+  } catch (e) {
+    // Keep the inner error's classification (usage/config/provider/...)
+    // while adding the step context agents need to locate the failure.
+    const message = `step '${label}' (${i + 1}/${total}) failed: ${e instanceof Error ? e.message : String(e)}`
+    if (e instanceof CliError) throw new CliError(e.code, message, e.details)
+    throw new Error(message)
+  }
 }

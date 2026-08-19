@@ -33,6 +33,28 @@ function run(args: string[], input?: string, env?: Record<string, string>): RunR
   return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", code: result.status }
 }
 
+interface ErrEnvelope {
+  ok: false
+  error: { code: string; message: string; details?: Record<string, unknown> }
+}
+
+/** Parse a command's stderr as the unified error envelope and assert its code.
+ * Progress/status lines may precede it on stderr; the envelope is always the
+ * last non-empty line. */
+function expectErr(r: RunResult, code: string, messageSub?: string): ErrEnvelope {
+  const lastLine =
+    r.stderr
+      .trimEnd()
+      .split("\n")
+      .filter((l) => l !== "")
+      .at(-1) ?? ""
+  const envelope = JSON.parse(lastLine) as ErrEnvelope
+  expect(envelope.ok).toBe(false)
+  expect(envelope.error.code).toBe(code)
+  if (messageSub !== undefined) expect(envelope.error.message).toContain(messageSub)
+  return envelope
+}
+
 describe("cli — integration", () => {
   it("--version prints the package version and exits 0", () => {
     const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { version: string }
@@ -51,10 +73,10 @@ describe("cli — integration", () => {
     expect(stdout).toContain("config")
   })
 
-  it("unknown command errors with usage on stderr", () => {
-    const { stderr, code } = run(["frobnicate"])
-    expect(code).toBe(1)
-    expect(stderr).toContain("unknown command: frobnicate")
+  it("unknown command errors with a JSON envelope on stderr", () => {
+    const r = run(["frobnicate"])
+    expect(r.code).toBe(2)
+    expectErr(r, "E_USAGE", "unknown command: frobnicate")
   })
 
   it("build/push/pull --help list options; unknown top-level fails", () => {
@@ -68,8 +90,8 @@ describe("cli — integration", () => {
     expect(auth.stdout).toContain("login")
 
     const unknown = run(["frobnicate"])
-    expect(unknown.code).toBe(1)
-    expect(unknown.stderr).toContain("unknown command: frobnicate")
+    expect(unknown.code).toBe(2)
+    expectErr(unknown, "E_USAGE")
   })
 })
 
@@ -120,7 +142,7 @@ describe("cli build — integration", () => {
   it("build fails when dir does not exist", () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
     try {
-      const { stderr, code } = run([
+      const r = run([
         "build",
         "--dir",
         "/nonexistent/path/xyz",
@@ -129,8 +151,8 @@ describe("cli build — integration", () => {
         "-o",
         path.join(tmp, "out"),
       ])
-      expect(code).toBe(1)
-      expect(stderr).toContain("does not exist")
+      expect(r.code).toBe(2)
+      expectErr(r, "E_USAGE", "does not exist")
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
@@ -144,8 +166,8 @@ describe("cli build — integration", () => {
 
     try {
       const { stderr, code } = run(["build", "--dir", fixtureDir])
-      expect(code).toBe(1)
-      expect(stderr).toContain("--tag")
+      expect(code).toBe(2)
+      expectErr({ stdout: "", stderr, code } as RunResult, "E_USAGE", "--tag")
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
@@ -253,8 +275,8 @@ describe("cli build — integration", () => {
 
     try {
       const { stderr, code } = run(["build", "-f", descPath])
-      expect(code).toBe(1)
-      expect(stderr).toContain("--tag is required")
+      expect(code).toBe(2)
+      expectErr({ stdout: "", stderr, code } as RunResult, "E_USAGE", "--tag is required")
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
@@ -277,15 +299,15 @@ describe("cli push — integration", () => {
   })
 
   it("push fails when layout directory does not exist", () => {
-    const { stderr, code } = run([
+    const r = run([
       "push",
       "localhost:5000/test:1.0",
       "--layout",
       "/nonexistent/path/xyz",
       "--plain-http",
     ])
-    expect(code).toBe(1)
-    expect(stderr).toContain("error:")
+    expect(r.code).toBe(2)
+    expectErr(r, "E_USAGE", "no image layout")
   })
 
   it("pull --help prints usage and exits 0", () => {
@@ -321,10 +343,15 @@ describe("cli models — custom declarations", () => {
     try {
       const r = run(["models", "minimax"], undefined, env)
       expect(r.code).toBe(0)
-      // Task-language output, column-aligned (spacing is layout-dependent)
-      expect(r.stdout).toMatch(/MiniMax-H4 \(custom\)\s+text2video\s+next gen/)
+      const parsed = JSON.parse(r.stdout)
+      expect(parsed.kind).toBe("models")
+      const m4 = parsed.data.models.find((m: { id: string }) => m.id === "MiniMax-H4")
+      expect(m4.source).toBe("custom")
+      expect(m4.tasks).toEqual(["text2video"])
+      expect(m4.note).toBe("next gen")
       // H3 keeps {textOnly: false, ...} → image2video/frames2video, no text2video
-      expect(r.stdout).toMatch(/MiniMax-H3\s+image2video, frames2video\s+gw override/)
+      const h3 = parsed.data.models.find((m: { id: string }) => m.id === "MiniMax-H3")
+      expect(h3.tasks).toEqual(["image2video", "frames2video"])
 
       // unknown provider key in models config → hard error
       writeFileSync(
@@ -332,8 +359,8 @@ describe("cli models — custom declarations", () => {
         JSON.stringify({ models: { volcengine: [{ id: "x" }] } }),
       )
       const bad = run(["models"], undefined, env)
-      expect(bad.code).toBe(1)
-      expect(bad.stderr).toContain("unknown provider 'volcengine'")
+      expect(bad.code).toBe(3)
+      expectErr(bad, "E_CONFIG", "unknown provider 'volcengine'")
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
@@ -356,65 +383,71 @@ describe("cli models — custom declarations", () => {
     try {
       const r = run(["models", "minimax"], undefined, env)
       expect(r.code).toBe(0)
-      expect(r.stdout).toMatch(/MiniMax-M3\s+text2text/)
-      // defaults are starred per capability
-      // defaults no longer carry a plain-text marker (TTY-only green)
-      expect(r.stdout).toContain("minimax/MiniMax-M2.7")
-      expect(r.stdout).toContain("minimax/MiniMax-H3")
+      const parsed = JSON.parse(r.stdout)
+      const m3 = parsed.data.models.find((m: { id: string }) => m.id === "MiniMax-M3")
+      expect(m3.tasks).toEqual(["text2text"])
+      expect(parsed.data.defaults["text.generate"]).toBe("MiniMax-M2.7")
+      expect(parsed.data.models.some((m: { id: string }) => m.id === "MiniMax-H3")).toBe(true)
 
       const overview = run(["models"], undefined, env)
       expect(overview.code).toBe(0)
-      expect(overview.stdout).toContain("minimax/MiniMax-M3")
+      const all = JSON.parse(overview.stdout)
+      const minimax = all.data.providers.find((p: { provider: string }) => p.provider === "minimax")
+      expect(minimax.models.some((m: { id: string }) => m.id === "MiniMax-M3")).toBe(true)
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
   })
 
-  it("color output is plain-identical once stripped; piped output is always plain", () => {
+  it("piped stdout stays plain; forced color only affects --pretty", () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "cli-color-"))
     const configDir = path.join(tmp, "cfg")
     mkdirSync(configDir, { recursive: true })
     writeFileSync(path.join(configDir, "config.json"), "{}")
     const env = { CREATIFACT_CONFIG_DIR: configDir }
     try {
-      // Contract: piped stdout carries zero ANSI escapes — even under CI=true,
-      // which picocolors' default heuristics would otherwise color.
+      // Contract: the default envelope carries zero ANSI escapes — even under
+      // CI=true, which picocolors' default heuristics would otherwise color.
       const piped = run(["models", "kling"], undefined, { ...env, CI: "true" })
       expect(piped.code).toBe(0)
       expect(piped.stdout).not.toContain("\u001b")
 
-      // Forced color: stripping must reproduce the plain output byte-for-byte,
-      // so the color path can never diverge from the plain path in content.
+      // Forced color + --pretty: stripping must reproduce the plain pretty
+      // output byte-for-byte, so the color path can never diverge in content.
       // NO_COLOR="" re-enables color despite the run() pin (spec: only a
       // non-empty NO_COLOR disables).
-      const colored = run(["models", "kling"], undefined, {
+      const plainPretty = run(["models", "kling", "--pretty"], undefined, env)
+      expect(plainPretty.code).toBe(0)
+      expect(plainPretty.stdout).not.toContain("\u001b")
+      const colored = run(["models", "kling", "--pretty"], undefined, {
         ...env,
         FORCE_COLOR: "1",
         NO_COLOR: "",
       })
       expect(colored.code).toBe(0)
       expect(colored.stdout).toContain("\u001b[") // color path really exercised
-      expect(stripAnsi(colored.stdout)).toBe(piped.stdout)
+      expect(stripAnsi(colored.stdout)).toBe(plainPretty.stdout)
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
   })
 
-  it("--json adds derived tasks per model", () => {
+  it("models payload includes derived tasks per model", () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "cli-models-json-"))
     const configDir = path.join(tmp, "cfg")
     mkdirSync(configDir, { recursive: true })
     writeFileSync(path.join(configDir, "config.json"), "{}")
     const env = { CREATIFACT_CONFIG_DIR: configDir, MINIMAX_API_KEY: "" }
     try {
-      const r = run(["models", "minimax", "--json"], undefined, env)
+      const r = run(["models", "minimax"], undefined, env)
       expect(r.code).toBe(0)
       const parsed = JSON.parse(r.stdout)
-      expect(parsed.provider).toBe("minimax")
-      expect(parsed.defaults["text.generate"]).toBe("MiniMax-M2.7")
-      const m3 = parsed.models.find((m: { id: string }) => m.id === "MiniMax-M3")
+      expect(parsed.kind).toBe("models")
+      expect(parsed.data.provider).toBe("minimax")
+      expect(parsed.data.defaults["text.generate"]).toBe("MiniMax-M2.7")
+      const m3 = parsed.data.models.find((m: { id: string }) => m.id === "MiniMax-M3")
       expect(m3.tasks).toEqual(["text2text"])
-      const h3 = parsed.models.find((m: { id: string }) => m.id === "MiniMax-H3")
+      const h3 = parsed.data.models.find((m: { id: string }) => m.id === "MiniMax-H3")
       expect(h3.tasks).toEqual(["image2video", "frames2video"])
     } finally {
       rmSync(tmp, { recursive: true, force: true })
@@ -437,27 +470,31 @@ describe("cli package store — integration", () => {
 
       const viaPkg = run(["package", "ls"], undefined, env)
       expect(viaPkg.code).toBe(0)
-      expect(viaPkg.stdout).toContain("demo/a:1")
+      expect(JSON.parse(viaPkg.stdout).kind).toBe("package.list")
+      expect(viaPkg.stdout).toContain('"ref":"demo/a:1"')
 
       // rm one tag: shared blobs survive
       const r1 = run(["package", "rm", "demo/a:1"], undefined, env)
       expect(r1.code).toBe(0)
-      expect(r1.stderr).toContain("untagged demo/a:1")
-      expect(r1.stdout).not.toContain("Deleted:")
+      expect(JSON.parse(r1.stdout)).toEqual({
+        ok: true,
+        kind: "package.rm",
+        data: { untagged: ["demo/a:1"], deletedBlobs: expect.any(Array) },
+      })
       const after = run(["package", "ls"], undefined, env)
-      expect(after.stdout).toContain("demo/b:1")
-      expect(after.stdout).not.toContain("demo/a:1")
+      expect(after.stdout).toContain('"ref":"demo/b:1"')
+      expect(after.stdout).not.toContain('"ref":"demo/a:1"')
 
       // rm the last tag: blobs collected
       const r2 = run(["package", "rm", "demo/b:1"], undefined, env)
-      expect(r2.stderr).toContain("deleted sha256:")
+      expect(JSON.parse(r2.stdout).data.deletedBlobs.length).toBeGreaterThan(0)
       const empty = run(["package", "ls"], undefined, env)
-      expect(empty.stdout).toContain("Store is empty")
+      expect(JSON.parse(empty.stdout).data.entries).toEqual([])
 
       // rm of a missing tag fails cleanly
       const r3 = run(["package", "rm", "nope:1"], undefined, env)
-      expect(r3.code).toBe(1)
-      expect(r3.stderr).toContain("not found in store")
+      expect(r3.code).toBe(2)
+      expectErr(r3, "E_USAGE", "not found in store")
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
@@ -492,8 +529,8 @@ describe("cli package store — integration", () => {
 
       // push of an unknown store tag fails with a helpful message
       const push = run(["push", "nope/missing:1"], undefined, env)
-      expect(push.code).toBe(1)
-      expect(push.stderr + push.stdout).toMatch(/not found in|no image layout/)
+      expect(push.code).toBe(2)
+      expectErr(push, "E_USAGE", "not found in")
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
@@ -511,7 +548,11 @@ describe("cli config/auth — integration", () => {
     try {
       const { stdout, code } = run(["config", "path"], undefined, env)
       expect(code).toBe(0)
-      expect(stdout.trim()).toBe(file)
+      expect(JSON.parse(stdout)).toEqual({
+        ok: true,
+        kind: "config",
+        data: { action: "path", path: file },
+      })
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -526,7 +567,11 @@ describe("cli config/auth — integration", () => {
         env,
       )
       expect(login.code).toBe(0)
-      expect(login.stderr).toContain("login succeeded")
+      expect(JSON.parse(login.stdout)).toEqual({
+        ok: true,
+        kind: "login",
+        data: { registry: "localhost:5000", username: "testuser" },
+      })
 
       const config = JSON.parse(readFileSync(file, "utf8")) as {
         auths: Record<string, { auth: string; username: string }>
@@ -536,11 +581,19 @@ describe("cli config/auth — integration", () => {
 
       const get = run(["config", "get", "auths.localhost:5000.username"], undefined, env)
       expect(get.code).toBe(0)
-      expect(get.stdout.trim()).toBe("testuser")
+      expect(JSON.parse(get.stdout)).toEqual({
+        ok: true,
+        kind: "config",
+        data: { action: "get", key: "auths.localhost:5000.username", value: "testuser" },
+      })
 
       const getSecret = run(["config", "get", "auths.localhost:5000.auth"], undefined, env)
       expect(getSecret.code).toBe(0)
-      expect(getSecret.stdout.trim()).toBe("***")
+      expect(JSON.parse(getSecret.stdout)).toEqual({
+        ok: true,
+        kind: "config",
+        data: { action: "get", key: "auths.localhost:5000.auth", value: "***", secret: true },
+      })
 
       const list = run(["config", "list"], undefined, env)
       expect(list.code).toBe(0)
@@ -551,8 +604,8 @@ describe("cli config/auth — integration", () => {
       expect(logout.code).toBe(0)
 
       const gone = run(["config", "get", "auths.localhost:5000.username"], undefined, env)
-      expect(gone.code).toBe(1)
-      expect(gone.stderr).toContain("not found")
+      expect(gone.code).toBe(2)
+      expectErr(gone, "E_USAGE", "config key not found")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -567,14 +620,18 @@ describe("cli config/auth — integration", () => {
         env,
       )
       expect(login.code).toBe(0)
-      expect(login.stderr).toContain("login succeeded (reg.example.com)")
+      expect(JSON.parse(login.stdout)).toEqual({
+        ok: true,
+        kind: "login",
+        data: { registry: "reg.example.com", username: "u" },
+      })
 
       const again = run(["auth", "logout", "reg.example.com"], undefined, env)
       expect(again.code).toBe(0)
 
       const notLoggedIn = run(["auth", "logout", "reg.example.com"], undefined, env)
-      expect(notLoggedIn.code).toBe(1)
-      expect(notLoggedIn.stderr).toContain("Not logged in")
+      expect(notLoggedIn.code).toBe(4)
+      expectErr(notLoggedIn, "E_AUTH", "Not logged in")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -584,12 +641,12 @@ describe("cli config/auth — integration", () => {
     const { dir, env } = configEnv()
     try {
       const noRegistry = run(["auth", "login"], undefined, env)
-      expect(noRegistry.code).toBe(1)
-      expect(noRegistry.stderr).toContain("requires a <registry>")
+      expect(noRegistry.code).toBe(2)
+      expectErr(noRegistry, "E_USAGE", "requires a <registry>")
 
       const noUser = run(["auth", "login", "reg.io", "--password-stdin"], "pw\n", env)
-      expect(noUser.code).toBe(1)
-      expect(noUser.stderr).toContain("--username")
+      expect(noUser.code).toBe(2)
+      expectErr(noUser, "E_USAGE", "--username")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -607,11 +664,15 @@ describe("cli config/auth — integration", () => {
 
       const get = run(["config", "get", "providers.ark.baseUrl"], undefined, env)
       expect(get.code).toBe(0)
-      expect(get.stdout.trim()).toBe("https://ark.example.com")
+      expect(JSON.parse(get.stdout)).toEqual({
+        ok: true,
+        kind: "config",
+        data: { action: "get", key: "providers.ark.baseUrl", value: "https://ark.example.com" },
+      })
 
       const reserved = run(["config", "set", "version", "2"], undefined, env)
-      expect(reserved.code).toBe(1)
-      expect(reserved.stderr).toContain("reserved")
+      expect(reserved.code).toBe(3)
+      expectErr(reserved, "E_CONFIG", "reserved")
 
       const reset = run(["config", "reset"], undefined, env)
       expect(reset.code).toBe(0)
@@ -628,9 +689,8 @@ describe("cli config/auth — integration", () => {
       writeFileSync(file, "{ broken json")
 
       const pull = run(["pull", "reg.io/x:1.0"], undefined, env)
-      expect(pull.code).toBe(1)
-      expect(pull.stderr).toContain("corrupt")
-      expect(pull.stderr).toContain("config reset")
+      expect(pull.code).toBe(3)
+      expectErr(pull, "E_CONFIG", "corrupt")
 
       const reset = run(["config", "reset"], undefined, env)
       expect(reset.code).toBe(0)
@@ -797,8 +857,8 @@ describe("cli generate — integration", () => {
     const { env, dir, recordPath } = demoEnv()
     try {
       const missing = run(["generate", "image2image", "demo", "x"], undefined, env)
-      expect(missing.code).toBe(1)
-      expect(missing.stderr).toContain("image2image requires --image")
+      expect(missing.code).toBe(2)
+      expectErr(missing, "E_USAGE", "image2image requires --image")
 
       const img = path.join(dir, "cat.png")
       writeFileSync(img, "png")
@@ -824,10 +884,10 @@ describe("cli generate — integration", () => {
         undefined,
         env,
       )
-      expect(r.code).toBe(1)
+      expect(r.code).toBe(2)
       // The flag is not registered for text2video (help never shows it), so
       // commander rejects it at parse time before any provider work.
-      expect(r.stderr).toContain("unknown option '--first-frame'")
+      expectErr(r, "E_USAGE", "unknown option '--first-frame'")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -887,8 +947,8 @@ describe("cli generate — integration", () => {
         undefined,
         env,
       )
-      expect(missing.code).toBe(1)
-      expect(missing.stderr).toContain("requires --last-frame")
+      expect(missing.code).toBe(2)
+      expectErr(missing, "E_USAGE", "requires --last-frame")
 
       const a = path.join(dir, "a.png")
       const b = path.join(dir, "b.png")
@@ -943,7 +1003,7 @@ describe("cli generate — integration", () => {
         env,
       )
       expect(r.code).toBe(0)
-      expect(JSON.parse(r.stdout.trim())).toEqual({ providerId: "demo", id: "stuck-task" })
+      expect(JSON.parse(r.stdout).data.handle).toEqual({ providerId: "demo", id: "stuck-task" })
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -979,18 +1039,18 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("embed prints vector summary or --json", () => {
+  it("embed returns vectors as JSON", () => {
     const { env, dir } = demoEnv()
     try {
       const r = run(["generate", "embed", "demo/demo-embed", "a", "b"], undefined, env)
       expect(r.code).toBe(0)
-      expect(r.stdout).toContain("2 vector(s) of 2 dimensions")
-
-      const j = run(["generate", "embed", "demo/demo-embed", "a", "--json"], undefined, env)
-      expect(j.code).toBe(0)
-      const parsed = JSON.parse(j.stdout) as { capability: string; vectors: number[][] }
-      expect(parsed.capability).toBe("embed")
-      expect(parsed.vectors).toEqual([[0.1, 0.2]])
+      const parsed = JSON.parse(r.stdout)
+      expect(parsed.kind).toBe("generate")
+      expect(parsed.data.capability).toBe("embed")
+      expect(parsed.data.vectors).toEqual([
+        [0.1, 0.2],
+        [0.1, 0.2],
+      ])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -1001,9 +1061,9 @@ describe("cli generate — integration", () => {
     try {
       const r = run(["generate", "text2video", "demo/demo-video", "x", "--no-wait"], undefined, env)
       expect(r.code).toBe(0)
-      const lines = r.stdout.trim().split("\n")
-      expect(lines).toHaveLength(1)
-      expect(JSON.parse(lines[0] ?? "")).toEqual({ providerId: "demo", id: "ok-task" })
+      const parsed = JSON.parse(r.stdout)
+      expect(parsed.kind).toBe("generate")
+      expect(parsed.data.handle).toEqual({ providerId: "demo", id: "ok-task" })
 
       const handleFile = path.join(dir, "job.json")
       writeFileSync(handleFile, JSON.stringify({ providerId: "demo", id: "ok-task" }))
@@ -1040,9 +1100,9 @@ describe("cli generate — integration", () => {
         undefined,
         env,
       )
-      expect(r.code).toBe(1)
-      expect(r.stderr).toContain("timed out")
-      expect(r.stderr).toContain('"providerId":"demo"')
+      expect(r.code).toBe(8)
+      const env1 = expectErr(r, "E_TIMEOUT", "timed out")
+      expect(env1.error.details?.["handle"]).toEqual({ providerId: "demo", id: "stuck-task" })
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -1079,8 +1139,8 @@ describe("cli generate — integration", () => {
     const { env, dir } = demoEnv()
     try {
       const unknown = run(["generate", "frobnicate"], undefined, env)
-      expect(unknown.code).toBe(1)
-      expect(unknown.stderr).toContain("unknown generate task 'frobnicate'")
+      expect(unknown.code).toBe(2)
+      expectErr(unknown, "E_USAGE", "unknown generate task 'frobnicate'")
 
       const pass = run(
         ["generate", "text2image", "demo/demo-unknown", "x", "--no-pack"],
@@ -1091,8 +1151,8 @@ describe("cli generate — integration", () => {
       expect(pass.stdout).toContain("https://cdn.test/out.png")
 
       const unknownProvider = run(["generate", "text2image", "nope/m", "x"], undefined, env)
-      expect(unknownProvider.code).toBe(1)
-      expect(unknownProvider.stderr).toContain("unknown provider 'nope'")
+      expect(unknownProvider.code).toBe(2)
+      expectErr(unknownProvider, "E_USAGE", "unknown provider 'nope'")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -1117,9 +1177,8 @@ describe("cli generate — integration", () => {
         undefined,
         env,
       )
-      expect(bare.code).toBe(1)
-      expect(bare.stderr).toContain("no <provider> given")
-      expect(bare.stderr).toContain("--model <provider>/<model>")
+      expect(bare.code).toBe(2)
+      expectErr(bare, "E_USAGE", "no <provider> given")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -1130,8 +1189,8 @@ describe("cli generate — integration", () => {
     try {
       const env = { CREATIFACT_CONFIG_DIR: dir }
       const r = run(["generate", "text2image", "zhipu/cogview-4", "x"], undefined, env)
-      expect(r.code).toBe(1)
-      expect(r.stderr).toContain("missing Zhipu API key")
+      expect(r.code).toBe(6)
+      expectErr(r, "E_PROVIDER", "missing Zhipu API key")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -1304,35 +1363,31 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("--list-models prints supporting models with defaults and call templates", () => {
+  it("--list-models returns supporting models with defaults", () => {
     const { env, dir } = demoEnv()
     try {
       const r = run(["generate", "image2text", "--list-models"], undefined, env)
       expect(r.code).toBe(0)
-      expect(r.stdout).toContain("models supporting image2text")
-      // full reference form on every line; no plain-text default badge
-      expect(r.stdout).not.toContain("(default)")
-      expect(r.stdout).toMatch(/demo\/demo-vision\s*\n/)
-      expect(r.stdout).toContain(
-        'creatifact generate image2text demo/demo-vision "<prompt>" --input <file>',
+      const parsed = JSON.parse(r.stdout)
+      expect(parsed.kind).toBe("generate")
+      expect(parsed.data.task).toBe("image2text")
+      const demoEntry = parsed.data.models.entries.find(
+        (e: { provider: string }) => e.provider === "demo",
       )
+      expect(demoEntry).toEqual({ provider: "demo", model: "demo-vision", default: true })
 
       // provider scope positional filters to that provider
       const scoped = run(["generate", "text2text", "demo", "--list-models"], undefined, env)
       expect(scoped.code).toBe(0)
-      expect(scoped.stdout).toMatch(/demo\/demo-text\s/)
+      const scopedParsed = JSON.parse(scoped.stdout)
+      expect(
+        scopedParsed.data.models.entries.some((e: { model: string }) => e.model === "demo-text"),
+      ).toBe(true)
 
       // task with no supporter on the scoped provider: informative stderr, exit 0
       const empty = run(["generate", "video2text", "minimax", "--list-models"], undefined, env)
       expect(empty.code).toBe(0)
       expect(empty.stderr).toContain("no verified model supports video2text on 'minimax'")
-
-      // json payload is machine-parseable
-      const j = run(["generate", "image2text", "--list-models", "--json"], undefined, env)
-      expect(j.code).toBe(0)
-      const parsed = JSON.parse(j.stdout)
-      const demoEntry = parsed.entries.find((e: { provider: string }) => e.provider === "demo")
-      expect(demoEntry).toEqual({ provider: "demo", model: "demo-vision", default: true })
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -1352,8 +1407,8 @@ describe("cli generate — integration", () => {
     )
     try {
       const r = run(["generate", "video2text", "minimax", "q", "--input", "a.mp4"], undefined, env)
-      expect(r.code).toBe(1)
-      expect(r.stderr).toContain("has no model for video.understand")
+      expect(r.code).toBe(2)
+      expectErr(r, "E_USAGE", "has no model for video.understand")
       expect(r.stderr).toContain("models that support video2text:")
       expect(r.stderr).toContain("demo/demo-vision")
       expect(r.stderr).toContain("--list-models")
@@ -1372,20 +1427,27 @@ describe("cli generate — integration", () => {
     try {
       const all = run(["models"], undefined, env)
       expect(all.code).toBe(0)
-      // flat catalog: pure data rows, no provider section comments
-      expect(all.stdout).toContain("minimax/MiniMax-M3")
-      expect(all.stdout).not.toMatch(/^\s*#/m)
-      expect(all.stderr).not.toContain("unavailable")
+      // every configured provider appears in the JSON catalog
+      const parsedAll = JSON.parse(all.stdout)
+      expect(parsedAll.kind).toBe("models")
+      const ids = parsedAll.data.providers.map((p: { provider: string }) => p.provider)
+      expect(ids).toContain("minimax")
+      expect(ids).toContain("demo")
+      expect(parsedAll.data.providers.every((p: { error?: string }) => p.error === undefined)).toBe(
+        true,
+      )
 
       const one = run(["models", "demo"], undefined, env)
       expect(one.code).toBe(0)
-      expect(one.stdout).toContain("demo-image")
-      expect(one.stdout).toContain("demo-vision")
+      const parsedOne = JSON.parse(one.stdout)
+      const modelIds = parsedOne.data.models.map((m: { id: string }) => m.id)
+      expect(modelIds).toContain("demo-image")
+      expect(modelIds).toContain("demo-vision")
 
-      const j = run(["models", "demo", "--json"], undefined, env)
-      expect(JSON.parse(j.stdout).models).toHaveLength(7)
+      const j = run(["models", "demo"], undefined, env)
+      expect(JSON.parse(j.stdout).data.models).toHaveLength(7)
 
-      expect(run(["models", "nope"], undefined, env).stderr).toContain("unknown provider")
+      expectErr(run(["models", "nope"], undefined, env), "E_USAGE", "unknown provider")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -1398,13 +1460,17 @@ describe("cli generate — integration", () => {
       // No CREATIFACT_CONFIG_DIR: the flag alone must route config reads.
       const models = run(["models", "--config-dir", configDir])
       expect(models.code).toBe(0)
-      expect(models.stdout).toMatch(/demo\/demo-image/)
-      // credential-free built-ins list with a badge instead of erroring
+      expect(models.stdout).toContain('"demo-image"')
+      // credential-free built-ins list cleanly instead of erroring
       expect(models.stderr).not.toContain("unavailable")
 
       const configPath = run(["config", "path", "--config-dir", configDir])
       expect(configPath.code).toBe(0)
-      expect(configPath.stdout.trim()).toBe(path.join(configDir, "config.json"))
+      expect(JSON.parse(configPath.stdout)).toEqual({
+        ok: true,
+        kind: "config",
+        data: { action: "path", path: path.join(configDir, "config.json") },
+      })
 
       const gen = run(
         ["generate", "text2image", "demo/demo-image", "x", "--no-pack", "--config-dir", configDir],
@@ -1415,9 +1481,8 @@ describe("cli generate — integration", () => {
       expect(gen.stdout).toContain("https://cdn.test/out.png")
 
       const missing = run(["models", "--config-dir"])
-      expect(missing.code).toBe(1)
-      expect(missing.stderr).toContain("--config-dir")
-      expect(missing.stderr).toContain("argument missing")
+      expect(missing.code).toBe(2)
+      expectErr(missing, "E_USAGE", "--config-dir")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -1442,16 +1507,19 @@ describe("cli -f file-driven — integration", () => {
         provider: "demo/demo-image",
         prompt: "file crane",
         options: { quality: "hd" },
-        json: true,
       }),
     )
     try {
       // File-only run
       const r = run(["-f", reqPath, "--output", resultDir], undefined, env)
       expect(r.code).toBe(0)
-      const parsed = JSON.parse(r.stdout) as { capability: string; artifacts: { url: string }[] }
-      expect(parsed.capability).toBe("image.generate")
-      expect(parsed.artifacts[0]?.url).toContain("out.png")
+      const parsed = JSON.parse(r.stdout) as {
+        kind: string
+        data: { capability: string; artifacts: { url: string }[] }
+      }
+      expect(parsed.kind).toBe("generate")
+      expect(parsed.data.capability).toBe("image.generate")
+      expect(parsed.data.artifacts[0]?.url).toContain("out.png")
 
       const req = lastRequest(recordPath)
       expect(req["prompt"]).toBe("file crane")
@@ -1495,7 +1563,7 @@ describe("cli -f file-driven — integration", () => {
       )
       const v = run(["-f", videoPath], undefined, env)
       expect(v.code).toBe(0)
-      expect(JSON.parse(v.stdout.trim())).toEqual({ providerId: "demo", id: "ok-task" })
+      expect(JSON.parse(v.stdout).data.handle).toEqual({ providerId: "demo", id: "ok-task" })
 
       const textPath = path.join(dir, "text.json")
       writeFileSync(
@@ -1560,7 +1628,11 @@ describe("cli -f file-driven — integration", () => {
       )
       const login = run(["-f", loginPath], undefined, env)
       expect(login.code).toBe(0)
-      expect(login.stderr).toContain("login succeeded")
+      expect(JSON.parse(login.stdout)).toEqual({
+        ok: true,
+        kind: "login",
+        data: { registry: "localhost:5000", username: "fileuser" },
+      })
 
       const setPath = path.join(dir, "set.json")
       writeFileSync(
@@ -1569,10 +1641,14 @@ describe("cli -f file-driven — integration", () => {
       )
       const set = run(["-f", setPath], undefined, env)
       expect(set.code).toBe(0)
-      expect(set.stdout).toContain("Set defaults.gen.provider")
+      expect(set.stdout).toContain('"key":"defaults.gen.provider"')
 
       const get = run(["config", "get", "defaults.gen.provider"], undefined, env)
-      expect(get.stdout.trim()).toBe("demo")
+      expect(JSON.parse(get.stdout)).toEqual({
+        ok: true,
+        kind: "config",
+        data: { action: "get", key: "defaults.gen.provider", value: "demo" },
+      })
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -1584,14 +1660,14 @@ describe("cli -f file-driven — integration", () => {
       const badJson = path.join(dir, "bad.json")
       writeFileSync(badJson, "{ oops")
       const r1 = run(["-f", badJson])
-      expect(r1.code).toBe(1)
-      expect(r1.stderr).toContain("not valid JSON")
+      expect(r1.code).toBe(2)
+      expectErr(r1, "E_USAGE", "not valid JSON")
 
       const unknown = path.join(dir, "unknown.json")
       writeFileSync(unknown, JSON.stringify({ command: "frobnicate" }))
       const r2 = run(["-f", unknown])
-      expect(r2.code).toBe(1)
-      expect(r2.stderr).toContain("unknown command 'frobnicate'")
+      expect(r2.code).toBe(2)
+      expectErr(r2, "E_USAGE", "unknown command 'frobnicate'")
 
       const typo = path.join(dir, "typo.json")
       writeFileSync(
@@ -1599,12 +1675,12 @@ describe("cli -f file-driven — integration", () => {
         JSON.stringify({ command: "generate.text2image", provider: "demo", promp: "x" }),
       )
       const r3 = run(["-f", typo])
-      expect(r3.code).toBe(1)
-      expect(r3.stderr).toContain("unknown field 'promp' for command 'generate.text2image'")
+      expect(r3.code).toBe(2)
+      expectErr(r3, "E_USAGE", "unknown field 'promp'")
 
       const missing = run(["-f", path.join(dir, "nope.json")])
-      expect(missing.code).toBe(1)
-      expect(missing.stderr).toContain("error:")
+      expect(missing.code).toBe(2)
+      expectErr(missing, "E_USAGE", "cannot read request file")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -1641,6 +1717,13 @@ describe("cli -f file-driven — integration", () => {
       expect(r.stderr).toContain("[1/2] s1 · generate.text2image")
       expect(r.stderr).toContain("[2/2] s2 · generate.image2image")
 
+      // the pipeline summary envelope carries every step's data
+      const summary = JSON.parse(r.stdout)
+      expect(summary.kind).toBe("pipeline")
+      expect(summary.data.steps).toHaveLength(2)
+      expect(summary.data.steps[0]).toMatchObject({ name: "s1", kind: "generate" })
+      expect(summary.data.steps[1].data.artifacts[0].url).toContain("out.png")
+
       const requests = readFileSync(recordPath, "utf8")
         .trim()
         .split("\n")
@@ -1658,14 +1741,14 @@ describe("cli -f file-driven — integration", () => {
       const mixed = path.join(dir, "mixed.json")
       writeFileSync(mixed, JSON.stringify({ command: "models", steps: [{ command: "models" }] }))
       const r1 = run(["-f", mixed])
-      expect(r1.code).toBe(1)
-      expect(r1.stderr).toContain("cannot have both 'command' and 'steps'")
+      expect(r1.code).toBe(2)
+      expectErr(r1, "E_USAGE", "cannot have both 'command' and 'steps'")
 
       const overlay = path.join(dir, "overlay.json")
       writeFileSync(overlay, JSON.stringify({ steps: [{ command: "models" }] }))
-      const r2 = run(["-f", overlay, "--json"])
-      expect(r2.code).toBe(1)
-      expect(r2.stderr).toContain("flags are not supported with a steps file")
+      const r2 = run(["-f", overlay, "--provider", "demo"])
+      expect(r2.code).toBe(2)
+      expectErr(r2, "E_USAGE", "flags are not supported with a steps file")
 
       const forward = path.join(dir, "forward.json")
       writeFileSync(
@@ -1678,8 +1761,8 @@ describe("cli -f file-driven — integration", () => {
         }),
       )
       const r3 = run(["-f", forward])
-      expect(r3.code).toBe(1)
-      expect(r3.stderr).toContain("unknown step 'later'")
+      expect(r3.code).toBe(2)
+      expectErr(r3, "E_USAGE", "unknown step 'later'")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

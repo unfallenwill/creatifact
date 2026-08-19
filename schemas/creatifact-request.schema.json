@@ -114,11 +114,7 @@
       "type": "string"
     },
     "noPack": {
-      "description": "Media tasks only: print artifacts without building a result package.",
-      "type": "boolean"
-    },
-    "json": {
-      "description": "Print structured JSON output.",
+      "description": "Media tasks only: return artifacts without building a result package.",
       "type": "boolean"
     },
     "handle": {
