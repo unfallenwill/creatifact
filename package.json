@@ -1,10 +1,30 @@
 {
   "name": "creatifact",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Agent-native multimodal creation executor with OCI artifact packaging and delivery",
   "author": "unfallenwill",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/unfallenwill/creatifact.git"
+  },
+  "bugs": {
+    "url": "https://github.com/unfallenwill/creatifact/issues"
+  },
+  "homepage": "https://github.com/unfallenwill/creatifact#readme",
+  "keywords": [
+    "cli",
+    "ai",
+    "multimodal",
+    "text-to-image",
+    "text-to-video",
+    "video-generation",
+    "image-generation",
+    "oci",
+    "artifact",
+    "agent"
+  ],
   "bin": {
     "creatifact": "dist/index.mjs"
   },
