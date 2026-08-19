@@ -1,5 +1,6 @@
 import { Command } from "commander"
 
+import { loadConfig } from "./config"
 import { capabilitiesOf, createProvider, listConfiguredProviderIds } from "./providers"
 import { addGlobalOptions, parseArgsWith } from "./util"
 
@@ -38,6 +39,20 @@ export async function runModelsFromParsed(
 ): Promise<void> {
   const { provider: id, json } = parsed
 
+  // models.<providerId> keys must name known providers; reject loudly so a
+  // typo never silently shadows a whole declaration list.
+  const config = loadConfig(opts.configPath)
+  const declared = Object.keys(config.models ?? {})
+  const known = new Set(listConfiguredProviderIds(opts))
+  const unknown = declared.filter((key) => !known.has(key))
+  if (unknown.length > 0) {
+    throw new Error(
+      `models config: unknown provider '${unknown.join("', '")}' (available: ${[...known].join(
+        ", ",
+      )}); remove the key or declare the provider first`,
+    )
+  }
+
   if (id === undefined) {
     for (const providerId of listConfiguredProviderIds(opts)) {
       try {
@@ -59,7 +74,8 @@ export async function runModelsFromParsed(
   }
   for (const m of provider.models) {
     const caps = Object.keys(m.capabilities).join(", ")
-    console.log(`${m.id}  ${caps}${m.note ? `  ${truncate(m.note, 60)}` : ""}`)
+    const custom = m.source === "custom" ? " (custom)" : ""
+    console.log(`${m.id}${custom}  ${caps}${m.note ? `  ${truncate(m.note, 60)}` : ""}`)
   }
 }
 

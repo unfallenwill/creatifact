@@ -290,6 +290,49 @@ describe("cli push — integration", () => {
   })
 })
 
+describe("cli models — custom declarations", () => {
+  it("lists custom models with a marker; rejects unknown provider keys", () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "cli-models-"))
+    const configDir = path.join(tmp, "cfg")
+    mkdirSync(configDir, { recursive: true })
+    writeFileSync(
+      path.join(configDir, "config.json"),
+      JSON.stringify({
+        providers: { minimax: { apiKey: "k" } },
+        models: {
+          minimax: [
+            {
+              id: "MiniMax-H4",
+              mode: "v2",
+              capabilities: { "video.generate": { textOnly: true } },
+              note: "next gen",
+            },
+            { id: "MiniMax-H3", note: "gw override" },
+          ],
+        },
+      }),
+    )
+    const env = { CREATIFACT_CONFIG_DIR: configDir }
+    try {
+      const r = run(["models", "minimax"], undefined, env)
+      expect(r.code).toBe(0)
+      expect(r.stdout).toContain("MiniMax-H4 (custom)  video.generate  next gen")
+      expect(r.stdout).toContain("MiniMax-H3  video.generate  gw override")
+
+      // unknown provider key in models config → hard error
+      writeFileSync(
+        path.join(configDir, "config.json"),
+        JSON.stringify({ models: { volcengine: [{ id: "x" }] } }),
+      )
+      const bad = run(["models"], undefined, env)
+      expect(bad.code).toBe(1)
+      expect(bad.stderr).toContain("unknown provider 'volcengine'")
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+})
+
 describe("cli package store — integration", () => {
   it("package ls lists tags; package rm untags and GCs blobs", () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-rm-"))

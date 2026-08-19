@@ -1,6 +1,7 @@
 import { mimeOfUrl, toImageUrl } from "../core/fileref"
 import { createJsonClient, type JsonClient, SLOW_POST_TIMEOUT_MS } from "../core/http"
 import { pollToArtifacts } from "../core/job"
+import { mergeModelDeclarations } from "../core/modelRegistry"
 import {
   type CallContext,
   type Env,
@@ -80,6 +81,8 @@ export interface ZhipuProviderConfig {
   pollIntervalMs?: number
   /** useAsync 轮询超时(默认 10 分钟) */
   pollTimeoutMs?: number
+  /** User model declarations from config.json's models.zhipu (merged into the builtin list). */
+  models?: unknown
 }
 
 /** The concrete shape createZhipuProvider returns. */
@@ -198,6 +201,29 @@ export function createZhipuProvider(
   config: ZhipuProviderConfig = {},
   env: Env = process.env,
 ): ZhipuProvider {
+  // Built-in verified list + user declarations (config.json models.zhipu):
+  // custom video models MUST declare a ZhipuVideoMode they route to.
+  const ALL_ZHIPU_MODES = [
+    "cogvideox3",
+    "cogvideox",
+    "vidu-text",
+    "vidu-image",
+    "vidu-frames",
+    "vidu-reference",
+  ] as const
+  const { models: mergedModels, modeFor } = mergeModelDeclarations(
+    "zhipu",
+    ZHIPU_MODELS,
+    config.models,
+    ALL_ZHIPU_MODES,
+  )
+  const modelModes: Record<string, ZhipuVideoMode> = {
+    ...ZHIPU_VIDEO_MODEL_MODES,
+    ...Object.fromEntries(
+      Object.entries(modeFor).map(([id, mode]) => [id, mode as ZhipuVideoMode]),
+    ),
+  }
+
   const apiKey = config.apiKey ?? env["ZHIPU_API_KEY"] ?? env["BIGMODEL_API_KEY"]
   if (!apiKey) {
     throw new ProviderError(
@@ -249,9 +275,9 @@ export function createZhipuProvider(
 
   const videoGenerate: VideoGenerateApi<ZhipuVideoOptions> = {
     async submit(req, ctx) {
-      guardFrameSupport(ZHIPU_MODELS, req)
-      // 运行时模型 id 来自用户输入;未知 id 落到 cogvideox3 分支(历史默认)。
-      const mode = ZHIPU_VIDEO_MODEL_MODES[req.model as ZhipuModelId] ?? "cogvideox3"
+      guardFrameSupport(mergedModels, req)
+      // 运行时模型 id 来自用户输入;未声明(不在合并表内)的 id 落到 cogvideox3 分支(历史默认)。
+      const mode = modelModes[req.model as ZhipuModelId] ?? "cogvideox3"
       const { image_url: optionImages, ...rest } = req.options ?? {}
       const frames = await buildImageUrl(req, mode)
 
@@ -362,7 +388,7 @@ export function createZhipuProvider(
 
   return {
     id: "zhipu",
-    models: ZHIPU_MODELS,
+    models: mergedModels,
     defaultModels: ZHIPU_DEFAULT_MODELS,
     textGenerate,
     videoGenerate,

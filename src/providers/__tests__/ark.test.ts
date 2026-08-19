@@ -233,3 +233,14 @@ test("ark text generate posts chat/completions and returns text with usage", asy
   })
   mock.restore()
 })
+
+test("ark: custom model declarations append to the list; mode is rejected", () => {
+  const ark = createArkProvider({
+    apiKey: "a-key",
+    models: [{ id: "doubao-seedream-5", capabilities: { "image.generate": {} } }],
+  })
+  expect(ark.models.find((m) => m.id === "doubao-seedream-5")?.source).toBe("custom")
+  expect(() => createArkProvider({ apiKey: "a-key", models: [{ id: "x", mode: "v2" }] })).toThrow(
+    /x: provider has no protocol modes/,
+  )
+})

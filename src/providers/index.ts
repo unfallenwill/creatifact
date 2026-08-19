@@ -1,5 +1,6 @@
 import { type CreatifactConfig, loadConfig } from "../config"
 import { type ArkProviderConfig, createArkProvider } from "./ark"
+import { expandEnvRefs } from "./core/modelRegistry"
 import type { Env, Provider } from "./core/types"
 import { createKlingProvider, type KlingProviderConfig } from "./kling"
 import { createMiniMaxProvider, type MiniMaxProviderConfig } from "./minimax"
@@ -24,6 +25,8 @@ export type { ClassifyError, JsonClient, JsonClientConfig } from "./core/http"
 export { createJsonClient, defaultClassifyError, requestJson } from "./core/http"
 export type { PollOptions } from "./core/job"
 export { JobTimeoutError, pollUntil } from "./core/job"
+export type { ModelDeclaration } from "./core/modelRegistry"
+export { expandEnvRefs, mergeModelDeclarations } from "./core/modelRegistry"
 export {
   type Artifact,
   type CallContext,
@@ -129,8 +132,18 @@ export async function createProvider(
 ): Promise<Provider> {
   const config = loadConfig(opts.configPath)
   const merged: Record<string, unknown> = { ...(config.providers?.[id] ?? {}), ...opts.settings }
+  // User model declarations live at config.models.<id> (top-level section);
+  // explicit settings.models (programmatic) wins over the config file.
+  if (merged["models"] === undefined && config.models?.[id] !== undefined) {
+    merged["models"] = config.models[id]
+  }
+  // ${VAR} refs (e.g. apiKey: "${MINIMAX_API_KEY}") resolve from env at
+  // consumption time; the config file on disk keeps the literal reference.
+  const expanded = expandEnvRefs(merged, env) as Record<string, unknown>
   const module =
-    typeof merged["module"] === "string" && merged["module"] !== "" ? merged["module"] : undefined
+    typeof expanded["module"] === "string" && expanded["module"] !== ""
+      ? expanded["module"]
+      : undefined
   const builtin = FACTORIES[id]
   if (module) {
     if (builtin) {
@@ -139,7 +152,7 @@ export async function createProvider(
         `'${id}' is a built-in provider; remove providers.${id}.module or pick another id`,
       )
     }
-    const settings = { ...merged }
+    const settings = { ...expanded }
     delete settings["module"]
     const factory = await loadProviderFactory(id, module, opts.cwd ?? process.cwd())
     const provider = factory(settings, env)
@@ -150,7 +163,7 @@ export async function createProvider(
     const available = [...new Set([...Object.keys(FACTORIES), ...configuredPluginIds(config)])]
     throw new Error(`unknown provider '${id}' (available: ${available.join(", ")})`)
   }
-  return builtin(merged, env)
+  return builtin(expanded, env)
 }
 
 /** Identity helper for plugin authors: typed settings + compile-time contract checking. */

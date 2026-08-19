@@ -160,8 +160,11 @@ export interface ModelSupport {
 export interface VerifiedModel {
   id: string
   capabilities: Partial<Record<Capability, ModelSupport>>
-  lastVerified: string
+  /** When the built-in entry was last verified against the live API (built-ins only). */
+  lastVerified?: string
   note?: string
+  /** `custom` marks user-declared entries from config.json's models section. */
+  source?: "builtin" | "custom"
 }
 
 /**

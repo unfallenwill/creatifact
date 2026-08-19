@@ -431,3 +431,43 @@ test("zhipu text generate posts chat/completions with system+user messages", asy
   })
   mock.restore()
 })
+
+test("custom model declarations: vidu-image mode routes single first frame", async () => {
+  const mock = mockFetch([() => jsonResponse(200, { id: "zj-1", task_status: "SUCCESS" })])
+  const zhipu = createZhipuProvider({
+    apiKey: "zp-key",
+    models: [
+      {
+        id: "vidu3-image",
+        mode: "vidu-image",
+        capabilities: { "video.generate": { textOnly: false, firstFrame: true } },
+        note: "new vidu gen",
+      },
+    ],
+  })
+
+  const custom = zhipu.models.find((m) => m.id === "vidu3-image")
+  expect(custom?.source).toBe("custom")
+
+  const handle = await zhipu.videoGenerate.submit({
+    model: "vidu3-image",
+    prompt: "a crane",
+    firstFrame: { url: "https://x.test/f.png" },
+  })
+  expect(handle.id).toBe("zj-1")
+  expect(bodyOf(at(mock.recorded, 0))["image_url"]).toBe("https://x.test/f.png")
+  expect(bodyOf(at(mock.recorded, 0))["model"]).toBe("vidu3-image")
+  mock.restore()
+})
+
+test("zhipu declaration errors: missing mode / unknown mode", () => {
+  expect(() =>
+    createZhipuProvider({
+      apiKey: "zp-key",
+      models: [{ id: "vidu3-image", capabilities: { "video.generate": {} } }],
+    }),
+  ).toThrow(/vidu3-image.*'mode' is required/)
+  expect(() =>
+    createZhipuProvider({ apiKey: "zp-key", models: [{ id: "x", mode: "vidu-audio" }] }),
+  ).toThrow(/unknown mode 'vidu-audio'/)
+})

@@ -450,3 +450,61 @@ test("minimax models list includes the six documented v1 endpoint families", () 
   expect(MINIMAX_VIDEO_MODEL_MODES["MiniMax-Hailuo-02"]).toEqual(["t2v", "i2v", "fl2v"])
   expect(MINIMAX_VIDEO_MODEL_MODES["S2V-01"]).toEqual(["s2v"])
 })
+
+test("custom model declarations: v1 mode routes to the v1 endpoint", async () => {
+  const mock = mockFetch([() => jsonResponse(200, { task_id: "custom-1" })])
+  const minimax = createMiniMaxProvider({
+    apiKey: "mm-key",
+    models: [
+      {
+        id: "MiniMax-H4",
+        mode: "i2v",
+        capabilities: { "video.generate": { textOnly: false, firstFrame: true } },
+        note: "new model on the v1 protocol",
+      },
+    ],
+  })
+
+  const h4 = minimax.models.find((m) => m.id === "MiniMax-H4")
+  expect(h4?.source).toBe("custom")
+  expect(h4?.note).toBe("new model on the v1 protocol")
+
+  const handle = await minimax.videoGenerate.submit({
+    model: "MiniMax-H4",
+    prompt: "a crane",
+    firstFrame: { url: "https://x.test/f.png" },
+    options: { duration: 6, resolution: "768P" },
+  })
+  expect(handle).toEqual({ providerId: "minimax", id: "custom-1", apiVersion: "v1" })
+  expect(at(mock.recorded, 0).url).toBe("https://api.minimaxi.com/v1/video_generation")
+  expect(bodyOf(at(mock.recorded, 0))["model"]).toBe("MiniMax-H4")
+  mock.restore()
+})
+
+test("custom model declaration errors: missing mode and unknown mode", () => {
+  expect(() =>
+    createMiniMaxProvider({
+      apiKey: "mm-key",
+      models: [{ id: "MiniMax-H4", capabilities: { "video.generate": {} } }],
+    }),
+  ).toThrow(/MiniMax-H4.*'mode' is required/)
+  expect(() =>
+    createMiniMaxProvider({ apiKey: "mm-key", models: [{ id: "MiniMax-H4", mode: "v3" }] }),
+  ).toThrow(/unknown mode 'v3'/)
+})
+
+test("override retargets a builtin model's protocol mode", async () => {
+  const mock = mockFetch([() => jsonResponse(200, { task_id: "t2" })])
+  const minimax = createMiniMaxProvider({
+    apiKey: "mm-key",
+    models: [{ id: "MiniMax-H3", mode: "t2v" }],
+  })
+  await minimax.videoGenerate.submit({
+    model: "MiniMax-H3",
+    prompt: "x",
+    options: { resolution: "768P", duration: 6 },
+  })
+  // t2v is a v1 mode → v1 endpoint, not /v2
+  expect(at(mock.recorded, 0).url).toBe("https://api.minimaxi.com/v1/video_generation")
+  mock.restore()
+})

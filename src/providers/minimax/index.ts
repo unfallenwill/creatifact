@@ -1,5 +1,6 @@
 import { mimeOfUrl, toImageUrl } from "../core/fileref"
 import { createJsonClient, type JsonClient, SLOW_POST_TIMEOUT_MS } from "../core/http"
+import { mergeModelDeclarations } from "../core/modelRegistry"
 import {
   type CallContext,
   type Env,
@@ -69,6 +70,8 @@ export interface MiniMaxImageOptions {
 export interface MiniMaxProviderConfig {
   apiKey?: string
   baseUrl?: string
+  /** User model declarations from config.json's models.minimax (merged into the builtin list). */
+  models?: unknown
 }
 
 /** The concrete shape createMiniMaxProvider returns. */
@@ -132,6 +135,25 @@ export function createMiniMaxProvider(
   config: MiniMaxProviderConfig = {},
   env: Env = process.env,
 ): MiniMaxProvider {
+  // Built-in verified list + user declarations (config.json models.minimax):
+  // custom video models MUST declare a mode they route to; overriding an
+  // existing id retargets its protocol mode. Validated before credentials so
+  // config errors surface first.
+  const ALL_MINIMAX_MODES = ["v2", "t2v", "i2v", "fl2v", "s2v"] as const
+  const { models: mergedModels, modeFor } = mergeModelDeclarations(
+    "minimax",
+    MINIMAX_MODELS,
+    config.models,
+    ALL_MINIMAX_MODES,
+  )
+  const modelModes: Record<string, MiniMaxVideoMode[]> = {
+    ...MINIMAX_VIDEO_MODEL_MODES,
+    // a declared mode explicitly retargets the id (custom append or builtin override)
+    ...Object.fromEntries(
+      Object.entries(modeFor).map(([id, mode]) => [id, [mode as MiniMaxVideoMode]]),
+    ),
+  }
+
   const apiKey = config.apiKey ?? env["MINIMAX_API_KEY"]
   if (!apiKey) {
     throw new ProviderError(
@@ -139,6 +161,7 @@ export function createMiniMaxProvider(
       "missing MiniMax API key: set MINIMAX_API_KEY or providers.minimax.apiKey in config",
     )
   }
+
   const client: JsonClient = createJsonClient({
     baseUrl: config.baseUrl ?? DEFAULT_BASE_URL,
     headers: { authorization: `Bearer ${apiKey}` },
@@ -150,8 +173,8 @@ export function createMiniMaxProvider(
   }
 
   function modeForRequest(req: VideoGenerateRequest<MiniMaxVideoOptions>): MiniMaxVideoMode {
-    // 运行时模型 id 来自用户输入,不在 MiniMaxModelId 联合内;未知 id 保持历史默认(V2)。
-    const modes = MINIMAX_VIDEO_MODEL_MODES[req.model as MiniMaxModelId]
+    // 运行时模型 id 来自用户输入;未声明(不在合并表内)的 id 保持历史默认(V2)。
+    const modes = modelModes[req.model as MiniMaxModelId]
     if (!modes) return "v2"
     if (modes.includes("v2")) return "v2"
     if (modes.includes("s2v")) return "s2v"
@@ -387,7 +410,7 @@ export function createMiniMaxProvider(
 
   const videoGenerate: VideoGenerateApi<MiniMaxVideoOptions> = {
     async submit(req, ctx) {
-      guardFrameSupport(MINIMAX_MODELS, req)
+      guardFrameSupport(mergedModels, req)
       const mode = modeForRequest(req)
       return mode === "v2" ? submitV2(req, ctx) : submitV1(req, mode, ctx)
     },
@@ -446,7 +469,7 @@ export function createMiniMaxProvider(
 
   return {
     id: "minimax",
-    models: MINIMAX_MODELS,
+    models: mergedModels,
     defaultModels: MINIMAX_DEFAULT_MODELS,
     videoGenerate,
     imageGenerate,

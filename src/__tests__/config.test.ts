@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -222,4 +222,20 @@ test("storeDir lives under the config dir", () => {
 test("envForConfigPath prefers the explicit config dir", () => {
   expect(envForConfigPath(undefined)).toBe(process.env)
   expect(envForConfigPath("/x/config.json")).toEqual({ CREATIFACT_CONFIG_DIR: "/x" })
+})
+
+test("models section roundtrips and is not masked", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cfg-models-"))
+  try {
+    const file = join(dir, "config.json")
+    writeFileSync(file, JSON.stringify({ models: { minimax: [{ id: "MiniMax-H4", mode: "v2" }] } }))
+    const loaded = loadConfig(file)
+    expect(loaded.models?.["minimax"]).toEqual([{ id: "MiniMax-H4", mode: "v2" }])
+    const masked = maskForPrint(loaded) as { models?: unknown }
+    expect(masked.models).toEqual(loaded.models)
+    saveConfig(loaded, file)
+    expect(JSON.parse(readFileSync(file, "utf8")).models["minimax"][0].id).toBe("MiniMax-H4")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

@@ -1,5 +1,6 @@
 import { toImageUrl } from "../core/fileref"
 import { createJsonClient, type JsonClient, SLOW_POST_TIMEOUT_MS } from "../core/http"
+import { mergeModelDeclarations } from "../core/modelRegistry"
 import {
   type EmbedApi,
   type Env,
@@ -52,6 +53,8 @@ export interface ArkEmbedOptions {
 export interface ArkProviderConfig {
   apiKey?: string
   baseUrl?: string
+  /** User model declarations from config.json's models.ark (appended; ark has no protocol modes). */
+  models?: unknown
 }
 
 /** The concrete shape createArkProvider returns — every capability is present. */
@@ -106,6 +109,9 @@ export function createArkProvider(
       "missing Ark API key: set ARK_API_KEY or providers.ark.apiKey in config",
     )
   }
+  // Built-in verified list + user declarations (config.json models.ark):
+  // ark passes model ids through to the API, no protocol modes.
+  const { models: mergedModels } = mergeModelDeclarations("ark", ARK_MODELS, config.models)
   const client: JsonClient = createJsonClient({
     baseUrl: config.baseUrl ?? DEFAULT_BASE_URL,
     headers: { authorization: `Bearer ${apiKey}` },
@@ -147,7 +153,7 @@ export function createArkProvider(
 
   const videoGenerate: VideoGenerateApi<ArkVideoOptions> = {
     async submit(req, ctx) {
-      guardFrameSupport(ARK_MODELS, req)
+      guardFrameSupport(mergedModels, req)
       const content = await buildVideoContent(req.prompt, req.firstFrame, req.lastFrame)
       const body: Record<string, unknown> = { model: req.model, content }
       if (req.options) {
@@ -314,7 +320,7 @@ export function createArkProvider(
 
   return {
     id: "ark",
-    models: ARK_MODELS,
+    models: mergedModels,
     defaultModels: ARK_DEFAULT_MODELS,
     textGenerate,
     videoGenerate,

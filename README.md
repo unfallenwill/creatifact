@@ -467,6 +467,45 @@ Credential resolution order: **CLI flags (complete pair) → config file → ano
 If the config file is corrupt, commands fail loudly with the file path and a
 `creatifact config reset` hint instead of silently ignoring your settings.
 
+String values under `providers` support whole-value environment references:
+`"apiKey": "${MINIMAX_API_KEY}"` resolves at call time; the file keeps the
+literal, and an unset variable behaves as if the key were absent.
+
+### Custom models
+
+The built-in model lists are code (video APIs have no shared spec), but same-
+provider new models are data: declare them under `models.<providerId>` in the
+config. Unknown ids append (marked `(custom)` by `creatifact models`); known
+ids override (shallow merge).
+
+```json
+{
+  "models": {
+    "minimax": [
+      {
+        "id": "MiniMax-H4",
+        "mode": "v2",
+        "capabilities": { "video.generate": { "textOnly": false, "firstFrame": true } },
+        "note": "duration 4-15 (hint only; the provider enforces)"
+      },
+      { "id": "MiniMax-H3", "note": "routed via internal gateway" }
+    ]
+  }
+}
+```
+
+Rules:
+
+- `models` keys must name a known provider (built-in or plugin); `creatifact models` rejects unknown keys.
+- Providers with protocol modes (`minimax`: `v2|t2v|i2v|fl2v|s2v`; `zhipu`:
+  `cogvideox3|cogvideox|vidu-text|vidu-image|vidu-frames|vidu-reference`)
+  require `mode` on custom entries declaring `video.generate`, and accept it
+  on overrides to retarget the protocol.
+- `kling` / `ark` pass model ids straight through; they have no modes and
+  reject a `mode` field.
+- Numeric constraints in `note` are hints — the provider's API is the
+  authority.
+
 ### Provider plugins
 
 Third-party providers are declared in the config under `providers.<id>.module`

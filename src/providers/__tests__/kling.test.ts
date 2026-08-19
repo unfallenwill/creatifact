@@ -252,3 +252,14 @@ test("kling poll rejects a foreign provider handle", async () => {
     category: "invalid",
   })
 })
+
+test("kling: custom model declarations append to the list; mode is rejected", () => {
+  const kling = createKlingProvider({
+    apiKey: "k-key",
+    models: [{ id: "kling-4.0", capabilities: { "video.generate": { textOnly: true } } }],
+  })
+  expect(kling.models.find((m) => m.id === "kling-4.0")?.source).toBe("custom")
+  expect(() =>
+    createKlingProvider({ apiKey: "k-key", models: [{ id: "k4", mode: "std" }] }),
+  ).toThrow(/k4: provider has no protocol modes/)
+})

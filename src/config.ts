@@ -31,9 +31,20 @@ export interface RegistryAuthEntry {
  * Unknown sections (e.g. "providers" used by the providers module) are preserved
  * on load/save, so multiple features share one file safely.
  */
+/** One user-declared model entry under models.<providerId> (validated in the providers layer). */
+export interface ModelDeclaration {
+  id: string
+  /** Provider protocol mode (e.g. minimax "v2"|"t2v"|"i2v"|"fl2v"|"s2v"; required for video models on mode-table providers). */
+  mode?: string
+  capabilities?: Record<string, Record<string, unknown>>
+  note?: string
+}
+
 export interface CreatifactConfig {
   version?: number
   providers?: Record<string, Record<string, unknown>>
+  /** User model declarations per provider id: append unknown ids, override known ones. */
+  models?: Record<string, ModelDeclaration[]>
   auths?: Record<string, RegistryAuthEntry>
   [key: string]: unknown
 }

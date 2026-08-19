@@ -1,3 +1,4 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -72,5 +73,43 @@ test("createProvider surfaces corrupt config loudly", async () => {
     await expect(createProvider("ark", { configPath }, {})).rejects.toThrow(/corrupt/)
   } finally {
     await rm(configDir, { recursive: true })
+  }
+})
+
+test("createProvider injects config models declarations and expands env refs", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "prov-models-"))
+  try {
+    const configPath = join(dir, "config.json")
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        providers: { minimax: { apiKey: `$` + `{MY_MM_KEY}` } },
+        models: {
+          minimax: [
+            {
+              id: "MiniMax-H4",
+              mode: "v2",
+              capabilities: { "video.generate": { textOnly: true } },
+            },
+          ],
+        },
+      }),
+    )
+    const provider = await createProvider("minimax", { configPath }, { MY_MM_KEY: "sk-live" })
+    const h4 = provider.models.find((m) => m.id === "MiniMax-H4")
+    expect(h4?.source).toBe("custom")
+
+    // env expansion: the key resolves, so instantiation succeeds; wrong env → auth error
+    const broken = await createProvider("minimax", { configPath }, {}).catch((e: Error) => e)
+    expect(broken).toBeInstanceOf(Error)
+    expect((broken as Error).message).toContain("missing MiniMax API key")
+
+    // bad declaration on one provider errors loudly through createProvider
+    writeFileSync(configPath, JSON.stringify({ models: { minimax: [{ id: "X", mode: "v3" }] } }))
+    await expect(
+      createProvider("minimax", { configPath }, { MY_MM_KEY: "sk-live" }),
+    ).rejects.toThrow(/unknown mode 'v3'/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })

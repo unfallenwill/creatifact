@@ -3,6 +3,7 @@ import { readFile, stat } from "node:fs/promises"
 import { MAX_INLINE_BYTES } from "../core/fileref"
 import { createJsonClient, type JsonClient, SLOW_POST_TIMEOUT_MS } from "../core/http"
 import { pollToArtifacts } from "../core/job"
+import { mergeModelDeclarations } from "../core/modelRegistry"
 import {
   type Env,
   type FileRef,
@@ -45,6 +46,8 @@ export interface KlingProviderConfig {
   pollIntervalMs?: number
   /** 图片生成内部轮询超时(默认 300s) */
   pollTimeoutMs?: number
+  /** User model declarations from config.json's models.kling (appended; kling has no protocol modes). */
+  models?: unknown
 }
 
 /** The concrete shape createKlingProvider returns. */
@@ -189,6 +192,9 @@ export function createKlingProvider(
   env: Env = process.env,
 ): KlingProvider {
   authHeaders(config, env)
+  // Built-in verified list + user declarations (config.json models.kling):
+  // kling dispatches on request shape (firstFrame presence), no protocol modes.
+  const { models: mergedModels } = mergeModelDeclarations("kling", KLING_MODELS, config.models)
   const client: JsonClient = createJsonClient({
     baseUrl: config.baseUrl ?? DEFAULT_BASE_URL,
     headers: () => authHeaders(config, env),
@@ -231,7 +237,7 @@ export function createKlingProvider(
           "Kling new API has no last frame input; 3.0 Turbo supports first frame only",
         )
       }
-      guardFrameSupport(KLING_MODELS, req)
+      guardFrameSupport(mergedModels, req)
       const externalId = randomUUID()
       const contents: Array<Record<string, unknown>> = [{ type: "prompt", text: req.prompt }]
       if (req.firstFrame) {
@@ -307,7 +313,7 @@ export function createKlingProvider(
 
   return {
     id: "kling",
-    models: KLING_MODELS,
+    models: mergedModels,
     defaultModels: KLING_DEFAULT_MODELS,
     videoGenerate,
     imageGenerate,
