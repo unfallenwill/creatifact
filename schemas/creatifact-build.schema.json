@@ -95,6 +95,33 @@
           "description": "Default prompt (overridable via the positional prompt at generate time).",
           "type": "string"
         },
+        "promptRef": {
+          "description": "Provenance for a prompt produced by an earlier pipeline step: {name?, digest?, tag?}. digest anchors the source package content-addressedly.",
+          "type": "object",
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "digest": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        },
+        "inputRefs": {
+          "description": "Provenance for media inputs that referenced an earlier step's artifacts: the URL sent to the provider expires, the digest anchors the source package that still holds the bytes.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["field", "name"],
+            "properties": {
+              "field": { "enum": ["images", "firstFrame", "lastFrame", "inputs"] },
+              "index": { "type": "integer", "minimum": 0 },
+              "name": { "type": "string", "minLength": 1 },
+              "digest": { "type": "string", "minLength": 1 },
+              "tag": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          }
+        },
         "system": {
           "description": "System prompt (text2text only).",
           "type": "string"

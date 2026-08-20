@@ -150,7 +150,10 @@ with `${name.field}` placeholders:
 ```json
 {
   "steps": [
-    { "name": "gen", "command": "generate.text2image", "provider": "zhipu", "prompt": "a crane" },
+    { "name": "writer", "command": "generate.text2text", "provider": "zhipu",
+      "prompt": "write a one-sentence image prompt about a crane" },
+    { "name": "gen", "command": "generate.text2image", "provider": "zhipu",
+      "prompt": "${writer.text}" },
     { "name": "edit", "command": "generate.image2image", "provider": "zhipu",
       "prompt": "make it red", "images": ["${gen.artifacts[0].url}"] },
     { "command": "push", "ref": "${gen.tag}", "layout": "${gen.outputDir}" }
@@ -160,7 +163,23 @@ with `${name.field}` placeholders:
 
 Referenceable fields per command: `build` → `tag`/`digest`/`outputDir`,
 `push` → `tag`/`digest`, `pull` → `outputDir`/`digest`, `generate` →
-`tag`/`digest`/`outputDir`/`artifacts[N].url`/`artifacts[N].base64`. A whole
+`tag`/`digest`/`outputDir` plus the structured payload when present:
+`text` (text2text / image2text / video2text — chain a generated prompt into a
+text2image or image2video step), `vectors`/`dimensions` (embed), and
+`artifacts[N].url`/`artifacts[N].base64` (media). When a step's prompt is
+exactly one earlier step's `${name.text}` reference, the result package's
+config records a `gen.promptRef` provenance pointer
+(`{name, digest?, tag?}` — digest present when the source step packed its
+result with `tag`/`output`), so the prompt's origin is verifiable by
+content-addressing instead of textual coincidence. Media inputs chained the
+same way (`images` / `firstFrame` / `lastFrame` / `inputs` set to exactly
+`${name.artifacts[N].url}`) additionally record `gen.inputRefs` entries
+(`{field, index?, name, digest?, tag?}`): the URL that was sent to the
+provider expires, but the digest still points at the source package holding
+the bytes, so lineage and reproduction survive link rot. Reruns act on it:
+when a provider rejects an input url, `generate <ref>` retries once with the
+bytes extracted from the store via those digests (warned on stderr); without
+`inputRefs` the provider error propagates unchanged. A whole
 string like `"${gen.tag}"` keeps the referenced value; references inside a
 larger string interpolate. `steps` and `command` are mutually exclusive; CLI
 flags after the file are not supported in pipeline mode; `generate` steps may
@@ -276,12 +295,18 @@ Media references (`images` / `firstFrame` / `lastFrame` / `inputs`) accept an
 http(s)/data URL, a local path, or a `pkg://path` into the package's layers
 (packed via the `assets` dir). At generate time the file is extracted and sent
 to the provider; the result package records the original `pkg://` reference for
-provenance.
+provenance. A `prompt` that is exactly one `pkg://path` ref is read inline as
+utf8 — long instructions ship as layer files (e.g. a packed `text.txt` from a
+text2text result) instead of giant JSON strings.
 
 Media tasks write their **result as an OCI package** into the shared store
 under `--tag` (default `gen-output:latest`); pass `--output` to export a
-standalone layout dir instead. The artifact becomes a layer, and the config
-blob records the *effective* generation parameters plus result metadata
+standalone layout dir instead. Artifacts become a layer — URL results are
+downloaded at packaging time so the package is **self-contained** (the config
+blob keeps the original url for provenance; if the CDN link is already
+unreachable, the build degrades to a url-only record and emits a warning
+instead of losing the paid-for result). The config blob records the
+*effective* generation parameters plus result metadata
 (usage, timestamp, source ref) — so anyone can see exactly how the
 image/video was produced:
 
@@ -291,10 +316,14 @@ creatifact generate example.com/xxxxxx:v1.0 "a red crane" --tag org/myresult:1.0
 ```
 
 Pass `--no-pack` to return artifacts without building a result package.
-Non-media tasks (text/understand/embed) return their payload (`data.text` /
-`data.vectors`) in the envelope. `generate ... --no-wait` returns
-`data.handle`; `generate resume <handle>` returns `data.artifacts` (+ `savedFiles`
-with `--output`).
+Text and embed tasks return their payload (`data.text` / `data.vectors`) in
+the envelope by default — pass `--tag` (or `--output`) to also pack it as a
+referenceable OCI package: the payload becomes a layer file (`text.txt` /
+`vectors.json`, usable as `pkg://` refs inside recipe packages) and the
+config blob inlines `result.text` for readability. `generate ... --no-wait`
+returns `data.handle`; `generate resume <handle>` returns `data.artifacts`
+(+ `savedFiles` with `--output`; URL artifacts are downloaded so the files
+outlive the expiring CDN link).
 
 ### `models`
 
