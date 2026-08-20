@@ -68,6 +68,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+/** promptFile is an authoring reference the manifest loader inlines; pairing it with prompt is ambiguous. */
+function rejectPromptFileConflict(spec: Record<string, unknown>, path: string): void {
+  if (spec["prompt"] !== undefined && spec["promptFile"] !== undefined) {
+    throw new Error(`${path}: gen.promptFile use either prompt or promptFile, not both`)
+  }
+}
+
 /**
  * Validate the `gen` section of a build manifest or a package config blob.
  * Constraints live in contract.ts's genSpecSchema; this wrapper keeps the
@@ -100,6 +107,7 @@ export function validateGenSpec(raw: unknown, path: string): GenSpec {
   for (const key of KNOWN_SPEC_FIELDS) {
     if (parsed[key] !== undefined) spec[key] = parsed[key]
   }
+  rejectPromptFileConflict(spec, path)
   if (typeof spec["images"] === "string") spec["images"] = [spec["images"]]
   if (typeof spec["inputs"] === "string") spec["inputs"] = [spec["inputs"]]
   const promptRef = spec["promptRef"]

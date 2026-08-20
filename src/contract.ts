@@ -349,6 +349,12 @@ const genSpecShape = {
     .optional()
     .exactOptional()
     .describe("Default prompt (overridable via the positional prompt at generate time)."),
+  promptFile: nonEmptyString
+    .optional()
+    .exactOptional()
+    .describe(
+      "Authoring convenience: read the prompt from this file (relative to the manifest), inlined into 'prompt' at load time. Never reaches built artifacts; mutually exclusive with 'prompt'.",
+    ),
   promptRef: promptRefSchema
     .optional()
     .exactOptional()

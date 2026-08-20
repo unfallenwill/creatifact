@@ -317,6 +317,67 @@ describe("cli build — integration", () => {
       rmSync(tmp, { recursive: true, force: true })
     }
   })
+
+  it("build reads a JSONC manifest (comments + trailing commas)", async () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
+    const assets = path.join(tmp, "assets")
+    mkdirSync(assets, { recursive: true })
+    writeFileSync(path.join(assets, "a.txt"), "a")
+    const descPath = path.join(tmp, "creatifact-build.json")
+    writeFileSync(
+      descPath,
+      `{
+        // top layer
+        "assets": "${assets}", /* inline note */
+      }`,
+    )
+
+    try {
+      const { stdout, code } = await run(["build", "-f", descPath, "-t", "jsonc:1.0"])
+      expect(code, stdout).toBe(0)
+      expect(JSON.parse(lastLine(stdout)).ok).toBe(true)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it("build --plan inlines gen.promptFile and never reports promptFile", async () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
+    writeFileSync(path.join(tmp, "prompt.md"), "a cat on a cliff\n")
+    const descPath = path.join(tmp, "creatifact-build.json")
+    writeFileSync(
+      descPath,
+      JSON.stringify({
+        stages: [{ name: "cat", gen: { task: "text2image", promptFile: "./prompt.md" } }],
+      }),
+    )
+
+    try {
+      const { stdout, stderr, code } = await run([
+        "build",
+        "-f",
+        descPath,
+        "-t",
+        "promptfile:1.0",
+        "--plan",
+      ])
+      expect(code, stderr).toBe(0)
+      const envelope = JSON.parse(lastLine(stdout))
+      expect(envelope.ok).toBe(true)
+      expect(envelope.data.plan.stages).toEqual([
+        {
+          name: "cat",
+          inputsDigest: expect.any(String),
+          status: "would-execute",
+          dependencies: [],
+        },
+      ])
+      // promptFile never survives into the plan; the inlined prompt feeds the fingerprint
+      expect(JSON.stringify(envelope)).not.toContain("promptFile")
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
 })
 
 describe("cli push — integration", () => {
@@ -1991,6 +2052,20 @@ export default (settings) => ({
       expectErr(missing, "E_USAGE", "--config-dir")
     } finally {
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("generate --prompt-file conflicts with --prompt (E_USAGE)", async () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "gen-cli-test-"))
+    const promptPath = path.join(tmp, "p.md")
+    writeFileSync(promptPath, "x")
+
+    try {
+      const r = await run(["generate", "text2image", "--prompt-file", promptPath, "--prompt", "y"])
+      expect(r.code).toBe(2)
+      expectErr(r, "E_USAGE", "--prompt-file and --prompt are mutually exclusive")
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
     }
   })
 })

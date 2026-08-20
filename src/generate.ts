@@ -99,6 +99,8 @@ export type RequestOverlay = { [K in keyof GenRequest]?: GenRequest[K] | undefin
 
 export interface GenerateCommandOptions {
   prompt?: string
+  /** Read the prompt from a file (mutually exclusive with --prompt/positional). */
+  promptFile?: string
   system?: string
   image?: string[]
   firstFrame?: string
@@ -124,6 +126,10 @@ export interface GenerateCommandOptions {
 export function addGenerateOptions(cmd: Command): Command {
   return cmd
     .option("--prompt <text>", "Alternative to the positional prompt")
+    .option(
+      "--prompt-file <path>",
+      "Read the prompt from a file (alternative to --prompt/positional)",
+    )
     .option("--system <text>", "System prompt (text2text only)")
     .option(
       "--image <media>",
@@ -170,6 +176,11 @@ const TASK_FLAGS: TaskFlagSpec[] = [
   {
     when: (s) => Boolean(s.required.prompt || s.optional.prompt),
     add: (cmd) => cmd.option("--prompt <text>", "Alternative to the positional prompt"),
+  },
+  {
+    when: (s) => Boolean(s.required.prompt || s.optional.prompt),
+    add: (cmd) =>
+      cmd.option("--prompt-file <path>", "Read the prompt from a file (not with --prompt)"),
   },
   {
     when: (s) => s.optional.system === true,
@@ -393,6 +404,30 @@ function applyResumePayload(
   if (payload[0] !== undefined) overlay.handle = payload[0]
 }
 
+/** Read --prompt-file content (trimmed); empty files and IO failures are caller errors. */
+function readPromptFile(path: string): string {
+  let content: string
+  try {
+    content = readFileSync(path, "utf8")
+  } catch (e) {
+    throw usageError(`cannot read --prompt-file '${path}': ${(e as Error).message}`)
+  }
+  const prompt = content.trim()
+  if (prompt === "") {
+    throw usageError(`--prompt-file '${path}' is empty`)
+  }
+  return prompt
+}
+
+/** The effective --prompt value: --prompt-file's content when given, else --prompt. */
+function resolveFlagPrompt(o: GenerateCommandOptions): string | undefined {
+  if (o.promptFile === undefined) return o.prompt
+  if (o.prompt !== undefined) {
+    throw usageError("--prompt-file and --prompt are mutually exclusive")
+  }
+  return readPromptFile(o.promptFile)
+}
+
 function applyPromptPayload(
   task: GenTaskName,
   payload: string[],
@@ -497,7 +532,7 @@ function overlayFromParsed(
     if (model !== undefined) overlay.model = model
   }
 
-  applyPositionalPayload(task, payload, o.prompt, o.input ?? [], overlay)
+  applyPositionalPayload(task, payload, resolveFlagPrompt(o), o.input ?? [], overlay)
   collectFlagFields(task, o, overlay)
 
   return overlay

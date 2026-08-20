@@ -127,7 +127,9 @@ credentials.
 
 Generation options use `--opt key=value`. Values are parsed as JSON when
 possible, so `--opt steps=30` produces a number and `--opt watermark=false`
-produces a boolean.
+produces a boolean. Long prompts can live in a file: `--prompt-file <path>`
+reads and trims the file's content (mutually exclusive with `--prompt` and the
+positional prompt).
 
 ### Package a reusable recipe
 
@@ -160,6 +162,12 @@ creatifact push ghcr.io/acme/editorial:v1
 creatifact generate ghcr.io/acme/editorial:v1 \
   "editorial illustration in red and black"
 ```
+
+Long prompts can stay in their own files: set `gen.promptFile` to a path
+relative to the manifest (mutually exclusive with `gen.prompt`). The file is
+read and trimmed at load time — the inlined prompt drives fingerprints and the
+packaged recipe, so built artifacts never reference the file again and prompt
+edits re-run exactly the stages that consume them.
 
 Without `--bake`, `build` executes the `gen` instruction once and packages the
 result. Running `creatifact generate <ref>` behaves more like running an image:
@@ -364,6 +372,9 @@ manifest supports these fields:
 
 Layer order is `from` → `copy` → `assets`. Relative paths are resolved from the
 manifest directory. Copy operations preserve OCI whiteout semantics.
+
+Manifests and `-f` request files are parsed as JSONC: `//` and `/* */` comments
+and trailing commas are accepted, so the examples above work verbatim.
 
 Useful build options:
 

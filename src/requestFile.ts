@@ -20,6 +20,7 @@ import {
 import { usageError } from "./errors"
 import type { CommandRequest } from "./execute"
 import type { GenRequest, GenTaskName } from "./generate"
+import { stripJsonc } from "./jsonc"
 import type { ParsedLoginArgs } from "./login"
 import type { ParsedPullArgs } from "./pull"
 import type { ParsedPushArgs } from "./push"
@@ -167,9 +168,9 @@ export function readRequestFile(file: string): { command: string; fields: Fields
   }
   let parsed: unknown
   try {
-    parsed = JSON.parse(raw)
+    parsed = JSON.parse(stripJsonc(raw))
   } catch (e) {
-    throw usageError(`'${file}' is not valid JSON: ${(e as Error).message}`)
+    throw usageError(`'${file}' is not valid JSON/JSONC: ${(e as Error).message}`)
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw usageError(`'${file}' must contain a JSON object`)

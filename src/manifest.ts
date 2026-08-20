@@ -1,7 +1,9 @@
 import { readFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { formatIssuePath, manifestSchema } from "./contract"
+import { usageError } from "./errors"
 import { type GenSpec, validateGenSpec } from "./genPackage"
+import { stripJsonc } from "./jsonc"
 
 export type { GenSpec }
 
@@ -143,16 +145,62 @@ export function validateBuildManifest(raw: unknown, filePath: string): BuildMani
   }
 }
 
+/**
+ * Resolve gen.promptFile (relative to the manifest directory) into gen.prompt
+ * and drop the field. The manifest on disk keeps the authoring reference;
+ * fingerprints, --bake packages, and execution only ever see the inlined
+ * prompt, so artifacts stay self-contained and prompt-file edits re-run the
+ * stages that consume them.
+ */
+async function inlinePromptFiles(
+  file: BuildManifestFile,
+  filePath: string,
+  baseDir: string,
+): Promise<void> {
+  const gens: GenSpec[] = []
+  if (file.gen !== undefined) gens.push(file.gen)
+  for (const stage of file.stages ?? []) {
+    if (stage.gen !== undefined) gens.push(stage.gen)
+  }
+  for (const gen of gens) {
+    const ref = gen.promptFile
+    if (ref === undefined) continue
+    const abs = resolve(baseDir, ref)
+    let content: string
+    try {
+      content = await readFile(abs, "utf8")
+    } catch (e) {
+      throw usageError(
+        `${filePath}: gen.promptFile '${ref}' cannot be read: ${(e as Error).message}`,
+      )
+    }
+    const prompt = content.trim()
+    if (prompt === "") {
+      throw usageError(`${filePath}: gen.promptFile '${ref}' is empty`)
+    }
+    gen.prompt = prompt
+    delete gen.promptFile
+  }
+}
+
 export async function loadBuildManifest(filePath: string): Promise<LoadedManifest> {
   const baseDir = dirname(resolve(filePath))
+  let file: BuildManifestFile
   try {
     const content = await readFile(filePath, "utf8")
-    const raw: unknown = JSON.parse(content)
-    return { file: validateBuildManifest(raw, filePath), baseDir }
+    let raw: unknown
+    try {
+      raw = JSON.parse(stripJsonc(content))
+    } catch (e) {
+      throw usageError(`${filePath}: not valid JSON/JSONC: ${(e as Error).message}`)
+    }
+    file = validateBuildManifest(raw, filePath)
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") {
       return { file: {}, baseDir }
     }
     throw e
   }
+  await inlinePromptFiles(file, filePath, baseDir)
+  return { file, baseDir }
 }

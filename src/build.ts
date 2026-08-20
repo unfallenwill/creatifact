@@ -604,6 +604,12 @@ async function genRequestFromSpec(
   priorLayers: OCIDescriptor[],
   blobsDir: string,
 ): Promise<GenRequest> {
+  // Internal invariant: promptFile is an authoring reference the manifest
+  // loader inlines; a spec reaching execution with it set came from a
+  // hand-edited package whose prompt was never resolved.
+  if (gen.promptFile !== undefined) {
+    throw new Error("gen.promptFile must be resolved to gen.prompt before execution")
+  }
   const req: GenRequest = { task: gen.task }
   const passthrough = <K extends keyof GenSpec>(key: K, target: keyof GenRequest): void => {
     const v = gen[key]

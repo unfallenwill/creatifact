@@ -75,6 +75,52 @@ test("parseGenerateArgs: positional prompt vs --prompt are mutually exclusive", 
   )
 })
 
+test("parseGenerateArgs: --prompt-file supplies a trimmed prompt", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "prompt-file-"))
+  const promptPath = join(tmp, "hero.md")
+  await writeFile(promptPath, "hero on a cliff\n")
+  const o = parseGenerateArgs("text2image", ["--prompt-file", promptPath], CTX)
+  expect(o.prompt).toBe("hero on a cliff")
+  await rm(tmp, { recursive: true, force: true })
+})
+
+test("parseGenerateArgs: --prompt-file conflicts with --prompt and the positional prompt", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "prompt-file-"))
+  const promptPath = join(tmp, "hero.md")
+  await writeFile(promptPath, "x")
+  expect(() =>
+    parseGenerateArgs("text2image", ["--prompt-file", promptPath, "--prompt", "flag"], CTX),
+  ).toThrow(/--prompt-file and --prompt are mutually exclusive/)
+  expect(() =>
+    parseGenerateArgs("text2image", ["demo", "pos", "--prompt-file", promptPath], CTX),
+  ).toThrow(/mutually exclusive/)
+  await rm(tmp, { recursive: true, force: true })
+})
+
+test("parseGenerateArgs: --prompt-file IO and empty-file errors are usage errors", async () => {
+  const capture = (fn: () => unknown): unknown => {
+    try {
+      return fn()
+    } catch (e) {
+      return e
+    }
+  }
+  const missing = capture(() =>
+    parseGenerateArgs("text2image", ["--prompt-file", "/nonexistent/p.md"], CTX),
+  ) as { code?: string }
+  expect(missing.code).toBe("E_USAGE")
+
+  const tmp = await mkdtemp(join(tmpdir(), "prompt-file-"))
+  const emptyPath = join(tmp, "empty.md")
+  await writeFile(emptyPath, " \n")
+  const empty = capture(() =>
+    parseGenerateArgs("text2image", ["--prompt-file", emptyPath], CTX),
+  ) as { code?: string; message?: string }
+  expect(empty.code).toBe("E_USAGE")
+  expect(empty.message).toContain("is empty")
+  await rm(tmp, { recursive: true, force: true })
+})
+
 test("parseGenerateArgs: embed positionals are inputs; --prompt rejected", () => {
   const o = parseGenerateArgs("embed", ["demo/embed", "a", "b", "--input", "c"], CTX)
   expect(o.inputs).toEqual(["a", "b", "c"])

@@ -91,6 +91,11 @@
           "type": "string",
           "minLength": 1
         },
+        "promptFile": {
+          "description": "Authoring convenience: read the prompt from this file (relative to the manifest), inlined into 'prompt' at load time. Never reaches built artifacts; mutually exclusive with 'prompt'.",
+          "type": "string",
+          "minLength": 1
+        },
         "promptRef": {
           "description": "Provenance for a prompt produced by an earlier pipeline step: {name?, digest?, tag?}. digest anchors the source package content-addressedly.",
           "type": "object",

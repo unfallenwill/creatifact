@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { loadBuildManifest, validateBuildManifest } from "../manifest"
@@ -101,7 +101,76 @@ test("loadBuildManifest propagates invalid JSON errors", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "manifest-test-"))
   const filePath = join(tmp, "creatifact-build.json")
   await writeFile(filePath, "{ invalid }")
-  await expect(loadBuildManifest(filePath)).rejects.toThrow()
+  const error = await loadBuildManifest(filePath).catch((e) => e)
+  expect(error.code).toBe("E_USAGE")
+  expect(error.message).toContain("not valid JSON/JSONC")
+  await rm(tmp, { recursive: true })
+})
+
+test("loadBuildManifest accepts JSONC comments and trailing commas", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "manifest-test-"))
+  const filePath = join(tmp, "creatifact-build.json")
+  await writeFile(
+    filePath,
+    `{
+      // base layer
+      "from": ["r:1"], /* inline note */
+      "assets": "./a",
+    }`,
+  )
+  const result = await loadBuildManifest(filePath)
+  expect(result.file).toEqual({ from: ["r:1"], assets: "./a" })
+  await rm(tmp, { recursive: true })
+})
+
+// gen.promptFile inlining
+
+test("gen.promptFile with gen.prompt is rejected at validation", () => {
+  expect(() => parse({ gen: { task: "text2image", prompt: "x", promptFile: "./p.md" } })).toThrow(
+    "use either prompt or promptFile",
+  )
+})
+
+test("gen.promptFile is inlined (trimmed) and dropped, for stages and top-level gen", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "manifest-test-"))
+  await mkdir(join(tmp, "prompts"), { recursive: true })
+  await writeFile(join(tmp, "prompts", "hero.md"), "hero on a cliff\n")
+  await writeFile(
+    join(tmp, "stage-build.json"),
+    JSON.stringify({
+      stages: [
+        { name: "hero", gen: { task: "text2image", promptFile: "./prompts/hero.md" } },
+        { name: "cat", gen: { task: "text2image", prompt: "a cat" } },
+      ],
+    }),
+  )
+  await writeFile(
+    join(tmp, "top-build.json"),
+    JSON.stringify({ gen: { task: "text2image", promptFile: "prompts/hero.md" } }),
+  )
+
+  const staged = await loadBuildManifest(join(tmp, "stage-build.json"))
+  expect(staged.file.stages?.[0]?.gen).toEqual({ task: "text2image", prompt: "hero on a cliff" })
+  expect(staged.file.stages?.[1]?.gen).toEqual({ task: "text2image", prompt: "a cat" })
+  const top = await loadBuildManifest(join(tmp, "top-build.json"))
+  expect(top.file.gen).toEqual({ task: "text2image", prompt: "hero on a cliff" })
+  await rm(tmp, { recursive: true })
+})
+
+test("gen.promptFile errors name the manifest and the file", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "manifest-test-"))
+  const missing = join(tmp, "missing-build.json")
+  await writeFile(missing, JSON.stringify({ gen: { task: "text2image", promptFile: "./nope.md" } }))
+  const missingError = await loadBuildManifest(missing).catch((e) => e)
+  expect(missingError.code).toBe("E_USAGE")
+  expect(missingError.message).toContain("./nope.md")
+
+  await writeFile(join(tmp, "empty.md"), "  \n")
+  const empty = join(tmp, "empty-build.json")
+  await writeFile(empty, JSON.stringify({ gen: { task: "text2image", promptFile: "./empty.md" } }))
+  const emptyError = await loadBuildManifest(empty).catch((e) => e)
+  expect(emptyError.code).toBe("E_USAGE")
+  expect(emptyError.message).toContain("is empty")
   await rm(tmp, { recursive: true })
 })
 
