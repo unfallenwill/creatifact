@@ -10,12 +10,23 @@ export interface CopyEntry {
   paths: string[]
 }
 
+/** One orchestration stage: a mini build whose outputs other stages reference. */
+export interface BuildStage {
+  name: string
+  annotations?: Record<string, string>
+  from?: string | string[]
+  copy?: CopyEntry[]
+  assets?: string
+  gen?: GenSpec
+}
+
 export interface BuildManifestFile {
   annotations?: Record<string, string>
   from?: string | string[]
   copy?: CopyEntry[]
   assets?: string
   gen?: GenSpec
+  stages?: BuildStage[]
 }
 
 export interface LoadedManifest {
@@ -38,6 +49,7 @@ function warnUnknownKeys(raw: Record<string, unknown>, filePath: string): void {
   const knownKeys = new Set([
     ...Object.keys(manifestSchema.shape),
     "gen",
+    "stages",
     // standard JSON-Schema directive; editor tooling, not consumed here
     "$schema",
     ...LEGACY_FIELDS,
@@ -54,6 +66,37 @@ function warnUnknownKeys(raw: Record<string, unknown>, filePath: string): void {
       )
     }
   }
+}
+
+/** Validate the stages array: named, unique, and free of top-level mixing. */
+function validateStages(
+  stagesRaw: unknown,
+  filePath: string,
+  hasTopLevelSections: boolean,
+): BuildStage[] {
+  if (hasTopLevelSections) {
+    fail(
+      filePath,
+      "stages",
+      "cannot combine 'stages' with top-level from/copy/assets/gen (put those on a stage)",
+    )
+  }
+  if (!Array.isArray(stagesRaw) || stagesRaw.length === 0) {
+    fail(filePath, "stages", "must be a non-empty array")
+  }
+  const names = new Set<string>()
+  return stagesRaw.map((entry, i) => {
+    if (!isRecord(entry)) fail(filePath, `stages[${i}]`, "must be an object")
+    const name = entry["name"]
+    if (typeof name !== "string" || name === "") {
+      fail(filePath, `stages[${i}].name`, "is required (stages are referenced by name)")
+    }
+    if (names.has(name)) fail(filePath, `stages[${i}].name`, `'${name}' is used more than once`)
+    names.add(name)
+    // The per-stage shape reuses the manifest schema; name rides along.
+    const stage = validateBuildManifest(entry, `${filePath}#stages[${i}]`)
+    return { name, ...stage }
+  })
 }
 
 /**
@@ -80,6 +123,12 @@ export function validateBuildManifest(raw: unknown, filePath: string): BuildMani
 
   const { annotations, from, copy, assets } = result.data
   const gen = raw["gen"]
+  const stagesRaw = raw["stages"]
+  const hasTopLevel =
+    gen !== undefined || from !== undefined || copy !== undefined || assets !== undefined
+  const stages =
+    stagesRaw === undefined ? undefined : validateStages(stagesRaw, filePath, hasTopLevel)
+
   return {
     ...(annotations === undefined ? {} : { annotations }),
     // the schema's array branch carries unknown[] (element constraints ride
@@ -88,6 +137,7 @@ export function validateBuildManifest(raw: unknown, filePath: string): BuildMani
     ...(copy === undefined ? {} : { copy }),
     ...(assets === undefined ? {} : { assets }),
     ...(gen === undefined ? {} : { gen: validateGenSpec(gen, filePath) }),
+    ...(stages === undefined ? {} : { stages }),
   }
 }
 

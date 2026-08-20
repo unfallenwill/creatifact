@@ -67,10 +67,11 @@ program
 // --- build | push | pull: OCI package lifecycle (top-level, docker-style) ---
 program.addCommand(
   buildBuildCommand().action(async (options: BuildCommandOptions, command: Command) => {
-    await executeCommand(
+    const result = await executeCommand(
       { kind: "build", req: buildArgsFromOptions(options) },
       configOpts(command, options.configDir),
     )
+    emitResult("build", resultData(result), prettyOpts(command))
   }),
 )
 program.addCommand(

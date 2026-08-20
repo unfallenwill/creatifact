@@ -1,6 +1,5 @@
-import { type DependencyList, PGraph, PGraphError, type PGraphNodeMap } from "p-graph"
-
 import { REFERENCEABLE } from "./contract"
+import { runDag } from "./dag"
 import { CliError, usageError } from "./errors"
 import type { CommandResult } from "./execute"
 import { executeCommand } from "./execute"
@@ -346,44 +345,12 @@ export async function runPipeline(
  * run immediately (fail fast): not-yet-started steps are skipped and
  * reported, completed steps survive in the result.
  */
-/** Skip-marker shape shared by the runner and the failure sweep. */
-function skipEntry(step: PipelineStep, reason: PipelineSkippedStep["reason"]): PipelineSkippedStep {
-  return {
-    command: step.command,
-    ...(step.name === undefined ? {} : { name: step.name }),
-    reason,
-  }
-}
-
-/** One p-graph node's runner (closures over the shared run state). */
-function parallelEntryRunner(
-  step: PipelineStep,
-  i: number,
-  state: {
-    keys: string[]
-    outcomes: Map<string, PipelineStepOutcome>
-    results: Map<string, CommandResult>
-    skipped: PipelineSkippedStep[]
-    failed: () => boolean
-    opts: ParallelRunOptions
-  },
-): () => Promise<void> {
-  return async () => {
-    if (state.opts.signal?.aborted || state.failed()) {
-      state.skipped.push(skipEntry(step, "aborted"))
-      return
-    }
-    const label = state.keys[i] as string
-    status(`[${state.outcomes.size + 1}/${state.keys.length}] ${label} · ${step.command}`)
-    const outcome = await runStep(step, label, i, state.keys.length, state.results, state.opts)
-    state.outcomes.set(label, outcome)
-    if (step.name !== undefined) state.results.set(step.name, outcome.result)
-  }
-}
 
 /**
- * Run request-file `parallel` steps as a dependency graph (see the module
- * contract in runParallel's own doc above).
+ * Run request-file `parallel` steps as a dependency graph (dag.ts): every
+ * `${name.field}` reference is a scheduling edge, independent steps run
+ * concurrently up to opts.concurrency, placeholders resolve lazily per
+ * node, a failure skips the not-yet-started.
  */
 export async function runParallel(
   steps: PipelineStep[],
@@ -392,70 +359,43 @@ export async function runParallel(
   precheck(steps, "parallel")
 
   const keys = steps.map((step, i) => step.name ?? `step-${i + 1}`)
-  const edges = stepEdges(steps, keys)
-
   const results = new Map<string, CommandResult>()
-  const outcomes = new Map<string, PipelineStepOutcome>()
-  const skipped: PipelineSkippedStep[] = []
-  let failed = false
-  const state = {
-    keys,
-    outcomes,
-    results,
-    skipped,
-    failed: () => failed,
-    opts,
-  }
+  const done = new Set<string>()
 
-  const nodes: PGraphNodeMap = new Map(
-    steps.map((step, i) => [
-      keys[i] as string,
-      {
-        priority: -i, // earlier steps win scheduling ties (stable feel)
-        run: parallelEntryRunner(step, i, state),
+  const run = await runDag(
+    keys,
+    (key) => steps[keys.indexOf(key)]?.fields ?? {},
+    {
+      run: async (key) => {
+        const i = keys.indexOf(key)
+        const step = steps[i]
+        if (step === undefined) throw usageError(`internal: unknown step '${key}'`)
+        const label = keys[i] as string
+        status(`[${done.size + 1}/${steps.length}] ${label} · ${step.command}`)
+        const outcome = await runStep(step, label, i, steps.length, results, opts)
+        done.add(key)
+        if (step.name !== undefined) results.set(step.name, outcome.result)
+        return outcome
       },
-    ]),
+      skipPayload: (key) => {
+        const step = steps[keys.indexOf(key)]
+        return step === undefined ? {} : { command: step.command }
+      },
+    },
+    {
+      concurrency: opts.concurrency,
+      ...(opts.signal === undefined ? {} : { signal: opts.signal }),
+    },
   )
 
-  try {
-    const graph = new PGraph(nodes, edges)
-    await graph.run({
-      ...(opts.concurrency > 0 ? { concurrency: opts.concurrency } : {}),
-    })
-  } catch (e) {
-    failed = true
-    const first = e instanceof PGraphError ? (e.taskErrors[0] ?? e) : e
-    for (const [i, step] of steps.entries()) {
-      if (!outcomes.has(keys[i] as string)) {
-        skipped.push(skipEntry(step, opts.signal?.aborted ? "aborted" : "not-started"))
-      }
-    }
-    throw first
-  }
-
   return {
-    steps: steps.map((_, i) => outcomes.get(keys[i] as string)).filter((o) => o !== undefined),
-    skipped,
+    steps: steps.map((_, i) => run.outcomes.get(keys[i] as string)).filter((o) => o !== undefined),
+    skipped: run.skipped.map((s) => ({
+      command: String(s.payload["command"] ?? "?"),
+      reason: s.reason,
+    })),
     results,
   }
-}
-
-/** Edges for p-graph: each referenced step must complete before its user. */
-function stepEdges(steps: PipelineStep[], keys: string[]): DependencyList {
-  const keyByName = new Map<string, string>()
-  for (const [i, step] of steps.entries()) {
-    if (step.name !== undefined) keyByName.set(step.name, keys[i] as string)
-  }
-  const edges: DependencyList = []
-  for (const [i, step] of steps.entries()) {
-    const refs: { text: string; ref: ParsedRef }[] = []
-    collectRefs(step.fields, refs)
-    for (const { ref } of refs) {
-      const dep = keyByName.get(ref.step)
-      if (dep !== undefined && dep !== keys[i]) edges.push([dep, keys[i] as string])
-    }
-  }
-  return edges
 }
 
 /** True when the string is exactly one reference (no interpolation around it). */

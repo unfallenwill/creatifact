@@ -6,6 +6,7 @@ import { isAbsolute, join } from "node:path"
 import { Command } from "commander"
 
 import { envForConfigPath, loadConfig, storeDir } from "./config"
+import { runDag } from "./dag"
 import { artifactBytes, artifactExtension } from "./download"
 import { usageError } from "./errors"
 import { ok, status } from "./format"
@@ -17,7 +18,12 @@ import {
   type GenSpec,
 } from "./genPackage"
 import { createLayerFromView, createLayerTarball, mergeImageLayers, selectPaths } from "./layers"
-import { type BuildManifestFile, type CopyEntry, loadBuildManifest } from "./manifest"
+import {
+  type BuildManifestFile,
+  type BuildStage,
+  type CopyEntry,
+  loadBuildManifest,
+} from "./manifest"
 import {
   EMPTY_CONFIG_MEDIA_TYPE,
   type LoadedImage,
@@ -256,6 +262,9 @@ export interface BuildResult {
   digest: string
   outputDir: string
   tag: string
+  /** stages mode: per-stage results (name → build result), skipped stages. */
+  stages?: Array<{ name: string; digest: string; tag: string; outputDir: string }>
+  skipped?: Array<{ name: string; reason: string }>
 }
 
 export async function runBuild(options: BuildOptions): Promise<BuildResult> {
@@ -564,8 +573,187 @@ export async function runBuildFromParsed(
     ...entry,
     from: resolveLocalSpec(entry.from, loaded.baseDir),
   }))
+  const stages = loaded.file.stages?.map((stage): BuildStage => {
+    const assets = resolveLocalDir(stage.assets, loaded.baseDir)
+    return {
+      ...stage,
+      ...(assets === undefined ? {} : { assets }),
+      ...(stage.from === undefined
+        ? {}
+        : {
+            from: (Array.isArray(stage.from) ? stage.from : [stage.from]).map((spec) =>
+              resolveLocalSpec(spec, loaded.baseDir),
+            ),
+          }),
+      ...(stage.copy === undefined
+        ? {}
+        : {
+            copy: stage.copy.map((entry) => ({
+              ...entry,
+              from: resolveLocalSpec(entry.from, loaded.baseDir),
+            })),
+          }),
+    }
+  })
 
+  if (stages !== undefined) return runStagesBuild(options, stages)
   return runBuild(options)
+}
+
+/**
+ * Orchestration mode: run the manifest's stages as a dependency graph —
+ * every `${name.field}` reference in a stage's payload is a scheduling
+ * edge; independent stages run concurrently (width from config). Each stage
+ * is a mini build whose package lands in the store under a derived tag
+ * (`<repo>/<stage>:<tag>`), so later stages reference earlier results by
+ * tag/digest/url. The final product is the last stage's package.
+ */
+async function runStagesBuild(options: BuildOptions, stages: BuildStage[]): Promise<BuildResult> {
+  const names = stages.map((s) => s.name)
+  const concurrency = buildConcurrency(loadConfig(options.configPath))
+  const results = new Map<string, StageRef>()
+
+  const stageTag = (stage: BuildStage): string => {
+    const [repo, ver] = splitTag(options.tag)
+    return `${repo}/${stage.name}:${ver}`
+  }
+
+  const run = await runDag(
+    names,
+    (name) => {
+      const stage = stages[names.indexOf(name)]
+      return stage === undefined ? {} : { ...stage, annotations: stage.annotations ?? {} }
+    },
+    {
+      // Fields resolve lazily inside run (the moment the stage's last
+      // dependency completes, so parallel branches never wait on each
+      // other's values).
+      run: async (name) => {
+        const stage = stages[names.indexOf(name)]
+        if (stage === undefined) throw usageError(`internal: unknown stage '${name}'`)
+        const fields = resolveStageRefs(stage, results)
+        const tag = stageTag(stage)
+        status(`stage ${name} → ${tag}`)
+        const result = await runBuild({
+          ...options,
+          tag,
+          assetsDir: (fields["assets"] as string | undefined) ?? stage.assets,
+          annotations: (fields["annotations"] as Record<string, string>) ?? {},
+          from: (fields["from"] as string[]) ?? [],
+          copy: (fields["copy"] as CopyEntry[]) ?? [],
+          ...(stage.gen === undefined ? {} : { gen: stage.gen }),
+          output: undefined,
+        })
+        const ref = stageRefOf(tag, result)
+        results.set(name, ref)
+        return result
+      },
+      skipPayload: (name) => ({ name }),
+    },
+    {
+      concurrency,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    },
+  )
+
+  const completed = names
+    .map((n) => ({ name: n, result: run.outcomes.get(n) }))
+    .filter((s): s is { name: string; result: BuildResult } => s.result !== undefined)
+  const last = completed.at(-1)
+  if (last === undefined) throw usageError("stages produced no result")
+  return {
+    digest: last.result.digest,
+    outputDir: last.result.outputDir,
+    tag: options.tag,
+    stages: completed.map((s) => ({
+      name: s.name,
+      digest: s.result.digest,
+      tag: s.result.tag,
+      outputDir: s.result.outputDir,
+    })),
+    ...(run.skipped.length === 0
+      ? {}
+      : { skipped: run.skipped.map((s) => ({ name: s.key, reason: s.reason })) }),
+  }
+}
+
+/** The referencable surface of one completed stage. */
+interface StageRef {
+  tag: string
+  digest: string
+  outputDir: string
+  artifacts: Array<{ name?: string; url?: string; mimeType?: string | undefined }>
+}
+
+const STAGE_REF_RE =
+  /\$\{([a-zA-Z][a-zA-Z0-9_]*)\.([a-zA-Z][a-zA-Z0-9_]*)(?:\[([0-9]+)\]\.([a-zA-Z][a-zA-Z0-9_]*))?\}/g
+
+/** Resolve one `${name.field}` match against completed stage refs. */
+function stageRefValue(
+  match: RegExpMatchArray,
+  results: ReadonlyMap<string, StageRef>,
+): string | undefined {
+  const ref = results.get(match[1] ?? "")
+  const field = match[2] ?? ""
+  if (ref === undefined) return undefined
+  if (field === "tag") return ref.tag
+  if (field === "digest") return ref.digest
+  if (field === "outputDir") return ref.outputDir
+  if (match[3] !== undefined && match[4] === "url") return ref.artifacts[Number(match[3])]?.url
+  return undefined
+}
+
+/** Resolve `${name.field}` refs in a stage against completed stage results. */
+function resolveStageRefs(
+  stage: BuildStage,
+  results: ReadonlyMap<string, StageRef>,
+): Record<string, unknown> {
+  const resolveString = (value: string): unknown => {
+    STAGE_REF_RE.lastIndex = 0
+    const whole = STAGE_REF_RE.exec(value)
+    if (whole !== null && whole[0] === value) {
+      return stageRefValue(whole, results) ?? value
+    }
+    return value.replace(STAGE_REF_RE, (m, ...groups: unknown[]) => {
+      const match = [m, ...groups] as unknown as RegExpMatchArray
+      return stageRefValue(match, results) ?? m
+    })
+  }
+  const resolved = (value: unknown): unknown => {
+    if (typeof value === "string") return resolveString(value)
+    if (Array.isArray(value)) return value.map(resolved)
+    if (typeof value === "object" && value !== null) {
+      const o: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(value)) o[k] = resolved(v)
+      return o
+    }
+    return value
+  }
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(stage)) out[k] = resolved(v)
+  return out
+}
+
+/** The referencable surface of one completed stage result. */
+function stageRefOf(tag: string, result: BuildResult): StageRef {
+  return { tag, digest: result.digest, outputDir: result.outputDir, artifacts: [] }
+}
+
+/** Split a "repo:tag" reference into its parts. */
+function splitTag(tag: string): [string, string] {
+  const idx = tag.lastIndexOf(":")
+  return idx === -1 ? [tag, "latest"] : [tag.slice(0, idx), tag.slice(idx + 1)]
+}
+
+/** Build width: config key defaults.build.concurrency (positive int, 0 = unlimited, default 4). */
+function buildConcurrency(config: Record<string, unknown>): number {
+  const defaults = config["defaults"]
+  if (typeof defaults !== "object" || defaults === null) return 4
+  const build = (defaults as Record<string, unknown>)["build"]
+  if (typeof build !== "object" || build === null) return 4
+  const value = (build as Record<string, unknown>)["concurrency"]
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) return 4
+  return value
 }
 
 export async function runBuildFromArgs(

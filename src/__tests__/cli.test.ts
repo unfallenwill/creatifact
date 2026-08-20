@@ -1301,6 +1301,86 @@ describe("cli generate — integration", () => {
     }
   })
 
+  it("build stages orchestrate a DAG: independent stages run concurrently, references order them", async () => {
+    const { env, dir } = demoEnv()
+    const assetsDir = path.join(dir, "assets")
+    mkdirSync(assetsDir, { recursive: true })
+    writeFileSync(path.join(assetsDir, "a.txt"), "x")
+    const manifestPath = path.join(dir, "creatifact-build.json")
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        stages: [
+          {
+            name: "cat",
+            gen: { task: "text2image", provider: "demo/demo-image-t2i", prompt: "a cat" },
+          },
+          {
+            name: "dog",
+            gen: { task: "text2image", provider: "demo/demo-image-t2i", prompt: "a dog" },
+          },
+          {
+            name: "combo",
+            assets: assetsDir,
+            // biome-ignore lint/suspicious/noTemplateCurlyInString: fixture for the ${...} stage-ref syntax
+            annotations: { cat: "${cat.digest}", dog: "${dog.digest}" },
+          },
+        ],
+      }),
+    )
+    try {
+      const r = await run(["build", "-f", manifestPath, "-t", "demo/stages:1"], undefined, env)
+      expect(r.code, r.stderr).toBe(0)
+      const lastLine = r.stdout.trimEnd().split("\n").filter(Boolean).at(-1) ?? ""
+      const out = JSON.parse(lastLine) as {
+        data: {
+          tag: string
+          stages: Array<{ name: string; tag: string }>
+        }
+      }
+      // Three stage packages in the store; the final product is the last
+      // stage, aliased under the manifest's own tag.
+      expect(out.data.stages.map((s) => s.name)).toEqual(["cat", "dog", "combo"])
+      expect(out.data.stages[0]?.tag).toBe("demo/stages/cat:1")
+      expect(out.data.stages[1]?.tag).toBe("demo/stages/dog:1")
+      expect(out.data.stages[2]?.tag).toBe("demo/stages/combo:1")
+      expect(out.data.tag).toBe("demo/stages:1")
+      // The combo stage's annotations resolved the parallel stages' digests.
+      const store = path.join(env["CREATIFACT_CONFIG_DIR"] ?? "", "store")
+      const comboIndex = JSON.parse(readFileSync(path.join(store, "index.json"), "utf8"))
+      const comboEntry = comboIndex.manifests.find(
+        (m: { annotations?: Record<string, string> }) =>
+          m.annotations?.["org.opencontainers.image.ref.name"] === "demo/stages/combo:1",
+      )
+      const comboManifest = JSON.parse(
+        readFileSync(path.join(store, "blobs", "sha256", comboEntry.digest.slice(7)), "utf8"),
+      )
+      expect(comboManifest.annotations.cat).toMatch(/^sha256:/)
+      expect(comboManifest.annotations.dog).toMatch(/^sha256:/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("build rejects stages mixed with top-level sections", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "creatifact-stages-err-"))
+    const manifestPath = path.join(dir, "creatifact-build.json")
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        gen: { task: "text2image", prompt: "x" },
+        stages: [{ name: "a", gen: { task: "text2image", prompt: "x" } }],
+      }),
+    )
+    try {
+      const r = await run(["build", "-f", manifestPath, "-t", "x/y:1"])
+      expect(r.code).toBe(1)
+      expect(r.stderr).toContain("cannot combine 'stages'")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it("build with gen + generate <ref> runs the recipe and packages results", async () => {
     const { env, dir, recordPath } = demoEnv()
     const recipeDir = path.join(dir, "recipe")
