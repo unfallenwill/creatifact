@@ -1,18 +1,18 @@
-import { execSync, spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import * as path from "node:path"
 import { pathToFileURL } from "node:url"
+import { execa } from "execa"
 import { stripAnsi } from "../format"
 
 const CLI = path.resolve("dist/index.mjs")
 
-beforeAll(() => {
-  if (!existsSync(CLI)) execSync("npm run build", { stdio: "inherit" })
+beforeAll(async () => {
+  if (!existsSync(CLI)) await execa("npm", ["run", "build"], { stdio: "inherit" })
 })
 
-// spawnSync blocks the worker IPC loop; yield between cases so Vitest can flush task updates.
-afterEach(() => new Promise<void>((resolve) => setImmediate(resolve)))
+// Async execa keeps the worker IPC loop free, so Vitest can flush task
+// updates between cases — no afterEach yield needed anymore.
 
 interface RunResult {
   stdout: string
@@ -20,18 +20,21 @@ interface RunResult {
   code: number | null
 }
 
-function run(args: string[], input?: string, env?: Record<string, string>): RunResult {
-  const result = spawnSync(process.execPath, [CLI, ...args], {
+async function run(
+  args: string[],
+  input?: string,
+  env?: Record<string, string>,
+): Promise<RunResult> {
+  const result = await execa(process.execPath, [CLI, ...args], {
     ...(input === undefined ? {} : { input }),
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
+    reject: false,
     // NO_COLOR pins most assertions to the contracted plain-text form so the
     // suite never depends on the host's ambient color heuristics (CI=true,
     // win32, a user's FORCE_COLOR). The color path itself is covered
     // explicitly by the dual-mode test below.
     ...(env === undefined ? {} : { env: { ...process.env, NO_COLOR: "1", ...env } }),
   })
-  return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", code: result.status }
+  return { stdout: result.stdout, stderr: result.stderr, code: result.exitCode ?? null }
 }
 
 interface ErrEnvelope {
@@ -57,15 +60,15 @@ function expectErr(r: RunResult, code: string, messageSub?: string): ErrEnvelope
 }
 
 describe("cli — integration", () => {
-  it("--version prints the package version and exits 0", () => {
+  it("--version prints the package version and exits 0", async () => {
     const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { version: string }
-    const { stdout, code } = run(["--version"])
+    const { stdout, code } = await run(["--version"])
     expect(code).toBe(0)
     expect(stdout.trim()).toBe(pkg.version)
   })
 
-  it("bare invocation prints usage and exits 0", () => {
-    const { stdout, code } = run([])
+  it("bare invocation prints usage and exits 0", async () => {
+    const { stdout, code } = await run([])
     expect(code).toBe(0)
     expect(stdout).toContain("creatifact -f <file>.json")
     expect(stdout).toContain("gen")
@@ -74,30 +77,30 @@ describe("cli — integration", () => {
     expect(stdout).toContain("config")
   })
 
-  it("unknown command errors with a JSON envelope on stderr", () => {
-    const r = run(["frobnicate"])
+  it("unknown command errors with a JSON envelope on stderr", async () => {
+    const r = await run(["frobnicate"])
     expect(r.code).toBe(2)
     expectErr(r, "E_USAGE", "unknown command: frobnicate")
   })
 
-  it("build/push/pull --help list options; unknown top-level fails", () => {
-    const build = run(["build", "--help"])
+  it("build/push/pull --help list options; unknown top-level fails", async () => {
+    const build = await run(["build", "--help"])
     expect(build.code).toBe(0)
     expect(build.stdout).toContain("Usage: creatifact build")
 
-    const auth = run(["auth", "--help"])
+    const auth = await run(["auth", "--help"])
     expect(auth.code).toBe(0)
     expect(auth.stdout).toContain("Usage: creatifact auth <action>")
     expect(auth.stdout).toContain("login")
 
-    const unknown = run(["frobnicate"])
+    const unknown = await run(["frobnicate"])
     expect(unknown.code).toBe(2)
     expectErr(unknown, "E_USAGE")
   })
 })
 
 describe("cli build — integration", () => {
-  it("build creates valid OCI layout", () => {
+  it("build creates valid OCI layout", async () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
     const fixtureDir = path.join(tmp, "fixture")
     const outputDir = path.join(tmp, "output")
@@ -105,7 +108,7 @@ describe("cli build — integration", () => {
     writeFileSync(path.join(fixtureDir, "asset.txt"), "test asset content")
 
     try {
-      const { stdout, code } = run([
+      const { stdout, code } = await run([
         "build",
         "--dir",
         fixtureDir,
@@ -125,8 +128,8 @@ describe("cli build — integration", () => {
     }
   })
 
-  it("build --help prints usage and exits 0", () => {
-    const { stdout, code } = run(["build", "--help"])
+  it("build --help prints usage and exits 0", async () => {
+    const { stdout, code } = await run(["build", "--help"])
     expect(code).toBe(0)
     expect(stdout).toContain("Usage: creatifact build")
     expect(stdout).toContain("--tag")
@@ -134,16 +137,16 @@ describe("cli build — integration", () => {
     expect(stdout).toContain("--plain-http")
   })
 
-  it("build -h prints usage and exits 0", () => {
-    const { stdout, code } = run(["build", "-h"])
+  it("build -h prints usage and exits 0", async () => {
+    const { stdout, code } = await run(["build", "-h"])
     expect(code).toBe(0)
     expect(stdout).toContain("Usage: creatifact build")
   })
 
-  it("build fails when dir does not exist", () => {
+  it("build fails when dir does not exist", async () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
     try {
-      const r = run([
+      const r = await run([
         "build",
         "--dir",
         "/nonexistent/path/xyz",
@@ -159,14 +162,14 @@ describe("cli build — integration", () => {
     }
   })
 
-  it("build fails when tag is missing", () => {
+  it("build fails when tag is missing", async () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
     const fixtureDir = path.join(tmp, "fixture")
     mkdirSync(fixtureDir, { recursive: true })
     writeFileSync(path.join(fixtureDir, "file.txt"), "data")
 
     try {
-      const { stderr, code } = run(["build", "--dir", fixtureDir])
+      const { stderr, code } = await run(["build", "--dir", fixtureDir])
       expect(code).toBe(2)
       expectErr({ stdout: "", stderr, code } as RunResult, "E_USAGE", "--tag")
     } finally {
@@ -174,7 +177,7 @@ describe("cli build — integration", () => {
     }
   })
 
-  it("build with manifest assets and CLI tag", () => {
+  it("build with manifest assets and CLI tag", async () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
     const fixtureDir = path.join(tmp, "fixture")
     const outputDir = path.join(tmp, "output")
@@ -190,7 +193,7 @@ describe("cli build — integration", () => {
     )
 
     try {
-      const { stdout, code } = run([
+      const { stdout, code } = await run([
         "build",
         "-f",
         descPath,
@@ -212,7 +215,7 @@ describe("cli build — integration", () => {
     }
   })
 
-  it("build --dir overrides manifest assets", () => {
+  it("build --dir overrides manifest assets", async () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
     const manifestAssets = path.join(tmp, "manifest-assets")
     const cliAssets = path.join(tmp, "cli-assets")
@@ -225,7 +228,7 @@ describe("cli build — integration", () => {
     writeFileSync(descPath, JSON.stringify({ assets: manifestAssets }))
 
     try {
-      const { code } = run([
+      const { code } = await run([
         "build",
         "-f",
         descPath,
@@ -242,18 +245,34 @@ describe("cli build — integration", () => {
     }
   })
 
-  it("build inherits from a local OCI layout", () => {
+  it("build inherits from a local OCI layout", async () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
     const sourceDir = path.join(tmp, "source")
     const outputDir = path.join(tmp, "output")
 
     try {
-      const first = run(["build", "-t", "org/source:1.0.0", "--dir", sourceDir, "-o", sourceDir])
+      const first = await run([
+        "build",
+        "-t",
+        "org/source:1.0.0",
+        "--dir",
+        sourceDir,
+        "-o",
+        sourceDir,
+      ])
       expect(first.code).toBe(0)
 
       const descPath = path.join(tmp, "creatifact-build.json")
       writeFileSync(descPath, JSON.stringify({ from: sourceDir }))
-      const { code } = run(["build", "-f", descPath, "-t", "org/combined:1.0.0", "-o", outputDir])
+      const { code } = await run([
+        "build",
+        "-f",
+        descPath,
+        "-t",
+        "org/combined:1.0.0",
+        "-o",
+        outputDir,
+      ])
       expect(code).toBe(0)
 
       const index = JSON.parse(readFileSync(path.join(outputDir, "index.json"), "utf8"))
@@ -269,13 +288,13 @@ describe("cli build — integration", () => {
     }
   })
 
-  it("build warns about legacy manifest fields and still needs -t", () => {
+  it("build warns about legacy manifest fields and still needs -t", async () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
     const descPath = path.join(tmp, "creatifact-build.json")
     writeFileSync(descPath, JSON.stringify({ tag: "old/test:1.0", dir: "./x" }))
 
     try {
-      const { stderr, code } = run(["build", "-f", descPath])
+      const { stderr, code } = await run(["build", "-f", descPath])
       expect(code).toBe(2)
       expectErr({ stdout: "", stderr, code } as RunResult, "E_USAGE", "--tag is required")
     } finally {
@@ -285,22 +304,22 @@ describe("cli build — integration", () => {
 })
 
 describe("cli push — integration", () => {
-  it("push --help prints usage and exits 0", () => {
-    const { stdout, code } = run(["push", "--help"])
+  it("push --help prints usage and exits 0", async () => {
+    const { stdout, code } = await run(["push", "--help"])
     expect(code).toBe(0)
     expect(stdout).toContain("Usage: creatifact push")
     expect(stdout).toContain("--layout")
     expect(stdout).toContain("--plain-http")
   })
 
-  it("push -h prints usage and exits 0", () => {
-    const { stdout, code } = run(["push", "-h"])
+  it("push -h prints usage and exits 0", async () => {
+    const { stdout, code } = await run(["push", "-h"])
     expect(code).toBe(0)
     expect(stdout).toContain("Usage: creatifact push")
   })
 
-  it("push fails when layout directory does not exist", () => {
-    const r = run([
+  it("push fails when layout directory does not exist", async () => {
+    const r = await run([
       "push",
       "localhost:5000/test:1.0",
       "--layout",
@@ -311,15 +330,15 @@ describe("cli push — integration", () => {
     expectErr(r, "E_USAGE", "no image layout")
   })
 
-  it("pull --help prints usage and exits 0", () => {
-    const { stdout, code } = run(["pull", "--help"])
+  it("pull --help prints usage and exits 0", async () => {
+    const { stdout, code } = await run(["pull", "--help"])
     expect(code).toBe(0)
     expect(stdout).toContain("Usage: creatifact pull")
   })
 })
 
 describe("cli models — custom declarations", () => {
-  it("lists custom models with a marker; rejects unknown provider keys", () => {
+  it("lists custom models with a marker; rejects unknown provider keys", async () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "cli-models-"))
     const configDir = path.join(tmp, "cfg")
     mkdirSync(configDir, { recursive: true })
@@ -342,7 +361,7 @@ describe("cli models — custom declarations", () => {
     )
     const env = { CREATIFACT_CONFIG_DIR: configDir }
     try {
-      const r = run(["models", "minimax"], undefined, env)
+      const r = await run(["models", "minimax"], undefined, env)
       expect(r.code).toBe(0)
       const parsed = JSON.parse(r.stdout)
       expect(parsed.kind).toBe("models")
@@ -359,7 +378,7 @@ describe("cli models — custom declarations", () => {
         path.join(configDir, "config.json"),
         JSON.stringify({ models: { volcengine: [{ id: "x" }] } }),
       )
-      const bad = run(["models"], undefined, env)
+      const bad = await run(["models"], undefined, env)
       expect(bad.code).toBe(3)
       expectErr(bad, "E_CONFIG", "unknown provider 'volcengine'")
     } finally {
@@ -367,7 +386,7 @@ describe("cli models — custom declarations", () => {
     }
   })
 
-  it("lists models without credentials (discovery is never gated on secrets)", () => {
+  it("lists models without credentials (discovery is never gated on secrets)", async () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "cli-models-nokey-"))
     const configDir = path.join(tmp, "cfg")
     mkdirSync(configDir, { recursive: true })
@@ -382,7 +401,7 @@ describe("cli models — custom declarations", () => {
       KLING_SECRET_KEY: "",
     }
     try {
-      const r = run(["models", "minimax"], undefined, env)
+      const r = await run(["models", "minimax"], undefined, env)
       expect(r.code).toBe(0)
       const parsed = JSON.parse(r.stdout)
       const m3 = parsed.data.models.find((m: { id: string }) => m.id === "MiniMax-M3")
@@ -390,7 +409,7 @@ describe("cli models — custom declarations", () => {
       expect(parsed.data.defaults["text.generate"]).toBe("MiniMax-M2.7")
       expect(parsed.data.models.some((m: { id: string }) => m.id === "MiniMax-H3")).toBe(true)
 
-      const overview = run(["models"], undefined, env)
+      const overview = await run(["models"], undefined, env)
       expect(overview.code).toBe(0)
       const all = JSON.parse(overview.stdout)
       const minimax = all.data.providers.find((p: { provider: string }) => p.provider === "minimax")
@@ -400,7 +419,7 @@ describe("cli models — custom declarations", () => {
     }
   })
 
-  it("piped stdout stays plain; forced color only affects --pretty", () => {
+  it("piped stdout stays plain; forced color only affects --pretty", async () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "cli-color-"))
     const configDir = path.join(tmp, "cfg")
     mkdirSync(configDir, { recursive: true })
@@ -409,7 +428,7 @@ describe("cli models — custom declarations", () => {
     try {
       // Contract: the default envelope carries zero ANSI escapes — even under
       // CI=true, which picocolors' default heuristics would otherwise color.
-      const piped = run(["models", "kling"], undefined, { ...env, CI: "true" })
+      const piped = await run(["models", "kling"], undefined, { ...env, CI: "true" })
       expect(piped.code).toBe(0)
       expect(piped.stdout).not.toContain("\u001b")
 
@@ -417,10 +436,10 @@ describe("cli models — custom declarations", () => {
       // output byte-for-byte, so the color path can never diverge in content.
       // NO_COLOR="" re-enables color despite the run() pin (spec: only a
       // non-empty NO_COLOR disables).
-      const plainPretty = run(["models", "kling", "--pretty"], undefined, env)
+      const plainPretty = await run(["models", "kling", "--pretty"], undefined, env)
       expect(plainPretty.code).toBe(0)
       expect(plainPretty.stdout).not.toContain("\u001b")
-      const colored = run(["models", "kling", "--pretty"], undefined, {
+      const colored = await run(["models", "kling", "--pretty"], undefined, {
         ...env,
         FORCE_COLOR: "1",
         NO_COLOR: "",
@@ -433,14 +452,14 @@ describe("cli models — custom declarations", () => {
     }
   })
 
-  it("models payload includes derived tasks per model", () => {
+  it("models payload includes derived tasks per model", async () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "cli-models-json-"))
     const configDir = path.join(tmp, "cfg")
     mkdirSync(configDir, { recursive: true })
     writeFileSync(path.join(configDir, "config.json"), "{}")
     const env = { CREATIFACT_CONFIG_DIR: configDir, MINIMAX_API_KEY: "" }
     try {
-      const r = run(["models", "minimax"], undefined, env)
+      const r = await run(["models", "minimax"], undefined, env)
       expect(r.code).toBe(0)
       const parsed = JSON.parse(r.stdout)
       expect(parsed.kind).toBe("models")
@@ -457,7 +476,7 @@ describe("cli models — custom declarations", () => {
 })
 
 describe("cli package store — integration", () => {
-  it("package ls lists tags; package rm untags and GCs blobs", () => {
+  it("package ls lists tags; package rm untags and GCs blobs", async () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-rm-"))
     const configDir = path.join(tmp, "cfg")
     const fixture = path.join(tmp, "assets")
@@ -466,34 +485,34 @@ describe("cli package store — integration", () => {
     writeFileSync(path.join(fixture, "a.txt"), "hello")
     const env = { CREATIFACT_CONFIG_DIR: configDir }
     try {
-      run(["build", "--dir", fixture, "-t", "demo/a:1"], undefined, env)
-      run(["build", "--dir", fixture, "-t", "demo/b:1"], undefined, env)
+      await run(["build", "--dir", fixture, "-t", "demo/a:1"], undefined, env)
+      await run(["build", "--dir", fixture, "-t", "demo/b:1"], undefined, env)
 
-      const viaPkg = run(["package", "ls"], undefined, env)
+      const viaPkg = await run(["package", "ls"], undefined, env)
       expect(viaPkg.code).toBe(0)
       expect(JSON.parse(viaPkg.stdout).kind).toBe("package.list")
       expect(viaPkg.stdout).toContain('"ref":"demo/a:1"')
 
       // rm one tag: shared blobs survive
-      const r1 = run(["package", "rm", "demo/a:1"], undefined, env)
+      const r1 = await run(["package", "rm", "demo/a:1"], undefined, env)
       expect(r1.code).toBe(0)
       expect(JSON.parse(r1.stdout)).toEqual({
         ok: true,
         kind: "package.rm",
         data: { untagged: ["demo/a:1"], deletedBlobs: expect.any(Array) },
       })
-      const after = run(["package", "ls"], undefined, env)
+      const after = await run(["package", "ls"], undefined, env)
       expect(after.stdout).toContain('"ref":"demo/b:1"')
       expect(after.stdout).not.toContain('"ref":"demo/a:1"')
 
       // rm the last tag: blobs collected
-      const r2 = run(["package", "rm", "demo/b:1"], undefined, env)
+      const r2 = await run(["package", "rm", "demo/b:1"], undefined, env)
       expect(JSON.parse(r2.stdout).data.deletedBlobs.length).toBeGreaterThan(0)
-      const empty = run(["package", "ls"], undefined, env)
+      const empty = await run(["package", "ls"], undefined, env)
       expect(JSON.parse(empty.stdout).data.entries).toEqual([])
 
       // rm of a missing tag fails cleanly
-      const r3 = run(["package", "rm", "nope:1"], undefined, env)
+      const r3 = await run(["package", "rm", "nope:1"], undefined, env)
       expect(r3.code).toBe(2)
       expectErr(r3, "E_USAGE", "not found in store")
     } finally {
@@ -501,7 +520,7 @@ describe("cli package store — integration", () => {
     }
   })
 
-  it("package ls lists store tags after builds; rebuild replaces the same tag", () => {
+  it("package ls lists store tags after builds; rebuild replaces the same tag", async () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-store-"))
     const configDir = path.join(tmp, "cfg")
     const fixture = path.join(tmp, "assets")
@@ -510,26 +529,26 @@ describe("cli package store — integration", () => {
     writeFileSync(path.join(fixture, "a.txt"), "hello")
     const env = { CREATIFACT_CONFIG_DIR: configDir }
     try {
-      const r1 = run(["build", "--dir", fixture, "-t", "demo/one:1"], undefined, env)
+      const r1 = await run(["build", "--dir", fixture, "-t", "demo/one:1"], undefined, env)
       expect(r1.code).toBe(0)
       expect(r1.stdout).toContain("store")
 
-      const r2 = run(["build", "--dir", fixture, "-t", "demo/two:1"], undefined, env)
+      const r2 = await run(["build", "--dir", fixture, "-t", "demo/two:1"], undefined, env)
       expect(r2.code).toBe(0)
 
-      const ls = run(["package", "ls"], undefined, env)
+      const ls = await run(["package", "ls"], undefined, env)
       expect(ls.code).toBe(0)
       expect(ls.stdout).toContain("demo/one:1")
       expect(ls.stdout).toContain("demo/two:1")
 
       // re-tag demo/one:1 → still one entry per tag, index keeps both tags
-      const r3 = run(["build", "--dir", fixture, "-t", "demo/one:1"], undefined, env)
+      const r3 = await run(["build", "--dir", fixture, "-t", "demo/one:1"], undefined, env)
       expect(r3.code).toBe(0)
       const index = JSON.parse(readFileSync(path.join(configDir, "store", "index.json"), "utf8"))
       expect(index.manifests).toHaveLength(2)
 
       // push of an unknown store tag fails with a helpful message
-      const push = run(["push", "nope/missing:1"], undefined, env)
+      const push = await run(["push", "nope/missing:1"], undefined, env)
       expect(push.code).toBe(2)
       expectErr(push, "E_USAGE", "not found in")
     } finally {
@@ -544,10 +563,10 @@ describe("cli config/auth — integration", () => {
     return { dir, env: { CREATIFACT_CONFIG_DIR: dir }, file: path.join(dir, "config.json") }
   }
 
-  it("config path prints the config file location", () => {
+  it("config path prints the config file location", async () => {
     const { dir, env, file } = configEnv()
     try {
-      const { stdout, code } = run(["config", "path"], undefined, env)
+      const { stdout, code } = await run(["config", "path"], undefined, env)
       expect(code).toBe(0)
       expect(JSON.parse(stdout)).toEqual({
         ok: true,
@@ -559,10 +578,10 @@ describe("cli config/auth — integration", () => {
     }
   })
 
-  it("auth login --password-stdin writes docker-compatible auths, get/list/logout work", () => {
+  it("auth login --password-stdin writes docker-compatible auths, get/list/logout work", async () => {
     const { dir, env, file } = configEnv()
     try {
-      const login = run(
+      const login = await run(
         ["auth", "login", "localhost:5000", "-u", "testuser", "--password-stdin"],
         "testpass\n",
         env,
@@ -580,7 +599,7 @@ describe("cli config/auth — integration", () => {
       const expected = Buffer.from("testuser:testpass").toString("base64")
       expect(config.auths["localhost:5000"]).toEqual({ auth: expected, username: "testuser" })
 
-      const get = run(["config", "get", "auths.localhost:5000.username"], undefined, env)
+      const get = await run(["config", "get", "auths.localhost:5000.username"], undefined, env)
       expect(get.code).toBe(0)
       expect(JSON.parse(get.stdout)).toEqual({
         ok: true,
@@ -588,7 +607,7 @@ describe("cli config/auth — integration", () => {
         data: { action: "get", key: "auths.localhost:5000.username", value: "testuser" },
       })
 
-      const getSecret = run(["config", "get", "auths.localhost:5000.auth"], undefined, env)
+      const getSecret = await run(["config", "get", "auths.localhost:5000.auth"], undefined, env)
       expect(getSecret.code).toBe(0)
       expect(JSON.parse(getSecret.stdout)).toEqual({
         ok: true,
@@ -596,15 +615,15 @@ describe("cli config/auth — integration", () => {
         data: { action: "get", key: "auths.localhost:5000.auth", value: "***", secret: true },
       })
 
-      const list = run(["config", "list"], undefined, env)
+      const list = await run(["config", "list"], undefined, env)
       expect(list.code).toBe(0)
       expect(list.stdout).toContain("***")
       expect(list.stdout).not.toContain("testpass")
 
-      const logout = run(["auth", "logout", "localhost:5000"], undefined, env)
+      const logout = await run(["auth", "logout", "localhost:5000"], undefined, env)
       expect(logout.code).toBe(0)
 
-      const gone = run(["config", "get", "auths.localhost:5000.username"], undefined, env)
+      const gone = await run(["config", "get", "auths.localhost:5000.username"], undefined, env)
       expect(gone.code).toBe(2)
       expectErr(gone, "E_USAGE", "config key not found")
     } finally {
@@ -612,10 +631,10 @@ describe("cli config/auth — integration", () => {
     }
   }, 15_000)
 
-  it("auth login normalizes registry and logout errors when not logged in", () => {
+  it("auth login normalizes registry and logout errors when not logged in", async () => {
     const { dir, env } = configEnv()
     try {
-      const login = run(
+      const login = await run(
         ["auth", "login", "https://REG.example.com/", "-u", "u", "-p", "p"],
         undefined,
         env,
@@ -627,10 +646,10 @@ describe("cli config/auth — integration", () => {
         data: { registry: "reg.example.com", username: "u" },
       })
 
-      const again = run(["auth", "logout", "reg.example.com"], undefined, env)
+      const again = await run(["auth", "logout", "reg.example.com"], undefined, env)
       expect(again.code).toBe(0)
 
-      const notLoggedIn = run(["auth", "logout", "reg.example.com"], undefined, env)
+      const notLoggedIn = await run(["auth", "logout", "reg.example.com"], undefined, env)
       expect(notLoggedIn.code).toBe(4)
       expectErr(notLoggedIn, "E_AUTH", "Not logged in")
     } finally {
@@ -638,14 +657,14 @@ describe("cli config/auth — integration", () => {
     }
   })
 
-  it("auth login without registry or username fails", () => {
+  it("auth login without registry or username fails", async () => {
     const { dir, env } = configEnv()
     try {
-      const noRegistry = run(["auth", "login"], undefined, env)
+      const noRegistry = await run(["auth", "login"], undefined, env)
       expect(noRegistry.code).toBe(2)
       expectErr(noRegistry, "E_USAGE", "requires a <registry>")
 
-      const noUser = run(["auth", "login", "reg.io", "--password-stdin"], "pw\n", env)
+      const noUser = await run(["auth", "login", "reg.io", "--password-stdin"], "pw\n", env)
       expect(noUser.code).toBe(2)
       expectErr(noUser, "E_USAGE", "--username")
     } finally {
@@ -653,17 +672,17 @@ describe("cli config/auth — integration", () => {
     }
   })
 
-  it("config set/get/reset roundtrip and reserved key rejection", () => {
+  it("config set/get/reset roundtrip and reserved key rejection", async () => {
     const { dir, env, file } = configEnv()
     try {
-      const set = run(
+      const set = await run(
         ["config", "set", "providers.ark.baseUrl", "https://ark.example.com"],
         undefined,
         env,
       )
       expect(set.code).toBe(0)
 
-      const get = run(["config", "get", "providers.ark.baseUrl"], undefined, env)
+      const get = await run(["config", "get", "providers.ark.baseUrl"], undefined, env)
       expect(get.code).toBe(0)
       expect(JSON.parse(get.stdout)).toEqual({
         ok: true,
@@ -671,11 +690,11 @@ describe("cli config/auth — integration", () => {
         data: { action: "get", key: "providers.ark.baseUrl", value: "https://ark.example.com" },
       })
 
-      const reserved = run(["config", "set", "version", "2"], undefined, env)
+      const reserved = await run(["config", "set", "version", "2"], undefined, env)
       expect(reserved.code).toBe(3)
       expectErr(reserved, "E_CONFIG", "reserved")
 
-      const reset = run(["config", "reset"], undefined, env)
+      const reset = await run(["config", "reset"], undefined, env)
       expect(reset.code).toBe(0)
       expect(existsSync(file)).toBe(false)
     } finally {
@@ -683,33 +702,33 @@ describe("cli config/auth — integration", () => {
     }
   })
 
-  it("corrupt config file fails loudly and config reset recovers", () => {
+  it("corrupt config file fails loudly and config reset recovers", async () => {
     const { dir, env, file } = configEnv()
     try {
       mkdirSync(dir, { recursive: true })
       writeFileSync(file, "{ broken json")
 
-      const pull = run(["pull", "reg.io/x:1.0"], undefined, env)
+      const pull = await run(["pull", "reg.io/x:1.0"], undefined, env)
       expect(pull.code).toBe(3)
       expectErr(pull, "E_CONFIG", "corrupt")
 
-      const reset = run(["config", "reset"], undefined, env)
+      const reset = await run(["config", "reset"], undefined, env)
       expect(reset.code).toBe(0)
-      expect(run(["config", "path"], undefined, env).code).toBe(0)
+      expect((await run(["config", "path"], undefined, env)).code).toBe(0)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
   })
 
-  it("config --help prints usage", () => {
-    const { stdout, code } = run(["config", "--help"])
+  it("config --help prints usage", async () => {
+    const { stdout, code } = await run(["config", "--help"])
     expect(code).toBe(0)
     expect(stdout).toContain("Usage: creatifact config")
     expect(stdout).toContain("reset")
   })
 
-  it("auth login --help prints usage", () => {
-    const { stdout, code } = run(["auth", "login", "--help"])
+  it("auth login --help prints usage", async () => {
+    const { stdout, code } = await run(["auth", "login", "--help"])
     expect(code).toBe(0)
     expect(stdout).toContain("Usage: creatifact auth login")
   })
@@ -817,10 +836,10 @@ function manifestConfigDigest(resultDir: string): string {
 }
 
 describe("cli generate — integration", () => {
-  it("text2text runs chat completion with system prompt", () => {
+  it("text2text runs chat completion with system prompt", async () => {
     const { env, dir, recordPath } = demoEnv()
     try {
-      const r = run(
+      const r = await run(
         ["generate", "text2text", "demo/demo-text", "hello", "--system", "be brief"],
         undefined,
         env,
@@ -838,10 +857,10 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("text2image uses the provider's declared default model", () => {
+  it("text2image uses the provider's declared default model", async () => {
     const { env, dir, recordPath } = demoEnv()
     try {
-      const r = run(
+      const r = await run(
         ["generate", "text2image", "demo", "default crane", "--no-pack"],
         undefined,
         env,
@@ -854,16 +873,16 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("image2image requires --image and picks the imageInput model", () => {
+  it("image2image requires --image and picks the imageInput model", async () => {
     const { env, dir, recordPath } = demoEnv()
     try {
-      const missing = run(["generate", "image2image", "demo", "x"], undefined, env)
+      const missing = await run(["generate", "image2image", "demo", "x"], undefined, env)
       expect(missing.code).toBe(2)
       expectErr(missing, "E_USAGE", "image2image requires --image")
 
       const img = path.join(dir, "cat.png")
       writeFileSync(img, "png")
-      const r = run(
+      const r = await run(
         ["generate", "image2image", "demo", "paint it", "--image", img, "--no-pack"],
         undefined,
         env,
@@ -877,10 +896,10 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("task-inapplicable flags fail at parse time with unknown option", () => {
+  it("task-inapplicable flags fail at parse time with unknown option", async () => {
     const { env, dir } = demoEnv()
     try {
-      const r = run(
+      const r = await run(
         ["generate", "text2video", "demo", "x", "--first-frame", "/nonexistent.png"],
         undefined,
         env,
@@ -894,13 +913,13 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("image2video maps --image to the first frame and packages results", () => {
+  it("image2video maps --image to the first frame and packages results", async () => {
     const { env, dir, recordPath } = demoEnv()
     const resultDir = path.join(dir, "result")
     try {
       const img = path.join(dir, "first.png")
       writeFileSync(img, "f")
-      const r = run(
+      const r = await run(
         [
           "generate",
           "image2video",
@@ -940,10 +959,10 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("frames2video requires both frames and submits them", () => {
+  it("frames2video requires both frames and submits them", async () => {
     const { env, dir, recordPath } = demoEnv()
     try {
-      const missing = run(
+      const missing = await run(
         ["generate", "frames2video", "demo", "x", "--first-frame", "a.png"],
         undefined,
         env,
@@ -955,7 +974,7 @@ describe("cli generate — integration", () => {
       const b = path.join(dir, "b.png")
       writeFileSync(a, "a")
       writeFileSync(b, "b")
-      const r = run(
+      const r = await run(
         [
           "generate",
           "frames2video",
@@ -981,14 +1000,14 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("frames2video with an explicit model bypasses the strict filter", () => {
+  it("frames2video with an explicit model bypasses the strict filter", async () => {
     const { env, dir } = demoEnv()
     try {
       const a = path.join(dir, "a.png")
       const b = path.join(dir, "b.png")
       writeFileSync(a, "a")
       writeFileSync(b, "b")
-      const r = run(
+      const r = await run(
         [
           "generate",
           "frames2video",
@@ -1010,12 +1029,12 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("image2text and video2text ask questions with attachments", () => {
+  it("image2text and video2text ask questions with attachments", async () => {
     const { env, dir, recordPath } = demoEnv()
     try {
       const img = path.join(dir, "cat.png")
       writeFileSync(img, "png")
-      const ask = run(
+      const ask = await run(
         ["generate", "image2text", "demo/demo-vision", "what is this", "--input", img],
         undefined,
         env,
@@ -1028,7 +1047,7 @@ describe("cli generate — integration", () => {
         { file: { localPath: img } },
       ])
 
-      const vid = run(
+      const vid = await run(
         ["generate", "video2text", "demo/demo-vision", "--input", "https://cdn.test/v.mp4"],
         undefined,
         env,
@@ -1040,10 +1059,10 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("embed returns vectors as JSON", () => {
+  it("embed returns vectors as JSON", async () => {
     const { env, dir } = demoEnv()
     try {
-      const r = run(["generate", "embed", "demo/demo-embed", "a", "b"], undefined, env)
+      const r = await run(["generate", "embed", "demo/demo-embed", "a", "b"], undefined, env)
       expect(r.code).toBe(0)
       const parsed = JSON.parse(r.stdout)
       expect(parsed.kind).toBe("generate")
@@ -1057,10 +1076,14 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("video tasks print a handle with --no-wait and resume polls it", () => {
+  it("video tasks print a handle with --no-wait and resume polls it", async () => {
     const { env, dir } = demoEnv()
     try {
-      const r = run(["generate", "text2video", "demo/demo-video", "x", "--no-wait"], undefined, env)
+      const r = await run(
+        ["generate", "text2video", "demo/demo-video", "x", "--no-wait"],
+        undefined,
+        env,
+      )
       expect(r.code).toBe(0)
       const parsed = JSON.parse(r.stdout)
       expect(parsed.kind).toBe("generate")
@@ -1068,11 +1091,15 @@ describe("cli generate — integration", () => {
 
       const handleFile = path.join(dir, "job.json")
       writeFileSync(handleFile, JSON.stringify({ providerId: "demo", id: "ok-task" }))
-      const resumed = run(["generate", "resume", handleFile, "--interval", "50ms"], undefined, env)
+      const resumed = await run(
+        ["generate", "resume", handleFile, "--interval", "50ms"],
+        undefined,
+        env,
+      )
       expect(resumed.code).toBe(0)
       expect(resumed.stdout).toContain("out.mp4")
 
-      const inline = run(
+      const inline = await run(
         ["generate", "resume", '{"providerId":"demo","id":"ok-task"}', "--interval", "50ms"],
         undefined,
         env,
@@ -1084,10 +1111,10 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("video polling timeout surfaces the task handle", () => {
+  it("video polling timeout surfaces the task handle", async () => {
     const { env, dir } = demoEnv()
     try {
-      const r = run(
+      const r = await run(
         [
           "generate",
           "text2video",
@@ -1109,14 +1136,14 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("generate without a provider uses the configured default provider", () => {
+  it("generate without a provider uses the configured default provider", async () => {
     const { env, dir, recordPath, configPath } = demoEnv()
     try {
       const config = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>
       config["defaults"] = { gen: { provider: "demo" } }
       writeFileSync(configPath, JSON.stringify(config))
 
-      const r = run(["generate", "text2image", "a crane", "--no-pack"], undefined, env)
+      const r = await run(["generate", "text2image", "a crane", "--no-pack"], undefined, env)
       expect(r.code).toBe(0)
       expect(r.stdout).toContain("https://cdn.test/out.png")
       expect(lastRequest(recordPath)["prompt"]).toBe("a crane")
@@ -1125,10 +1152,10 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("gen is an alias for generate", () => {
+  it("gen is an alias for generate", async () => {
     const { env, dir } = demoEnv()
     try {
-      const r = run(["gen", "text2image", "demo", "x", "--no-pack"], undefined, env)
+      const r = await run(["gen", "text2image", "demo", "x", "--no-pack"], undefined, env)
       expect(r.code).toBe(0)
       expect(r.stdout).toContain("https://cdn.test/out.png")
     } finally {
@@ -1136,14 +1163,14 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("unknown tasks and unverified models behave predictably", () => {
+  it("unknown tasks and unverified models behave predictably", async () => {
     const { env, dir } = demoEnv()
     try {
-      const unknown = run(["generate", "frobnicate"], undefined, env)
+      const unknown = await run(["generate", "frobnicate"], undefined, env)
       expect(unknown.code).toBe(2)
       expectErr(unknown, "E_USAGE", "unknown generate task 'frobnicate'")
 
-      const pass = run(
+      const pass = await run(
         ["generate", "text2image", "demo/demo-unknown", "x", "--no-pack"],
         undefined,
         env,
@@ -1151,7 +1178,7 @@ describe("cli generate — integration", () => {
       expect(pass.code).toBe(0)
       expect(pass.stdout).toContain("https://cdn.test/out.png")
 
-      const unknownProvider = run(["generate", "text2image", "nope/m", "x"], undefined, env)
+      const unknownProvider = await run(["generate", "text2image", "nope/m", "x"], undefined, env)
       expect(unknownProvider.code).toBe(2)
       expectErr(unknownProvider, "E_USAGE", "unknown provider 'nope'")
     } finally {
@@ -1159,10 +1186,10 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("--model <provider>/<model> shorthand resolves the provider too", () => {
+  it("--model <provider>/<model> shorthand resolves the provider too", async () => {
     const { env, dir, recordPath } = demoEnv()
     try {
-      const r = run(
+      const r = await run(
         ["generate", "text2image", "a crane", "--model", "demo/demo-image", "--no-pack"],
         undefined,
         env,
@@ -1173,7 +1200,7 @@ describe("cli generate — integration", () => {
       expect(r.stderr).not.toContain("no <provider> given")
 
       // bare --model without provider still needs a default provider
-      const bare = run(
+      const bare = await run(
         ["generate", "text2image", "a crane", "--model", "demo-image", "--no-pack"],
         undefined,
         env,
@@ -1185,11 +1212,11 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("errors on missing credentials for real providers", () => {
+  it("errors on missing credentials for real providers", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "creatifact-empty-"))
     try {
       const env = { CREATIFACT_CONFIG_DIR: dir }
-      const r = run(["generate", "text2image", "zhipu/cogview-4", "x"], undefined, env)
+      const r = await run(["generate", "text2image", "zhipu/cogview-4", "x"], undefined, env)
       expect(r.code).toBe(6)
       expectErr(r, "E_PROVIDER", "missing Zhipu API key")
     } finally {
@@ -1197,8 +1224,8 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("generate --help prints usage and each task has help", () => {
-    const gen = run(["generate", "--help"])
+  it("generate --help prints usage and each task has help", async () => {
+    const gen = await run(["generate", "--help"])
     expect(gen.code).toBe(0)
     expect(gen.stdout).toContain("Usage: creatifact generate|gen <task>")
     expect(gen.stdout).toContain("image2image")
@@ -1216,13 +1243,13 @@ describe("cli generate — integration", () => {
       "embed",
       "resume",
     ]) {
-      const { stdout, code } = run(["generate", task, "--help"])
+      const { stdout, code } = await run(["generate", task, "--help"])
       expect(code).toBe(0)
       expect(stdout).toContain(`Usage: creatifact generate ${task}`)
     }
   }, 15_000)
 
-  it("build with gen + generate <ref> runs the recipe and packages results", () => {
+  it("build with gen + generate <ref> runs the recipe and packages results", async () => {
     const { env, dir, recordPath } = demoEnv()
     const recipeDir = path.join(dir, "recipe")
     const resultDir = path.join(dir, "result")
@@ -1239,7 +1266,7 @@ describe("cli generate — integration", () => {
       }),
     )
     try {
-      const built = run([
+      const built = await run([
         "build",
         "-f",
         manifestPath,
@@ -1251,7 +1278,7 @@ describe("cli generate — integration", () => {
       expect(built.code).toBe(0)
       expect(built.stdout).toContain("Built example.com/xxxxxx:v1.0")
 
-      const gen = run(
+      const gen = await run(
         [
           "generate",
           recipeDir,
@@ -1303,7 +1330,7 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("generate <ref> materializes pkg:// reference images from package layers", () => {
+  it("generate <ref> materializes pkg:// reference images from package layers", async () => {
     const { env, dir, recordPath } = demoEnv()
     const assetsDir = path.join(dir, "assets")
     const recipeDir = path.join(dir, "recipe")
@@ -1324,7 +1351,7 @@ describe("cli generate — integration", () => {
       }),
     )
     try {
-      const built = run([
+      const built = await run([
         "build",
         "-f",
         manifestPath,
@@ -1335,7 +1362,11 @@ describe("cli generate — integration", () => {
       ])
       expect(built.code).toBe(0)
 
-      const gen = run(["generate", recipeDir, "paint it", "--output", resultDir], undefined, env)
+      const gen = await run(
+        ["generate", recipeDir, "paint it", "--output", resultDir],
+        undefined,
+        env,
+      )
       expect(gen.code, gen.stderr).toBe(0)
       expect(gen.stdout).toContain("https://cdn.test/out.png")
 
@@ -1364,7 +1395,7 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("generate <ref> reads a pkg:// prompt inline from package layers", () => {
+  it("generate <ref> reads a pkg:// prompt inline from package layers", async () => {
     const { env, dir, recordPath } = demoEnv()
     const assetsDir = path.join(dir, "assets")
     const recipeDir = path.join(dir, "recipe")
@@ -1384,7 +1415,7 @@ describe("cli generate — integration", () => {
       }),
     )
     try {
-      const built = run([
+      const built = await run([
         "build",
         "-f",
         manifestPath,
@@ -1395,7 +1426,7 @@ describe("cli generate — integration", () => {
       ])
       expect(built.code).toBe(0)
 
-      const gen = run(["generate", recipeDir, "--no-pack"], undefined, env)
+      const gen = await run(["generate", recipeDir, "--no-pack"], undefined, env)
       expect(gen.code, gen.stderr).toBe(0)
 
       // the prompt is the file's text, not the pkg:// ref itself
@@ -1406,11 +1437,11 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("generate text2text --tag packs the text as a referenceable OCI package", () => {
+  it("generate text2text --tag packs the text as a referenceable OCI package", async () => {
     const { env, dir } = demoEnv()
     const resultDir = path.join(dir, "result")
     try {
-      const gen = run(
+      const gen = await run(
         [
           "generate",
           "text2text",
@@ -1454,10 +1485,10 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("--list-models returns supporting models with defaults", () => {
+  it("--list-models returns supporting models with defaults", async () => {
     const { env, dir } = demoEnv()
     try {
-      const r = run(["generate", "image2text", "--list-models"], undefined, env)
+      const r = await run(["generate", "image2text", "--list-models"], undefined, env)
       expect(r.code).toBe(0)
       const parsed = JSON.parse(r.stdout)
       expect(parsed.kind).toBe("generate")
@@ -1468,7 +1499,7 @@ describe("cli generate — integration", () => {
       expect(demoEntry).toEqual({ provider: "demo", model: "demo-vision", default: true })
 
       // provider scope positional filters to that provider
-      const scoped = run(["generate", "text2text", "demo", "--list-models"], undefined, env)
+      const scoped = await run(["generate", "text2text", "demo", "--list-models"], undefined, env)
       expect(scoped.code).toBe(0)
       const scopedParsed = JSON.parse(scoped.stdout)
       expect(
@@ -1476,7 +1507,11 @@ describe("cli generate — integration", () => {
       ).toBe(true)
 
       // task with no supporter on the scoped provider: informative stderr, exit 0
-      const empty = run(["generate", "video2text", "minimax", "--list-models"], undefined, env)
+      const empty = await run(
+        ["generate", "video2text", "minimax", "--list-models"],
+        undefined,
+        env,
+      )
       expect(empty.code).toBe(0)
       expect(empty.stderr).toContain("no verified model supports video2text on 'minimax'")
     } finally {
@@ -1484,7 +1519,7 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("model-selection errors inline cross-provider suggestions", () => {
+  it("model-selection errors inline cross-provider suggestions", async () => {
     const { env, dir, configPath } = demoEnv()
     // minimax constructs fine (key from config) but has no video.understand model
     writeFileSync(
@@ -1497,7 +1532,11 @@ describe("cli generate — integration", () => {
       }),
     )
     try {
-      const r = run(["generate", "video2text", "minimax", "q", "--input", "a.mp4"], undefined, env)
+      const r = await run(
+        ["generate", "video2text", "minimax", "q", "--input", "a.mp4"],
+        undefined,
+        env,
+      )
       expect(r.code).toBe(2)
       expectErr(r, "E_USAGE", "has no model for video.understand")
       expect(r.stderr).toContain("models that support video2text:")
@@ -1505,7 +1544,7 @@ describe("cli generate — integration", () => {
       expect(r.stderr).toContain("--list-models")
 
       // explicit model that exists but supports a different capability → warning + suggestions
-      const w = run(["generate", "text2text", "demo/demo-image", "hi"], undefined, env)
+      const w = await run(["generate", "text2text", "demo/demo-image", "hi"], undefined, env)
       expect(w.stderr).toContain("'demo-image' is not marked as supporting text2text")
       expect(w.stderr).toContain("demo/demo-text")
     } finally {
@@ -1513,10 +1552,10 @@ describe("cli generate — integration", () => {
     }
   })
 
-  it("models lists providers, plugin details, and errors on unknown", () => {
+  it("models lists providers, plugin details, and errors on unknown", async () => {
     const { env, dir } = demoEnv()
     try {
-      const all = run(["models"], undefined, env)
+      const all = await run(["models"], undefined, env)
       expect(all.code).toBe(0)
       // every configured provider appears in the JSON catalog
       const parsedAll = JSON.parse(all.stdout)
@@ -1528,34 +1567,34 @@ describe("cli generate — integration", () => {
         true,
       )
 
-      const one = run(["models", "demo"], undefined, env)
+      const one = await run(["models", "demo"], undefined, env)
       expect(one.code).toBe(0)
       const parsedOne = JSON.parse(one.stdout)
       const modelIds = parsedOne.data.models.map((m: { id: string }) => m.id)
       expect(modelIds).toContain("demo-image")
       expect(modelIds).toContain("demo-vision")
 
-      const j = run(["models", "demo"], undefined, env)
+      const j = await run(["models", "demo"], undefined, env)
       expect(JSON.parse(j.stdout).data.models).toHaveLength(7)
 
-      expectErr(run(["models", "nope"], undefined, env), "E_USAGE", "unknown provider")
+      expectErr(await run(["models", "nope"], undefined, env), "E_USAGE", "unknown provider")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
   })
 
-  it("--config-dir redirects provider and config lookups", () => {
+  it("--config-dir redirects provider and config lookups", async () => {
     const { env, dir } = demoEnv()
     const configDir = path.join(dir, "cfg")
     try {
       // No CREATIFACT_CONFIG_DIR: the flag alone must route config reads.
-      const models = run(["models", "--config-dir", configDir])
+      const models = await run(["models", "--config-dir", configDir])
       expect(models.code).toBe(0)
       expect(models.stdout).toContain('"demo-image"')
       // credential-free built-ins list cleanly instead of erroring
       expect(models.stderr).not.toContain("unavailable")
 
-      const configPath = run(["config", "path", "--config-dir", configDir])
+      const configPath = await run(["config", "path", "--config-dir", configDir])
       expect(configPath.code).toBe(0)
       expect(JSON.parse(configPath.stdout)).toEqual({
         ok: true,
@@ -1563,7 +1602,7 @@ describe("cli generate — integration", () => {
         data: { action: "path", path: path.join(configDir, "config.json") },
       })
 
-      const gen = run(
+      const gen = await run(
         ["generate", "text2image", "demo/demo-image", "x", "--no-pack", "--config-dir", configDir],
         undefined,
         env,
@@ -1571,7 +1610,7 @@ describe("cli generate — integration", () => {
       expect(gen.code).toBe(0)
       expect(gen.stdout).toContain("https://cdn.test/out.png")
 
-      const missing = run(["models", "--config-dir"])
+      const missing = await run(["models", "--config-dir"])
       expect(missing.code).toBe(2)
       expectErr(missing, "E_USAGE", "--config-dir")
     } finally {
@@ -1581,13 +1620,13 @@ describe("cli generate — integration", () => {
 })
 
 describe("cli -f file-driven — integration", () => {
-  it("-f --help prints usage", () => {
-    const { stdout, code } = run(["-f", "--help"])
+  it("-f --help prints usage", async () => {
+    const { stdout, code } = await run(["-f", "--help"])
     expect(code).toBe(0)
     expect(stdout).toContain("Usage: creatifact -f <file>.json")
   })
 
-  it("runs generate.text2image from a JSON file, CLI flags override fields", () => {
+  it("runs generate.text2image from a JSON file, CLI flags override fields", async () => {
     const { env, dir, recordPath } = demoEnv()
     const reqPath = path.join(dir, "req.json")
     const resultDir = path.join(dir, "result")
@@ -1602,7 +1641,7 @@ describe("cli -f file-driven — integration", () => {
     )
     try {
       // File-only run
-      const r = run(["-f", reqPath, "--output", resultDir], undefined, env)
+      const r = await run(["-f", reqPath, "--output", resultDir], undefined, env)
       expect(r.code).toBe(0)
       const parsed = JSON.parse(r.stdout) as {
         kind: string
@@ -1617,7 +1656,7 @@ describe("cli -f file-driven — integration", () => {
       expect(req["options"]).toEqual({ quality: "hd" })
 
       // CLI positional prompt + --opt override the file's fields
-      const overridden = run(
+      const overridden = await run(
         [
           "-f",
           reqPath,
@@ -1639,7 +1678,7 @@ describe("cli -f file-driven — integration", () => {
     }
   })
 
-  it("runs generate.text2video --no-wait and generate.embed from JSON files", () => {
+  it("runs generate.text2video --no-wait and generate.embed from JSON files", async () => {
     const { env, dir } = demoEnv()
     try {
       const videoPath = path.join(dir, "video.json")
@@ -1652,7 +1691,7 @@ describe("cli -f file-driven — integration", () => {
           noWait: true,
         }),
       )
-      const v = run(["-f", videoPath], undefined, env)
+      const v = await run(["-f", videoPath], undefined, env)
       expect(v.code).toBe(0)
       expect(JSON.parse(v.stdout).data.handle).toEqual({ providerId: "demo", id: "ok-task" })
 
@@ -1661,7 +1700,7 @@ describe("cli -f file-driven — integration", () => {
         textPath,
         JSON.stringify({ command: "generate.text2text", provider: "demo", prompt: "hi" }),
       )
-      const t = run(["-f", textPath], undefined, env)
+      const t = await run(["-f", textPath], undefined, env)
       expect(t.code).toBe(0)
       expect(t.stdout).toContain("demo text reply")
     } finally {
@@ -1669,7 +1708,7 @@ describe("cli -f file-driven — integration", () => {
     }
   })
 
-  it("runs build from a JSON file", () => {
+  it("runs build from a JSON file", async () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-file-test-"))
     const fixtureDir = path.join(tmp, "fixture")
     const outputDir = path.join(tmp, "output")
@@ -1687,7 +1726,7 @@ describe("cli -f file-driven — integration", () => {
       }),
     )
     try {
-      const { stdout, code } = run(["-f", reqPath])
+      const { stdout, code } = await run(["-f", reqPath])
       expect(code).toBe(0)
       expect(stdout).toContain("Built file/test:1.0")
       const index = JSON.parse(readFileSync(path.join(outputDir, "index.json"), "utf8"))
@@ -1703,7 +1742,7 @@ describe("cli -f file-driven — integration", () => {
     }
   })
 
-  it("runs auth.login and config.set from JSON files", () => {
+  it("runs auth.login and config.set from JSON files", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "creatifact-file-auth-"))
     const env = { CREATIFACT_CONFIG_DIR: dir }
     try {
@@ -1717,7 +1756,7 @@ describe("cli -f file-driven — integration", () => {
           password: "filepass",
         }),
       )
-      const login = run(["-f", loginPath], undefined, env)
+      const login = await run(["-f", loginPath], undefined, env)
       expect(login.code).toBe(0)
       expect(JSON.parse(login.stdout)).toEqual({
         ok: true,
@@ -1730,11 +1769,11 @@ describe("cli -f file-driven — integration", () => {
         setPath,
         JSON.stringify({ command: "config.set", key: "defaults.gen.provider", value: "demo" }),
       )
-      const set = run(["-f", setPath], undefined, env)
+      const set = await run(["-f", setPath], undefined, env)
       expect(set.code).toBe(0)
       expect(set.stdout).toContain('"key":"defaults.gen.provider"')
 
-      const get = run(["config", "get", "defaults.gen.provider"], undefined, env)
+      const get = await run(["config", "get", "defaults.gen.provider"], undefined, env)
       expect(JSON.parse(get.stdout)).toEqual({
         ok: true,
         kind: "config",
@@ -1745,18 +1784,18 @@ describe("cli -f file-driven — integration", () => {
     }
   })
 
-  it("rejects bad JSON, unknown commands, and unknown fields", () => {
+  it("rejects bad JSON, unknown commands, and unknown fields", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "creatifact-file-err-"))
     try {
       const badJson = path.join(dir, "bad.json")
       writeFileSync(badJson, "{ oops")
-      const r1 = run(["-f", badJson])
+      const r1 = await run(["-f", badJson])
       expect(r1.code).toBe(2)
       expectErr(r1, "E_USAGE", "not valid JSON")
 
       const unknown = path.join(dir, "unknown.json")
       writeFileSync(unknown, JSON.stringify({ command: "frobnicate" }))
-      const r2 = run(["-f", unknown])
+      const r2 = await run(["-f", unknown])
       expect(r2.code).toBe(2)
       expectErr(r2, "E_USAGE", "unknown command 'frobnicate'")
 
@@ -1765,11 +1804,11 @@ describe("cli -f file-driven — integration", () => {
         typo,
         JSON.stringify({ command: "generate.text2image", provider: "demo", promp: "x" }),
       )
-      const r3 = run(["-f", typo])
+      const r3 = await run(["-f", typo])
       expect(r3.code).toBe(2)
       expectErr(r3, "E_USAGE", "unknown field 'promp'")
 
-      const missing = run(["-f", path.join(dir, "nope.json")])
+      const missing = await run(["-f", path.join(dir, "nope.json")])
       expect(missing.code).toBe(2)
       expectErr(missing, "E_USAGE", "cannot read request file")
     } finally {
@@ -1777,7 +1816,7 @@ describe("cli -f file-driven — integration", () => {
     }
   })
 
-  it("runs a steps pipeline: text2image → image2image with artifact refs", () => {
+  it("runs a steps pipeline: text2image → image2image with artifact refs", async () => {
     const { env, dir, recordPath } = demoEnv()
     const pipelinePath = path.join(dir, "pipeline.json")
     writeFileSync(
@@ -1803,7 +1842,7 @@ describe("cli -f file-driven — integration", () => {
       }),
     )
     try {
-      const r = run(["-f", pipelinePath], undefined, env)
+      const r = await run(["-f", pipelinePath], undefined, env)
       expect(r.code, r.stderr).toBe(0)
       expect(r.stderr).toContain("[1/2] s1 · generate.text2image")
       expect(r.stderr).toContain("[2/2] s2 · generate.image2image")
@@ -1826,7 +1865,7 @@ describe("cli -f file-driven — integration", () => {
     }
   })
 
-  it("runs a steps pipeline: text2text → text2image chained on the writer's text", () => {
+  it("runs a steps pipeline: text2text → text2image chained on the writer's text", async () => {
     const { env, dir, recordPath } = demoEnv()
     const pipelinePath = path.join(dir, "pipeline.json")
     const resultDir = path.join(dir, "result")
@@ -1853,7 +1892,7 @@ describe("cli -f file-driven — integration", () => {
       }),
     )
     try {
-      const r = run(["-f", pipelinePath], undefined, env)
+      const r = await run(["-f", pipelinePath], undefined, env)
       expect(r.code, r.stderr).toBe(0)
 
       const summary = JSON.parse(r.stdout)
@@ -1895,7 +1934,7 @@ describe("cli -f file-driven — integration", () => {
     }
   })
 
-  it("pipeline promptRef records name-only when the text step packed nothing", () => {
+  it("pipeline promptRef records name-only when the text step packed nothing", async () => {
     const { env, dir } = demoEnv()
     const pipelinePath = path.join(dir, "pipeline.json")
     const resultDir = path.join(dir, "result")
@@ -1921,7 +1960,7 @@ describe("cli -f file-driven — integration", () => {
       }),
     )
     try {
-      const r = run(["-f", pipelinePath], undefined, env)
+      const r = await run(["-f", pipelinePath], undefined, env)
       expect(r.code, r.stderr).toBe(0)
       const index = JSON.parse(readFileSync(path.join(resultDir, "index.json"), "utf8"))
       const manifest = JSON.parse(
@@ -1943,7 +1982,7 @@ describe("cli -f file-driven — integration", () => {
     }
   })
 
-  it("pipeline records digest-anchored inputRefs for media chained from a packed step", () => {
+  it("pipeline records digest-anchored inputRefs for media chained from a packed step", async () => {
     const { env, dir, recordPath } = demoEnv()
     const pipelinePath = path.join(dir, "pipeline.json")
     const resultDir = path.join(dir, "result")
@@ -1971,7 +2010,7 @@ describe("cli -f file-driven — integration", () => {
       }),
     )
     try {
-      const r = run(["-f", pipelinePath], undefined, env)
+      const r = await run(["-f", pipelinePath], undefined, env)
       expect(r.code, r.stderr).toBe(0)
       const summary = JSON.parse(r.stdout)
       const srcDigest = summary.data.steps[0].data.digest
@@ -2009,7 +2048,7 @@ describe("cli -f file-driven — integration", () => {
 
   it("rerun falls back to stored bytes when the provider rejects an input url", async () => {
     // data: artifact url → the source package layer holds real bytes without
-    // any network (spawnSync blocks the worker loop, so no in-process server)
+    // any network (no in-process server needed)
     const servedUrl = `data:image/png;base64,${Buffer.from("SRCIMAGE").toString("base64")}`
     const providersUrl = pathToFileURL(path.resolve("dist/providers/index.mjs")).href
 
@@ -2054,7 +2093,7 @@ export default (settings) => ({
 
     try {
       // 1. produce a source package whose layer actually holds the url bytes
-      const src = run(
+      const src = await run(
         ["generate", "text2image", "demo/ok-image", "a crane", "--tag", "demo/src:v1"],
         undefined,
         env,
@@ -2080,12 +2119,24 @@ export default (settings) => ({
           },
         }),
       )
-      const built = run(["build", "-f", manifestPath, "-t", "demo/recipe:v1", "-o", recipeDir])
+      const built = await run([
+        "build",
+        "-f",
+        manifestPath,
+        "-t",
+        "demo/recipe:v1",
+        "-o",
+        recipeDir,
+      ])
       expect(built.code, built.stderr).toBe(0)
 
       // 3. rerun: url attempt fails → one retry with stored bytes
       const resultDir = path.join(dir, "result")
-      const gen = run(["generate", recipeDir, "repaint", "--output", resultDir], undefined, env)
+      const gen = await run(
+        ["generate", recipeDir, "repaint", "--output", resultDir],
+        undefined,
+        env,
+      )
       expect(gen.code, gen.stderr).toBe(0)
       expect(gen.stderr).toContain("retrying with stored bytes")
 
@@ -2129,13 +2180,13 @@ export default (settings) => ({
           },
         }),
       )
-      const bareBuilt = run(
+      const bareBuilt = await run(
         ["build", "-f", bareManifest, "-t", "demo/bare:v1", "-o", bareDir],
         undefined,
         env,
       )
       expect(bareBuilt.code, bareBuilt.stderr).toBe(0)
-      const bare = run(["generate", bareDir, "repaint"], undefined, env)
+      const bare = await run(["generate", bareDir, "repaint"], undefined, env)
       expect(bare.code).not.toBe(0)
       expect(bare.stdout).toBe("")
       expect(bare.stderr).toContain("input url rejected")
@@ -2147,18 +2198,18 @@ export default (settings) => ({
     }
   })
 
-  it("rejects steps files: command+steps mix, flag overlay, forward refs", () => {
+  it("rejects steps files: command+steps mix, flag overlay, forward refs", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "creatifact-steps-err-"))
     try {
       const mixed = path.join(dir, "mixed.json")
       writeFileSync(mixed, JSON.stringify({ command: "models", steps: [{ command: "models" }] }))
-      const r1 = run(["-f", mixed])
+      const r1 = await run(["-f", mixed])
       expect(r1.code).toBe(2)
       expectErr(r1, "E_USAGE", "cannot have both 'command' and 'steps'")
 
       const overlay = path.join(dir, "overlay.json")
       writeFileSync(overlay, JSON.stringify({ steps: [{ command: "models" }] }))
-      const r2 = run(["-f", overlay, "--provider", "demo"])
+      const r2 = await run(["-f", overlay, "--provider", "demo"])
       expect(r2.code).toBe(2)
       expectErr(r2, "E_USAGE", "flags are not supported with a steps file")
 
@@ -2172,7 +2223,7 @@ export default (settings) => ({
           ],
         }),
       )
-      const r3 = run(["-f", forward])
+      const r3 = await run(["-f", forward])
       expect(r3.code).toBe(2)
       expectErr(r3, "E_USAGE", "unknown step 'later'")
     } finally {

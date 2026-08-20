@@ -75,6 +75,7 @@
     "@types/tar-stream": "^3.1.4",
     "@vitest/coverage-v8": "^3.2.7",
     "dependency-cruiser": "^18.2.0",
+    "execa": "^10.0.1",
     "rimraf": "^6.0.1",
     "tsdown": "^0.22.14",
     "tsx": "^4.23.12",
