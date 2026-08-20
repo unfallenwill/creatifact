@@ -19,6 +19,20 @@ test("parseRef defaults to docker.io when no registry host", () => {
   expect(result).toEqual({ registry: "docker.io", repository: "myrepo", tag: "1.0" })
 })
 
+test("parseRef honors a caller-provided default registry", () => {
+  expect(parseRef("myrepo:1.0", "localhost:5000")).toEqual({
+    registry: "localhost:5000",
+    repository: "myrepo",
+    tag: "1.0",
+  })
+  // An explicit registry in the ref still wins over the default.
+  expect(parseRef("ghcr.io/myrepo:1.0", "localhost:5000")).toEqual({
+    registry: "ghcr.io",
+    repository: "myrepo",
+    tag: "1.0",
+  })
+})
+
 test("parseRef defaults tag to latest when missing", () => {
   const result = parseRef("localhost:5000/myrepo")
   expect(result).toEqual({ registry: "localhost:5000", repository: "myrepo", tag: "latest" })

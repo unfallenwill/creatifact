@@ -16,6 +16,7 @@ export { saveLayout }
 import { Command } from "commander"
 import {
   type CreatifactConfig,
+  defaultRegistry,
   envForConfigPath,
   loadConfig,
   resolvePlainHttp,
@@ -35,8 +36,8 @@ export interface ImageFetchOptions {
 }
 
 export async function fetchImage(ref: string, opts: ImageFetchOptions): Promise<LoadedImage> {
-  const parsed = parseRef(ref)
   const config = opts.config ?? {}
+  const parsed = parseRef(ref, defaultRegistry(config))
   const credentials = resolveRegistryCredentials(
     parsed.registry,
     opts.username,

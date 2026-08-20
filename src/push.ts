@@ -2,6 +2,7 @@ import { existsSync } from "node:fs"
 
 import {
   type Credentials,
+  defaultRegistry,
   encodeBasicAuth,
   envForConfigPath,
   loadConfig,
@@ -294,8 +295,8 @@ export async function runPush(options: PushOptions): Promise<PushResult> {
     throw new Error("No ref specified and no ref found in index.json")
   }
 
-  const parsed = parseRef(effectiveRef)
   const config = loadConfig(options.configPath)
+  const parsed = parseRef(effectiveRef, defaultRegistry(config))
   const credentials = resolveRegistryCredentials(
     parsed.registry,
     options.username,

@@ -49,8 +49,8 @@ export interface ParsedRef {
   tag: string
 }
 
-export function parseRef(ref: string): ParsedRef {
-  let registry = "docker.io"
+export function parseRef(ref: string, defaultRegistry = "docker.io"): ParsedRef {
+  let registry: string | undefined
   let rest = ref
 
   const slashIdx = ref.indexOf("/")
@@ -70,7 +70,7 @@ export function parseRef(ref: string): ParsedRef {
     repository = rest.slice(0, colonIdx)
   }
 
-  return { registry, repository, tag }
+  return { registry: registry ?? defaultRegistry, repository, tag }
 }
 
 export function digestHex(digest: string): string {

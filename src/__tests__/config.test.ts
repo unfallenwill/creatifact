@@ -6,6 +6,7 @@ import {
   ConfigError,
   configPath,
   decodeAuth,
+  defaultRegistry,
   deleteConfig,
   encodeAuth,
   encodeBasicAuth,
@@ -158,11 +159,21 @@ test("resolveRegistryCredentials normalizes registry lookup", () => {
   })
 })
 
-test("resolvePlainHttp: CLI flag wins, then config insecure", () => {
+test("resolvePlainHttp: CLI flag wins, then config insecure, then localhost", () => {
   const config = { auths: { "reg.io": { insecure: true } } }
   expect(resolvePlainHttp("reg.io", true, {})).toBe(true)
   expect(resolvePlainHttp("reg.io", false, config)).toBe(true)
   expect(resolvePlainHttp("reg.io", false, {})).toBe(false)
+  // Loopback hostnames default to HTTP without any flag or config entry.
+  expect(resolvePlainHttp("localhost:5000", false, {})).toBe(true)
+  expect(resolvePlainHttp("127.0.0.1:5000", false, {})).toBe(true)
+  expect(resolvePlainHttp("192.168.1.5:5000", false, {})).toBe(false)
+})
+
+test("defaultRegistry reads defaults.registry and normalizes", () => {
+  expect(defaultRegistry({})).toBe("localhost:5000")
+  expect(defaultRegistry({ defaults: { registry: "https://Reg.Example/" } })).toBe("reg.example")
+  expect(defaultRegistry({ defaults: { registry: 42 } })).toBe("localhost:5000")
 })
 
 test("getConfigValue walks dotted paths", () => {

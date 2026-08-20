@@ -197,6 +197,16 @@ export function defaultGenProvider(config: CreatifactConfig): string | undefined
   return typeof provider === "string" && provider !== "" ? provider : undefined
 }
 
+export const DEFAULT_REGISTRY = "localhost:5000"
+
+/** Registry used when a ref carries no registry prefix: `defaults.registry`. */
+export function defaultRegistry(config: CreatifactConfig): string {
+  const defaults = config["defaults"]
+  if (typeof defaults !== "object" || defaults === null) return DEFAULT_REGISTRY
+  const value = (defaults as Record<string, unknown>)["registry"]
+  return typeof value === "string" && value !== "" ? normalizeRegistry(value) : DEFAULT_REGISTRY
+}
+
 /** Default parallel-run width: config key `defaults.parallel.concurrency`.
  * Positive integer; 0 = unlimited. Falls back to 4 when unset or invalid. */
 export function parallelConcurrency(config: CreatifactConfig): number {
@@ -231,14 +241,20 @@ export function resolveRegistryCredentials(
   return undefined
 }
 
-/** --plain-http wins; otherwise a registry's "insecure" flag applies. */
+/**
+ * --plain-http wins; then a registry's "insecure" flag; then loopback/localhost
+ * hostnames default to HTTP (mirrors docker's insecure-registries treatment of
+ * 127.0.0.0/8 — a TLS server there is almost always a misconfiguration).
+ */
 export function resolvePlainHttp(
   registry: string,
   cliPlainHttp: boolean,
   config: CreatifactConfig,
 ): boolean {
   if (cliPlainHttp) return true
-  return getRegistryEntry(config, registry)?.insecure === true
+  if (getRegistryEntry(config, registry)?.insecure === true) return true
+  const host = normalizeRegistry(registry).split(":")[0] ?? ""
+  return host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1"
 }
 
 const RESERVED_KEYS = new Set(["version"])
