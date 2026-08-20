@@ -197,6 +197,42 @@ test("setConfigValue creates intermediates and rejects reserved keys", () => {
   expect(() => setConfigValue({ a: "str" }, "a.b", 1)).toThrow(/conflicts/)
 })
 
+test("setConfigValue/getConfigValue keep dotted registry hosts whole under auths", () => {
+  const config: Record<string, unknown> = {}
+  setConfigValue(config, "auths.172.19.80.1:5000.insecure", true)
+  setConfigValue(config, "auths.registry.example.com.username", "dev")
+  expect(config).toEqual({
+    auths: {
+      "172.19.80.1:5000": { insecure: true },
+      "registry.example.com": { username: "dev" },
+    },
+  })
+  expect(getConfigValue(config, "auths.172.19.80.1:5000.insecure")).toEqual({
+    found: true,
+    value: true,
+  })
+  expect(getConfigValue(config, "auths.registry.example.com.username")).toEqual({
+    found: true,
+    value: "dev",
+  })
+})
+
+test("auths whole-entry keys with dotted hosts stay flat", () => {
+  const config: Record<string, unknown> = {}
+  setConfigValue(config, "auths.172.19.80.1:5000", { insecure: true })
+  expect(config).toEqual({ auths: { "172.19.80.1:5000": { insecure: true } } })
+  expect(getConfigValue(config, "auths.172.19.80.1:5000")).toEqual({
+    found: true,
+    value: { insecure: true },
+  })
+})
+
+test("insecure set through setConfigValue is honored by resolvePlainHttp", () => {
+  const config: Record<string, unknown> = {}
+  setConfigValue(config, "auths.172.19.80.1:5000.insecure", true)
+  expect(resolvePlainHttp("172.19.80.1:5000", false, config)).toBe(true)
+})
+
 test("maskForPrint hides secret-looking values, keeps the rest", () => {
   const masked = maskForPrint({
     version: 1,

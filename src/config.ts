@@ -259,11 +259,32 @@ export function resolvePlainHttp(
 
 const RESERVED_KEYS = new Set(["version"])
 
+/** Leaf fields of a RegistryAuthEntry, used to keep dotted registry hosts whole. */
+const AUTH_ENTRY_FIELDS = new Set(["auth", "identitytoken", "username", "insecure"])
+
+/**
+ * Split a dotted config key into path segments. `auths` is keyed by registry
+ * host, which may itself contain dots ("172.19.80.1:5000"), so a trailing
+ * known entry field re-glues the middle into one registry segment:
+ *   auths.172.19.80.1:5000.insecure → ["auths", "172.19.80.1:5000", "insecure"]
+ * A tail bearing a port (":" cannot appear in a field name) marks a
+ * whole-entry key: auths.172.19.80.1:5000 → ["auths", "172.19.80.1:5000"].
+ */
+function parseConfigKey(key: string): string[] {
+  const parts = key.split(".")
+  if (parts[0] !== "auths" || parts.length < 3) return parts
+  const last = parts[parts.length - 1] ?? ""
+  if (AUTH_ENTRY_FIELDS.has(last.toLowerCase())) {
+    return ["auths", parts.slice(1, -1).join("."), last]
+  }
+  return last.includes(":") ? ["auths", parts.slice(1).join(".")] : parts
+}
+
 export function getConfigValue(
   config: CreatifactConfig,
   key: string,
 ): { found: boolean; value: unknown } {
-  const parts = key.split(".")
+  const parts = parseConfigKey(key)
   let current: unknown = config
   for (const part of parts) {
     if (typeof current !== "object" || current === null) {
@@ -275,7 +296,7 @@ export function getConfigValue(
 }
 
 export function setConfigValue(config: CreatifactConfig, key: string, value: unknown): void {
-  const parts = key.split(".")
+  const parts = parseConfigKey(key)
   if (parts.some((p) => p === "")) {
     throw new ConfigError(`invalid config key: ${key}`)
   }
