@@ -251,7 +251,7 @@ test("runBuild produces an empty image with no sources", async () => {
   await rm(tmp, { recursive: true })
 })
 
-test("runBuild writes a gen recipe into the config blob", async () => {
+test("runBuild --plan writes a gen recipe into the config blob without executing", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "build-test-"))
   const outputDir = join(tmp, "out")
 
@@ -262,6 +262,7 @@ test("runBuild writes a gen recipe into the config blob", async () => {
     annotations: {},
     from: [],
     copy: [],
+    plan: true,
     gen: {
       task: "image2image",
       provider: "zhipu",

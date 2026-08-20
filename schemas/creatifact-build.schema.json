@@ -213,7 +213,7 @@
         "task"
       ],
       "additionalProperties": {},
-      "description": "Generation recipe: task, provider, model, and parameters. Baked into the image config blob so `creatifact generate <ref>` can run it. Never contains credentials."
+      "description": "Generation section (RUN): executed during build (unless --plan) — pkg:// refs resolve against the layers above; artifacts become the top layer and the config records the executed spec. Never contains credentials."
     }
   },
   "required": [

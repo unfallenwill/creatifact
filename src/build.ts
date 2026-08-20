@@ -1,13 +1,21 @@
-import { existsSync } from "node:fs"
-import { mkdir, readdir, stat } from "node:fs/promises"
+import { existsSync, writeFileSync } from "node:fs"
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { isAbsolute, join } from "node:path"
 
 import { Command } from "commander"
 
 import { envForConfigPath, loadConfig, storeDir } from "./config"
+import { artifactBytes, artifactExtension } from "./download"
 import { usageError } from "./errors"
-import { ok } from "./format"
-import { GEN_CONFIG_MEDIA_TYPE, GEN_SCHEMA_VERSION, type GenSpec } from "./genPackage"
+import { ok, status } from "./format"
+import { effectiveGenSpec, type GenRequest, runGenerateRequest } from "./generate"
+import {
+  GEN_CONFIG_MEDIA_TYPE,
+  GEN_SCHEMA_VERSION,
+  type GenResultMeta,
+  type GenSpec,
+} from "./genPackage"
 import { createLayerFromView, createLayerTarball, mergeImageLayers, selectPaths } from "./layers"
 import { type BuildManifestFile, type CopyEntry, loadBuildManifest } from "./manifest"
 import {
@@ -22,6 +30,7 @@ import {
   writeBlob,
   writeOciLayout,
 } from "./oci"
+import type { Artifact } from "./providers"
 import { fetchImage, type ImageFetchOptions } from "./pull"
 import { isLocalRef } from "./refs"
 import {
@@ -44,6 +53,7 @@ export interface BuildCommandOptions {
   password?: string
   passwordStdin?: boolean
   plainHttp?: boolean
+  plan?: boolean
   configDir?: string
 }
 
@@ -71,6 +81,10 @@ export function buildBuildCommand(): Command {
     .option("--password <pw>", "Registry password (prefer --password-stdin)")
     .option("--password-stdin", "Read password from stdin")
     .option("--plain-http", "Use HTTP for registry sources (local registries)")
+    .option(
+      "--plan",
+      "Bake the gen recipe without executing it (recipe-only package; creatifact generate <ref> runs it later)",
+    )
   return addGlobalOptions(cmd)
 }
 
@@ -92,6 +106,7 @@ export function buildArgsFromOptions(o: BuildCommandOptions): ParsedArgs {
     ...(o.password === undefined ? {} : { password: o.password }),
     passwordStdin: o.passwordStdin === true,
     plainHttp: o.plainHttp === true,
+    ...(o.plan === true ? { plan: true } : {}),
   }
 }
 
@@ -106,6 +121,9 @@ export interface BuildOptions {
   plainHttp: boolean
   username: string | undefined
   password: string | undefined
+  /** Skip executing the gen section (recipe-only package). */
+  plan?: boolean
+  signal?: AbortSignal | undefined
   configPath?: string | undefined
 }
 
@@ -119,6 +137,7 @@ export interface ParsedArgs {
   password?: string
   passwordStdin: boolean
   plainHttp: boolean
+  plan?: boolean
 }
 
 export function parseBuildArgs(args: string[]): ParsedArgs {
@@ -272,15 +291,22 @@ export async function runBuild(options: BuildOptions): Promise<BuildResult> {
     layers.push(await createLayerTarball(options.assetsDir, blobsDir))
   }
 
+  // The gen section is a RUN instruction: execute it during the build and
+  // bake the real artifacts as the top layer (unless --plan keeps the
+  // recipe-only package). pkg:// refs in the spec resolve against the layers
+  // assembled above.
+  let genRun: GenRunResult | undefined
+  if (options.gen !== undefined && options.plan !== true) {
+    genRun = await runGenSection(options, layers)
+    if (genRun.layer !== undefined) layers.push(genRun.layer)
+  }
+
   const configDescriptor =
     options.gen === undefined
       ? await writeBlob(Buffer.from("{}"), blobsDir, EMPTY_CONFIG_MEDIA_TYPE)
-      : await writeBlob(
-          Buffer.from(
-            JSON.stringify({ schemaVersion: GEN_SCHEMA_VERSION, gen: options.gen }, null, 2),
-          ),
+      : await writeGenConfigBlob(
           blobsDir,
-          GEN_CONFIG_MEDIA_TYPE,
+          genRun === undefined ? { gen: options.gen } : { gen: genRun.spec, result: genRun.result },
         )
 
   const manifest = buildManifest(configDescriptor, layers, options.annotations)
@@ -298,9 +324,207 @@ export async function runBuild(options: BuildOptions): Promise<BuildResult> {
   return { digest: manifestDescriptor.digest, outputDir, tag: options.tag }
 }
 
+/** The build's gen config blob: the spec (executed or planned) + run meta. */
+async function writeGenConfigBlob(
+  blobsDir: string,
+  body: { gen: GenSpec; result?: GenResultMeta },
+): Promise<OCIDescriptor> {
+  const blob = {
+    schemaVersion: GEN_SCHEMA_VERSION,
+    gen: body.gen,
+    ...(body.result === undefined ? {} : { result: body.result }),
+  }
+  return writeBlob(Buffer.from(JSON.stringify(blob, null, 2)), blobsDir, GEN_CONFIG_MEDIA_TYPE)
+}
+
+/** A build's executed gen section: its layer plus the recorded truth. */
+interface GenRunResult {
+  layer: OCIDescriptor | undefined
+  /** The spec as actually executed (resolved provider/model). */
+  spec: GenSpec
+  result: GenResultMeta
+}
+
+/**
+ * Execute the manifest's gen section against the layers built so far:
+ * pkg:// refs resolve into those layers, the provider runs once, and the
+ * artifacts land as the top layer (artifact-N.<ext>, N stable per result
+ * order). The config blob records the executed spec plus a result meta so
+ * the digest pins this exact run.
+ */
+/** Stage one artifact: bytes to disk when fetchable, else a url-only record. */
+async function stageGenArtifacts(
+  artifacts: Artifact[],
+  stage: string,
+): Promise<{
+  recorded: Array<{ name?: string; url?: string; mimeType?: string | undefined }>
+  warnings: string[]
+}> {
+  const recorded: Array<{ name?: string; url?: string; mimeType?: string | undefined }> = []
+  const warnings: string[] = []
+  for (const [i, artifact] of artifacts.entries()) {
+    const bytes = await artifactBytes(artifact)
+    if (bytes.isErr()) {
+      warnings.push(`gen: artifact ${i + 1} could not be fetched (${bytes.error.message})`)
+      recorded.push({
+        ...(artifact.url === undefined ? {} : { url: artifact.url }),
+        ...(artifact.mimeType === undefined ? {} : { mimeType: artifact.mimeType }),
+      })
+      continue
+    }
+    if (bytes.value === undefined) {
+      warnings.push(`gen: artifact ${i + 1} has neither bytes nor a url`)
+      continue
+    }
+    const name = `artifact-${i + 1}.${artifactExtension(artifact)}`
+    await writeFile(join(stage, name), bytes.value)
+    recorded.push({
+      name,
+      ...(artifact.url === undefined ? {} : { url: artifact.url }),
+      ...(artifact.mimeType === undefined ? {} : { mimeType: artifact.mimeType }),
+    })
+  }
+  return { recorded, warnings }
+}
+
+async function runGenSection(
+  options: BuildOptions,
+  priorLayers: OCIDescriptor[],
+): Promise<GenRunResult> {
+  const gen = options.gen
+  if (gen === undefined) throw usageError("internal: runGenSection without a gen section")
+
+  // pkg:// inputs come from the layers assembled so far (from/copy/assets).
+  // They are local paths relative to this build's own layer set — no
+  // package ref needed — so materialize against a synthesized layout view.
+  const req = await genRequestFromSpec(gen, priorLayers, blobsDirOf(options))
+  status(`gen: running ${req.task} (${gen.provider ?? "default provider"})`)
+  const run = await runGenerateRequest(
+    { ...req, noPack: true },
+    {
+      configPath: options.configPath,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    },
+  )
+  if (run.artifacts === undefined) {
+    throw usageError(
+      `gen: task '${req.task}' returned no artifacts (text/embed tasks do not belong in a build gen section)`,
+    )
+  }
+
+  // Stage artifacts as a layer; undownloadable urls stay url-only records
+  // (same degradation as gen packages — the build stays self-describing).
+  const stage = await mkdtemp(join(tmpdir(), "creatifact-buildgen-"))
+  try {
+    const { recorded, warnings } = await stageGenArtifacts(run.artifacts, stage)
+    for (const w of warnings) console.error(`⚠ ${w}`)
+    const blobsDir = blobsDirOf(options)
+    const layer = recorded.some((r) => r.name !== undefined)
+      ? await createLayerTarball(stage, blobsDir)
+      : undefined
+    return {
+      layer,
+      spec: effectiveGenSpec(req, run.provider ?? gen.provider ?? "", run.model ?? gen.model ?? ""),
+      result: {
+        createdAt: new Date().toISOString(),
+        ...(run.usage === undefined ? {} : { usage: run.usage }),
+        ...(recorded.length > 0 ? { artifacts: recorded } : {}),
+      },
+    }
+  } finally {
+    await rm(stage, { recursive: true, force: true })
+  }
+}
+
+/** The build's blob dir (store or export), created by the caller. */
+function blobsDirOf(options: BuildOptions): string {
+  const outputDir =
+    options.output !== undefined ? options.output : storeDir(envForConfigPath(options.configPath))
+  return join(outputDir, "blobs", "sha256")
+}
+
+/**
+ * Turn the manifest's gen spec into a GenRequest, resolving pkg:// media
+ * refs against the layers this build has assembled so far (from/copy/assets):
+ * the bytes come out of the staged layer tarballs into temp files. Non-pkg
+ * values pass through untouched.
+ */
+/** True when any media field carries a pkg:// reference. */
+function specUsesPkg(gen: GenSpec): boolean {
+  return (
+    (gen.images ?? []).some((v) => v.startsWith("pkg://")) ||
+    (gen.inputs ?? []).some((v) => v.startsWith("pkg://")) ||
+    gen.firstFrame?.startsWith("pkg://") === true ||
+    gen.lastFrame?.startsWith("pkg://") === true
+  )
+}
+
+/** Materialize pkg:// media refs against the build's own prior layers. */
+async function extractPkgRefs(
+  gen: GenSpec,
+  priorLayers: OCIDescriptor[],
+  blobsDir: string,
+): Promise<Pick<GenRequest, "images" | "inputs" | "firstFrame" | "lastFrame">> {
+  const layerBlobs: Buffer[] = []
+  for (const layer of priorLayers) {
+    const blobPath = join(blobsDir, layer.digest.slice("sha256:".length))
+    layerBlobs.push(await readFile(blobPath))
+  }
+  const { view } = await mergeImageLayers(layerBlobs)
+  const tmp = await mkdtemp(join(tmpdir(), "creatifact-pkgref-"))
+  const extract = (value: string): string => {
+    const rel = value.slice("pkg://".length)
+    const entry = view.get(rel)
+    if (entry === undefined || entry.type !== "file") {
+      throw usageError(`gen: pkg ref '${value}' not found in the build's layers (from/copy/assets)`)
+    }
+    const out = join(tmp, rel.split("/").pop() ?? "file")
+    writeFileSync(out, entry.data)
+    return out
+  }
+  const extractAll = (values: string[]): string[] =>
+    values.map((v) => (v.startsWith("pkg://") ? extract(v) : v))
+
+  const out: Pick<GenRequest, "images" | "inputs" | "firstFrame" | "lastFrame"> = {}
+  if (gen.images !== undefined) out.images = extractAll([...gen.images])
+  if (gen.inputs !== undefined) out.inputs = extractAll([...gen.inputs])
+  if (gen.firstFrame !== undefined) out.firstFrame = extract(gen.firstFrame)
+  if (gen.lastFrame !== undefined) out.lastFrame = extract(gen.lastFrame)
+  return out
+}
+
+async function genRequestFromSpec(
+  gen: GenSpec,
+  priorLayers: OCIDescriptor[],
+  blobsDir: string,
+): Promise<GenRequest> {
+  const req: GenRequest = { task: gen.task }
+  const passthrough = <K extends keyof GenSpec>(key: K, target: keyof GenRequest): void => {
+    const v = gen[key]
+    if (v !== undefined) {
+      ;(req as unknown as Record<string, unknown>)[target as string] = v
+    }
+  }
+  passthrough("provider", "provider")
+  passthrough("model", "model")
+  passthrough("prompt", "prompt")
+  passthrough("system", "system")
+  passthrough("options", "options")
+
+  const media = specUsesPkg(gen)
+    ? await extractPkgRefs(gen, priorLayers, blobsDir)
+    : {
+        ...(gen.images === undefined ? {} : { images: [...gen.images] }),
+        ...(gen.inputs === undefined ? {} : { inputs: [...gen.inputs] }),
+        ...(gen.firstFrame === undefined ? {} : { firstFrame: gen.firstFrame }),
+        ...(gen.lastFrame === undefined ? {} : { lastFrame: gen.lastFrame }),
+      }
+  return { ...req, ...media }
+}
+
 export async function runBuildFromParsed(
   cliOpts: ParsedArgs,
-  opts?: { configPath?: string },
+  opts?: { configPath?: string; signal?: AbortSignal | undefined },
 ): Promise<BuildResult> {
   const manifestPath = cliOpts.file ?? "./creatifact-build.json"
   const loaded = await loadBuildManifest(manifestPath)
@@ -311,6 +535,8 @@ export async function runBuildFromParsed(
     loaded.file,
   )
   options.configPath = opts?.configPath
+  options.signal = opts?.signal
+  if (cliOpts.plan === true) options.plan = true
   options.assetsDir = resolveLocalDir(options.assetsDir, loaded.baseDir)
   options.from = options.from.map((spec) => resolveLocalSpec(spec, loaded.baseDir))
   options.copy = options.copy.map((entry) => ({

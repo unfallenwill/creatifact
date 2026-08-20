@@ -292,9 +292,15 @@ or the provider's env vars (`ZHIPU_API_KEY`, `ARK_API_KEY`, ...). See
 
 ### Gen packages
 
-`creatifact build` can bake a generation *recipe* (task, provider, model,
-and parameters — never API keys) into an OCI package, and
-`creatifact generate <ref>` runs it:
+The build manifest's `gen` section is a RUN instruction: `creatifact build`
+executes it once during the build (provider call, billed), stages the
+artifacts as the top layer, and records the executed spec plus a result meta
+in the config blob — the package digest pins that exact run. `pkg://` refs
+in the spec resolve against the layers assembled above it (`from`/`copy`/
+`assets`). `--plan` bakes the recipe without executing it (recipe-only
+package for publish-then-run flows), and `creatifact generate <ref>` runs
+the package — like `docker run`: execute the image, overlay parameters,
+get a fresh output:
 
 ```jsonc
 // creatifact-build.json

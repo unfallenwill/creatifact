@@ -1249,6 +1249,58 @@ describe("cli generate — integration", () => {
     }
   }, 15_000)
 
+  it("build executes the gen section: artifacts become the top layer and the config records the run", async () => {
+    const { env, dir, recordPath } = demoEnv()
+    const outDir = path.join(dir, "built")
+    const manifestPath = path.join(dir, "creatifact-build.json")
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        gen: { task: "text2image", provider: "demo/demo-image-t2i", prompt: "a cat" },
+      }),
+    )
+    try {
+      const r = await run(
+        ["build", "-f", manifestPath, "-t", "org/run:1.0", "-o", outDir],
+        undefined,
+        env,
+      )
+      expect(r.code, r.stderr).toBe(0)
+      expect(r.stderr).toContain("gen: running text2image")
+
+      const index = JSON.parse(readFileSync(path.join(outDir, "index.json"), "utf8"))
+      const manifest = JSON.parse(
+        readFileSync(
+          path.join(outDir, "blobs", "sha256", index.manifests[0].digest.slice(7)),
+          "utf8",
+        ),
+      )
+      // Demo artifacts are cdn.test urls (unreachable) — the staging
+      // degrades to url-only records, so no artifact layer lands.
+      expect(manifest.layers).toHaveLength(0)
+      const config = JSON.parse(
+        readFileSync(path.join(outDir, "blobs", "sha256", manifest.config.digest.slice(7)), "utf8"),
+      )
+      // The executed spec (provider/model resolved) plus a result meta —
+      // the digest pins this exact run.
+      expect(config.gen).toEqual({
+        task: "text2image",
+        provider: "demo",
+        model: "demo-image-t2i",
+        prompt: "a cat",
+      })
+      expect(config.result.createdAt).toBeDefined()
+      expect(config.result.artifacts).toEqual([
+        { url: "https://cdn.test/out.png", mimeType: "image/png" },
+      ])
+      // The provider really ran.
+      const requests = readFileSync(recordPath, "utf8").trim().split("\n")
+      expect(requests.length).toBe(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it("build with gen + generate <ref> runs the recipe and packages results", async () => {
     const { env, dir, recordPath } = demoEnv()
     const recipeDir = path.join(dir, "recipe")
@@ -1268,6 +1320,7 @@ describe("cli generate — integration", () => {
     try {
       const built = await run([
         "build",
+        "--plan",
         "-f",
         manifestPath,
         "-t",
@@ -1353,6 +1406,7 @@ describe("cli generate — integration", () => {
     try {
       const built = await run([
         "build",
+        "--plan",
         "-f",
         manifestPath,
         "-t",
@@ -1417,6 +1471,7 @@ describe("cli generate — integration", () => {
     try {
       const built = await run([
         "build",
+        "--plan",
         "-f",
         manifestPath,
         "-t",
@@ -2112,6 +2167,7 @@ export default (settings) => ({
             task: "image2image",
             provider: "demo",
             model: "reject-url-image",
+            prompt: "edit this",
             images: [servedUrl],
             inputRefs: [
               { field: "images", index: 0, name: "s1", digest: srcDigest, tag: "demo/src:v1" },
@@ -2121,6 +2177,7 @@ export default (settings) => ({
       )
       const built = await run([
         "build",
+        "--plan",
         "-f",
         manifestPath,
         "-t",
@@ -2176,12 +2233,13 @@ export default (settings) => ({
             task: "image2image",
             provider: "demo",
             model: "reject-url-image",
+            prompt: "repaint",
             images: [servedUrl],
           },
         }),
       )
       const bareBuilt = await run(
-        ["build", "-f", bareManifest, "-t", "demo/bare:v1", "-o", bareDir],
+        ["build", "--plan", "-f", bareManifest, "-t", "demo/bare:v1", "-o", bareDir],
         undefined,
         env,
       )

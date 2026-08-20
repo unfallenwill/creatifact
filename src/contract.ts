@@ -206,11 +206,12 @@ export const buildRequestFields = {
   username: nonEmptyString.describe("Registry username (package.* / auth.login)."),
   password: nonEmptyString.describe("Registry password (package.* / auth.login)."),
   plainHttp: boolField.describe("Use HTTP instead of HTTPS for the registry."),
+  // plan is CLI-only (never a -f JSON field): excluded from the -f face.
 } as const
 
 const _buildFaceCheck: assertExact<
   keyof typeof buildRequestFields,
-  Exclude<keyof BuildRequest, "passwordStdin">
+  Exclude<keyof BuildRequest, "passwordStdin" | "plan">
 > = true
 void _buildFaceCheck
 
@@ -648,7 +649,7 @@ function commandBranchSpecs(): Array<[string, Record<string, z.ZodType>, readonl
 const buildManifestFileSchema = z.looseObject({
   ...manifestSchema.shape,
   gen: genSpecSchema.describe(
-    "Generation recipe: task, provider, model, and parameters. Baked into the image config blob so `creatifact generate <ref>` can run it. Never contains credentials.",
+    "Generation section (RUN): executed during build (unless --plan) — pkg:// refs resolve against the layers above; artifacts become the top layer and the config records the executed spec. Never contains credentials.",
   ),
 })
 
