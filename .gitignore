@@ -137,3 +137,6 @@ dist
 
 # firecrawl search cache
 .firecrawl/
+
+# local MCP tool config
+.mcp.json
