@@ -340,7 +340,7 @@ export async function runPipeline(
  * philosophy: the graph is data). Edges come from the `${step.field}`
  * references themselves — a step depends on every step it references, any
  * acyclic reference order is legal — so independent steps run concurrently
- * up to `opts.concurrency` (from config key defaults.pipeline.concurrency;
+ * up to `opts.concurrency` (from config key defaults.parallel.concurrency;
  * 0 = unlimited). Placeholder resolution is lazy per node: a step's fields
  * resolve the moment its last dependency completes. A failed step fails the
  * run immediately (fail fast): not-yet-started steps are skipped and

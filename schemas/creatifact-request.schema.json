@@ -2399,7 +2399,7 @@
               }
             ]
           },
-          "description": "Parallel form: entries run as a dependency graph — every `${name.field}` reference is a scheduling edge, independent entries run concurrently (width: config defaults.pipeline.concurrency), and a failure skips the not-yet-started."
+          "description": "Parallel form: entries run as a dependency graph — every `${name.field}` reference is a scheduling edge, independent entries run concurrently (width: config defaults.parallel.concurrency), and a failure skips the not-yet-started."
         },
         "$schema": {
           "type": "string",

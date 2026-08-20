@@ -686,7 +686,7 @@ export function requestFileSchemaJson(): JsonSchema {
         ? // biome-ignore lint/suspicious/noTemplateCurlyInString: documents the ${...} placeholder syntax
           "Pipeline form: entries run sequentially, fail fast, and resolve `${name.field}` references to earlier steps' results."
         : // biome-ignore lint/suspicious/noTemplateCurlyInString: documents the ${...} placeholder syntax
-          "Parallel form: entries run as a dependency graph — every `${name.field}` reference is a scheduling edge, independent entries run concurrently (width: config defaults.pipeline.concurrency), and a failure skips the not-yet-started.",
+          "Parallel form: entries run as a dependency graph — every `${name.field}` reference is a scheduling edge, independent entries run concurrently (width: config defaults.parallel.concurrency), and a failure skips the not-yet-started.",
   })
   return {
     $schema: "https://json-schema.org/draft/2020-12/schema",

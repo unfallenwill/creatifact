@@ -204,7 +204,7 @@ dependency graph. Every `${name.field}` reference is a scheduling edge — an
 entry runs once every entry it references has completed — and independent
 entries run concurrently. Any acyclic reference order is legal (unlike
 `pipeline`, forward references are fine as long as no cycle exists). The
-concurrency width comes from config (`defaults.pipeline.concurrency`;
+concurrency width comes from config (`defaults.parallel.concurrency`;
 positive integer, `0` = unlimited, unset defaults to 4) — not from the file.
 A failed entry fails the run immediately: entries not yet started are
 skipped and reported in the output envelope's `skipped` array with a reason
