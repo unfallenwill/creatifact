@@ -21,7 +21,6 @@ import { usageError } from "./errors"
 import type { CommandRequest } from "./execute"
 import type { GenRequest, GenTaskName } from "./generate"
 import type { ParsedLoginArgs } from "./login"
-import type { PipelineStep } from "./pipeline"
 import type { ParsedPullArgs } from "./pull"
 import type { ParsedPushArgs } from "./push"
 import { requestFieldsForTask, TASKS } from "./tasks"
@@ -159,27 +158,7 @@ export function loginRequest(fields: Fields): ParsedLoginArgs {
 }
 
 /** Parse a request file's contents into either a single command or steps. */
-/** Parse one steps/parallel entry array into PipelineSteps. */
-function parseStepArray(raw: unknown[], file: string): PipelineStep[] {
-  return raw.map((entry0, i) => {
-    if (typeof entry0 !== "object" || entry0 === null || Array.isArray(entry0)) {
-      throw usageError(`steps[${i}] in '${file}' must be an object`)
-    }
-    const entry = { ...(entry0 as Fields) }
-    const command = parseField(nonEmptyString, entry["command"], `steps[${i}].command`)
-    delete entry["command"]
-    const name = optField(nonEmptyString, entry["name"], `steps[${i}].name`)
-    if (name !== undefined) delete entry["name"]
-    return name === undefined ? { command, fields: entry } : { command, fields: entry, name }
-  })
-}
-
-export function readRequestFile(
-  file: string,
-):
-  | { command: string; fields: Fields }
-  | { pipeline: PipelineStep[] }
-  | { parallel: PipelineStep[] } {
+export function readRequestFile(file: string): { command: string; fields: Fields } {
   let raw: string
   try {
     raw = readFileSync(file, "utf8")
@@ -198,24 +177,12 @@ export function readRequestFile(
   const root = { ...(parsed as Fields) }
   delete root["$schema"]
 
-  if (root["parallel"] !== undefined) {
-    if (root["command"] !== undefined || root["pipeline"] !== undefined) {
-      throw usageError(`'${file}' cannot combine 'command', 'pipeline', and 'parallel'`)
-    }
-    if (!Array.isArray(root["parallel"])) {
-      throw usageError(`'parallel' in '${file}' must be an array`)
-    }
-    return { parallel: parseStepArray(root["parallel"], file) }
-  }
-
-  if (root["pipeline"] !== undefined) {
-    if (root["command"] !== undefined) {
-      throw usageError(`'${file}' cannot have both 'command' and 'pipeline'`)
-    }
-    if (!Array.isArray(root["pipeline"])) {
-      throw usageError(`'pipeline' in '${file}' must be an array`)
-    }
-    return { pipeline: parseStepArray(root["pipeline"], file) }
+  // Orchestration moved to the build manifest (stages): -f files are the
+  // exact JSON mirror of a single command line.
+  if (root["pipeline"] !== undefined || root["parallel"] !== undefined) {
+    throw usageError(
+      "-f files carry a single command; orchestration (pipeline/parallel) lives in creatifact-build.json stages",
+    )
   }
 
   const command = parseField(nonEmptyString, root["command"], "command")

@@ -85,40 +85,18 @@ test("request schema branches are closed and as strong as the runtime", () => {
   const commands = requestFileCommands()
   for (const command of commands) {
     const single = asBranch(defs[`single.${command}`])
-    const step = asBranch(defs[`entry.${command}`])
     expect(single.additionalProperties, `${command}: single is closed`).toBe(false)
-    expect(step.additionalProperties, `${command}: step is closed`).toBe(false)
     const expected = [
       "command",
       ...Object.keys(MINIMAL_FIELDS[command] ?? {}).filter((k) => k !== "command"),
     ].sort()
     expect([...(single.required ?? [])].sort(), `${command}: single required`).toEqual(expected)
-    // Same requiredness in pipeline/parallel entries: they run the very same
-    // parsers.
-    expect([...(step.required ?? [])].sort(), `${command}: step required`).toEqual(expected)
-    // Form-specific keys: `name` belongs to entries, `$schema` to the root.
-    expect(Object.keys(single.properties ?? {}), `${command}: single has no name`).not.toContain(
-      "name",
-    )
-    expect(Object.keys(step.properties ?? {}), `${command}: step has no $schema`).not.toContain(
-      "$schema",
-    )
+    // The -f face mirrors one command line exactly: no `name`, `$schema` only.
+    expect(Object.keys(single.properties ?? {}), `${command}: no name`).not.toContain("name")
+    expect(Object.keys(single.properties ?? {}), `${command}: has $schema`).toContain("$schema")
   }
-  const pipelineForm = asBranch(root.anyOf?.[0])
-  expect(pipelineForm.additionalProperties, "pipeline form is closed").toBe(false)
-  expect(pipelineForm.required, "pipeline form requires pipeline").toEqual(["pipeline"])
-  const pipelineProp = asBranch(pipelineForm.properties?.["pipeline"])
-  const pipelineItems = asBranch(pipelineProp.items)
-  expect(pipelineItems.anyOf?.length, "pipeline entries cover every command").toBe(commands.length)
-  const parallelForm = asBranch(root.anyOf?.[1])
-  expect(parallelForm.additionalProperties, "parallel form is closed").toBe(false)
-  expect(parallelForm.required, "parallel form requires parallel").toEqual(["parallel"])
-  const parallelProp = asBranch(parallelForm.properties?.["parallel"])
-  const parallelItems = asBranch(parallelProp.items)
-  expect(parallelItems.anyOf?.length, "parallel entries cover every command").toBe(commands.length)
-  expect(root.anyOf?.length, "three request-file forms").toBe(3)
+  expect(root.anyOf?.length, "one branch per command").toBe(commands.length)
 })
-
 test("README's referenceable-fields section matches the contract", () => {
   const readme = readFileSync("README.md", "utf8")
   // Bullets like "- `build` → `tag`/`digest`/`outputDir`" (the arrow is a
@@ -136,7 +114,7 @@ test("README's referenceable-fields section matches the contract", () => {
       .filter((f) => !f.includes("["))
     if (fields.length > 0 && !documented.has(kind)) documented.set(kind, fields)
   }
-  expect([...documented.keys()].sort()).toEqual(["build", "generate", "pull", "push"])
+  expect([...documented.keys()].sort()).toEqual(["build", "generate"])
   const table = REFERENCEABLE as Record<string, readonly string[] | undefined>
   for (const [kind, fields] of documented) {
     expect(fields.sort(), kind).toEqual([...(table[kind] ?? [])].sort())

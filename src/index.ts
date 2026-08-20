@@ -54,7 +54,7 @@ program
   .command("-f <file> [args...]")
   .usage("<file>.json [options] [-- generate flags]")
   .description(
-    `Run a command (or a pipeline/parallel run) described by a JSON file. Pipeline files use {pipeline:[{name?, command, ...fields}]} and run sequentially with \${name.field} references to earlier results; parallel files use {parallel:[...]} and run independent entries concurrently`,
+    `Run the single command described by a JSON file — the exact mirror of one command line, for when flags get unwieldy. Example: {"command":"generate.text2image","prompt":"a crane"} equals \`creatifact generate text2image --prompt "a crane"\`; flags after the file override generate fields. Multi-step orchestration lives in creatifact-build.json (stages)`,
   )
   .allowExcessArguments(true)
   .passThroughOptions(true)
@@ -130,13 +130,9 @@ program.action((_options, command) => {
   throw usageError(`unknown command: ${unknown} (run 'creatifact --help' to list commands)`)
 })
 
-/** Emit a CommandResult (or pipeline summary) as the unified JSON envelope. */
+/** Emit a CommandResult as the unified JSON envelope. */
 function emitCommandResult(result: FileRunResult, command: Command, pretty?: boolean): void {
   const style = pretty === true ? { pretty: true } : prettyOpts(command)
-  if (result.kind === "pipeline") {
-    emitResult("pipeline", { steps: result.steps }, style)
-    return
-  }
   emitResult(result.kind, resultData(result), style)
 }
 

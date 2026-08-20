@@ -11,7 +11,7 @@ through any OCI-compatible registry. No Docker daemon is required.
 Agents handle creative planning and iteration; Creatifact handles task
 execution, provider integration, artifact packaging, and delivery.
 
-- **Agent-native** — CLI commands, JSON request files, pipelines, and structured output
+- **Agent-native** — CLI commands, JSON request files, build orchestration, and structured output
 - **Multimodal** — text, image, video, understanding, transformation, and embeddings
 - **Portable** — move recipes and results through existing OCI registries
 - **Extensible** — built-in model providers plus runtime-loaded provider plugins
@@ -36,8 +36,8 @@ Failure:
 ```
 
 - `kind` is the command: `build` · `push` · `pull` · `generate` · `login` ·
-  `logout` · `models` · `config` · `package.list` · `package.rm` · `pipeline`
-  (a `-f` pipeline/parallel file). Parse-time errors (unknown command/option)
+  `logout` · `models` · `config` · `package.list` · `package.rm`
+  Parse-time errors (unknown command/option)
   omit `kind`.
 - `--pretty` (global flag) switches stdout to indented JSON, colorized on
   interactive terminals; piped `--pretty` stays byte-identical plain JSON.
@@ -142,87 +142,62 @@ commands, flags after the file override the file's fields (CLI wins):
 creatifact -f request.json --prompt "a red crane" --opt size=2048x2048
 ```
 
-### Pipelines (`pipeline` and `parallel`)
+### Orchestration (build `stages`)
 
-A request file may instead carry a `pipeline` array: entries run strictly
-sequentially, the run stops at the first failure, and each entry may
-reference earlier results with `${name.field}` placeholders:
+Multi-step orchestration lives in the build manifest, not the request
+file: a manifest may carry `stages` — an array of named mini-builds —
+instead of top-level sections (the two are mutually exclusive). You
+declare stages and `${name.field}` references; the scheduler derives
+the execution plan: every reference is a dependency edge, independent
+stages run concurrently, and any acyclic reference order is legal.
+There is no pipeline/parallel keyword — strictly sequential is just the
+all-chained plan.
 
-```json
-{
-  "pipeline": [
-    { "name": "writer", "command": "generate.text2text", "provider": "zhipu",
-      "prompt": "write a one-sentence image prompt about a crane" },
-    { "name": "gen", "command": "generate.text2image", "provider": "zhipu",
-      "prompt": "${writer.text}" },
-    { "name": "edit", "command": "generate.image2image", "provider": "zhipu",
-      "prompt": "make it red", "images": ["${gen.artifacts[0].url}"] },
-    { "command": "push", "ref": "${gen.tag}", "layout": "${gen.outputDir}" }
-  ]
-}
-```
-
-Referenceable fields per command (contract-tested against `src/contract.ts` —
-the single source of truth that also generates `schemas/`):
+Referenceable fields per completed stage (contract-tested against
+`src/contract.ts` — the single source of truth that also generates
+`schemas/`):
 
 - `build` → `tag`/`digest`/`outputDir`
-- `push` → `tag`/`digest`
-- `pull` → `outputDir`/`digest`
 - `generate` → `tag`/`digest`/`outputDir`/`text`/`vectors`/`dimensions` — the
   structured payload is presence-filtered: `text` (text2text / image2text /
   video2text — chain a generated prompt into a text2image or image2video
-  step), `vectors`/`dimensions` (embed) — plus `artifacts[N].url`/
+  stage), `vectors`/`dimensions` (embed) — plus `artifacts[N].url`/
   `artifacts[N].base64` (media).
 
-When an entry's prompt is
-exactly one earlier entry's `${name.text}` reference, the result package's
-config records a `gen.promptRef` provenance pointer
-(`{name, digest?, tag?}` — digest present when the source entry packed its
-result with `tag`/`output`), so the prompt's origin is verifiable by
-content-addressing instead of textual coincidence. Media inputs chained the
-same way (`images` / `firstFrame` / `lastFrame` / `inputs` set to exactly
-`${name.artifacts[N].url}`) additionally record `gen.inputRefs` entries
-(`{field, index?, name, digest?, tag?}`): the URL that was sent to the
-provider expires, but the digest still points at the source package holding
-the bytes, so lineage and reproduction survive link rot. Reruns act on it:
-when a provider rejects an input url, `generate <ref>` retries once with the
-bytes extracted from the store via those digests (warned on stderr); without
-`inputRefs` the provider error propagates unchanged. A whole
-string like `"${gen.tag}"` keeps the referenced value; references inside a
-larger string interpolate. `pipeline`/`parallel` and `command` are mutually
-exclusive; CLI flags after the file are not supported in either mode;
-`generate` entries may not use `noWait`. Media entries without an explicit
-`output` write to the shared store under their own tag. A pipeline run
-returns
-`{"ok":true,"kind":"pipeline","data":{"steps":[{name?,command,kind,data}...]}}`
-— every entry's full result. Progress lines go to stderr.
+(In the pre-stages -f era, `push`/`pull` results were referenceable too;
+with stages being build sections, the referenceable surface is build +
+generate.)
 
-### Parallel runs (`parallel`)
-
-A request file may instead carry a `parallel` array: entries run as a
-dependency graph. Every `${name.field}` reference is a scheduling edge — an
-entry runs once every entry it references has completed — and independent
-entries run concurrently. Any acyclic reference order is legal (unlike
-`pipeline`, forward references are fine as long as no cycle exists). The
-concurrency width comes from config (`defaults.parallel.concurrency`;
-positive integer, `0` = unlimited, unset defaults to 4) — not from the file.
-A failed entry fails the run immediately: entries not yet started are
-skipped and reported in the output envelope's `skipped` array with a reason
-(`not-started`, or `aborted` after Ctrl-C); completed entries survive in
-`steps`. Generate steps are not idempotent: rerunning re-bills.
-
-```json
+```jsonc
+// creatifact-build.json
 {
-  "parallel": [
-    { "name": "img1", "command": "generate.text2image", "provider": "zhipu",
-      "prompt": "a cat" },
-    { "name": "img2", "command": "generate.text2image", "provider": "zhipu",
-      "prompt": "a dog" },
-    { "name": "final", "command": "build", "tag": "combo:1",
-      "annotations": { "a": "${img1.tag}", "b": "${img2.tag}" } }
+  "stages": [
+    { "name": "cat", "gen": { "task": "text2image", "provider": "zhipu",
+      "prompt": "a cat" } },
+    { "name": "dog", "gen": { "task": "text2image", "provider": "zhipu",
+      "prompt": "a dog" } },
+    // cat and dog are independent → concurrent
+    { "name": "combo", "assets": "./combo",
+      "annotations": { "c": "${cat.digest}", "d: "${dog.digest}" } }
+    // combo waits for both (fan-in)
   ]
 }
 ```
+
+Each stage is a mini build (`from`/`copy`/`assets`/`gen`/`annotations`,
+all optional) whose package lands in the shared store under a derived
+tag (`<repo>/<stage>:<version>` from the build's `-t`), so later stages
+reference earlier results by `tag`/`digest`/`outputDir`. The final
+product is the last stage's package, aliased under the `-t` tag. The
+concurrency width comes from config (`defaults.build.concurrency`;
+positive integer, `0` = unlimited, unset defaults to 4). A failed stage
+fails the run immediately: not-yet-started stages are skipped and
+reported in the envelope's `skipped` array; completed stages survive in
+`stages`. Generate stages are not idempotent: rerunning re-bills.
+
+`-f` request files carry a single command only (the JSON mirror of one
+command line); orchestration keys (`pipeline`/`parallel`) are rejected
+with a pointer to build stages.
 
 ## Commands
 
