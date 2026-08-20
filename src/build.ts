@@ -452,6 +452,7 @@ function blobsDirOf(options: BuildOptions): string {
 /** True when any media field carries a pkg:// reference. */
 function specUsesPkg(gen: GenSpec): boolean {
   return (
+    gen.prompt?.startsWith("pkg://") === true ||
     (gen.images ?? []).some((v) => v.startsWith("pkg://")) ||
     (gen.inputs ?? []).some((v) => v.startsWith("pkg://")) ||
     gen.firstFrame?.startsWith("pkg://") === true ||
@@ -464,7 +465,13 @@ async function extractPkgRefs(
   gen: GenSpec,
   priorLayers: OCIDescriptor[],
   blobsDir: string,
-): Promise<Pick<GenRequest, "images" | "inputs" | "firstFrame" | "lastFrame">> {
+): Promise<{
+  prompt?: string
+  images?: string[]
+  inputs?: string[]
+  firstFrame?: string
+  lastFrame?: string
+}> {
   const layerBlobs: Buffer[] = []
   for (const layer of priorLayers) {
     const blobPath = join(blobsDir, layer.digest.slice("sha256:".length))
@@ -472,20 +479,34 @@ async function extractPkgRefs(
   }
   const { view } = await mergeImageLayers(layerBlobs)
   const tmp = await mkdtemp(join(tmpdir(), "creatifact-pkgref-"))
-  const extract = (value: string): string => {
+  const lookup = (value: string): { type: "file"; data: Buffer } => {
     const rel = value.slice("pkg://".length)
     const entry = view.get(rel)
     if (entry === undefined || entry.type !== "file") {
       throw usageError(`gen: pkg ref '${value}' not found in the build's layers (from/copy/assets)`)
     }
-    const out = join(tmp, rel.split("/").pop() ?? "file")
-    writeFileSync(out, entry.data)
+    return entry
+  }
+  const extract = (value: string): string => {
+    const base = value.slice("pkg://".length).split("/").pop() ?? "file"
+    const out = join(tmp, base)
+    writeFileSync(out, lookup(value).data)
     return out
   }
   const extractAll = (values: string[]): string[] =>
     values.map((v) => (v.startsWith("pkg://") ? extract(v) : v))
 
-  const out: Pick<GenRequest, "images" | "inputs" | "firstFrame" | "lastFrame"> = {}
+  const out: {
+    prompt?: string
+    images?: string[]
+    inputs?: string[]
+    firstFrame?: string
+    lastFrame?: string
+  } = {}
+  // A prompt that is exactly one pkg:// ref becomes the file's text (same
+  // rule as generate <ref>): long instructions ship as layer files.
+  if (gen.prompt?.startsWith("pkg://") === true)
+    out.prompt = lookup(gen.prompt).data.toString("utf8")
   if (gen.images !== undefined) out.images = extractAll([...gen.images])
   if (gen.inputs !== undefined) out.inputs = extractAll([...gen.inputs])
   if (gen.firstFrame !== undefined) out.firstFrame = extract(gen.firstFrame)
@@ -507,13 +528,13 @@ async function genRequestFromSpec(
   }
   passthrough("provider", "provider")
   passthrough("model", "model")
-  passthrough("prompt", "prompt")
   passthrough("system", "system")
   passthrough("options", "options")
 
   const media = specUsesPkg(gen)
     ? await extractPkgRefs(gen, priorLayers, blobsDir)
     : {
+        ...(gen.prompt === undefined ? {} : { prompt: gen.prompt }),
         ...(gen.images === undefined ? {} : { images: [...gen.images] }),
         ...(gen.inputs === undefined ? {} : { inputs: [...gen.inputs] }),
         ...(gen.firstFrame === undefined ? {} : { firstFrame: gen.firstFrame }),
