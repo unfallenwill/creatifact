@@ -182,7 +182,7 @@ export function readRequestFile(file: string): { command: string; fields: Fields
   // exact JSON mirror of a single command line.
   if (root["pipeline"] !== undefined || root["parallel"] !== undefined) {
     throw usageError(
-      "-f files carry a single command; orchestration (pipeline/parallel) lives in creatifact-build.json stages",
+      "-f files carry a single command; orchestration (pipeline/parallel) lives in creatifact.json stages",
     )
   }
 

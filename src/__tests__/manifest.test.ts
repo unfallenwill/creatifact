@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { loadBuildManifest, validateBuildManifest } from "../manifest"
 
-const FILE = "creatifact-build.json"
+const FILE = "creatifact.json"
 
 function parse(raw: unknown): ReturnType<typeof validateBuildManifest> {
   return validateBuildManifest(raw, FILE)
@@ -89,7 +89,7 @@ test("loadBuildManifest returns empty manifest when file missing", async () => {
 
 test("loadBuildManifest parses and validates JSON", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "manifest-test-"))
-  const filePath = join(tmp, "creatifact-build.json")
+  const filePath = join(tmp, "creatifact.json")
   await writeFile(filePath, JSON.stringify({ from: ["r:1"], assets: "./a" }))
   const result = await loadBuildManifest(filePath)
   expect(result.file).toEqual({ from: ["r:1"], assets: "./a" })
@@ -99,7 +99,7 @@ test("loadBuildManifest parses and validates JSON", async () => {
 
 test("loadBuildManifest propagates invalid JSON errors", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "manifest-test-"))
-  const filePath = join(tmp, "creatifact-build.json")
+  const filePath = join(tmp, "creatifact.json")
   await writeFile(filePath, "{ invalid }")
   const error = await loadBuildManifest(filePath).catch((e) => e)
   expect(error.code).toBe("E_USAGE")
@@ -109,7 +109,7 @@ test("loadBuildManifest propagates invalid JSON errors", async () => {
 
 test("loadBuildManifest accepts JSONC comments and trailing commas", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "manifest-test-"))
-  const filePath = join(tmp, "creatifact-build.json")
+  const filePath = join(tmp, "creatifact.json")
   await writeFile(
     filePath,
     `{

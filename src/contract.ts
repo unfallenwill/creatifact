@@ -664,7 +664,7 @@ export function requestFileSchemaJson(): JsonSchema {
     $id: "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-request.schema.json",
     title: "Creatifact request file",
     description:
-      "The JSON mirror of one creatifact command line, run via `creatifact -f <file>.json`. The 'command' field selects the command; the remaining fields map to its arguments exactly as the flags would, and command-line flags after the file override generate.* fields. Orchestration (multi-step, dependency graph) lives in creatifact-build.json stages.",
+      "The JSON mirror of one creatifact command line, run via `creatifact -f <file>.json`. The 'command' field selects the command; the remaining fields map to its arguments exactly as the flags would, and command-line flags after the file override generate.* fields. Orchestration (multi-step, dependency graph) lives in creatifact.json stages.",
     $defs: defs,
     anyOf: singles,
   }

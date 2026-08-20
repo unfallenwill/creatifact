@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-request.schema.json",
   "title": "Creatifact request file",
-  "description": "The JSON mirror of one creatifact command line, run via `creatifact -f <file>.json`. The 'command' field selects the command; the remaining fields map to its arguments exactly as the flags would, and command-line flags after the file override generate.* fields. Orchestration (multi-step, dependency graph) lives in creatifact-build.json stages.",
+  "description": "The JSON mirror of one creatifact command line, run via `creatifact -f <file>.json`. The 'command' field selects the command; the remaining fields map to its arguments exactly as the flags would, and command-line flags after the file override generate.* fields. Orchestration (multi-step, dependency graph) lives in creatifact.json stages.",
   "$defs": {
     "single.generate.text2text": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",

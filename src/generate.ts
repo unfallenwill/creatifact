@@ -1691,7 +1691,7 @@ async function runGeneratePackage(
   if (image.manifest.config.mediaType !== GEN_CONFIG_MEDIA_TYPE) {
     fail(
       `${ref}: not a gen package (config mediaType ${image.manifest.config.mediaType}); ` +
-        "build one by adding a 'gen' field to creatifact-build.json",
+        "build one by adding a 'gen' field to creatifact.json",
     )
   }
   const configBlob = image.blobs.get(image.manifest.config.digest)

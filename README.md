@@ -138,7 +138,7 @@ prompts, and input assets into a portable recipe; credentials are never stored
 in the package.
 
 ```jsonc
-// creatifact-build.json
+// creatifact.json
 {
   "$schema": "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-build.schema.json",
   "assets": "./assets",
@@ -185,7 +185,7 @@ Use named `stages` for multi-step workflows. References such as
 independent stages run concurrently.
 
 ```jsonc
-// creatifact-build.json
+// creatifact.json
 {
   "stages": [
     {
@@ -347,7 +347,8 @@ Bare references use `defaults.registry`, which defaults to `localhost:5000`.
 
 ## Build manifest reference
 
-`creatifact build` reads `creatifact-build.json` by default. A single-package
+`creatifact build` reads `creatifact.json` from the working directory by
+default; `-f <path>` points at any other manifest. A single-package
 manifest supports these fields:
 
 | Field | Description |
@@ -396,7 +397,7 @@ local schema in VS Code:
 {
   "json.schemas": [
     {
-      "fileMatch": ["creatifact-build.json"],
+      "fileMatch": ["creatifact.json"],
       "url": "./schemas/creatifact-build.schema.json"
     }
   ]

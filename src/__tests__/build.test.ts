@@ -62,7 +62,7 @@ test("parseBuildArgs parses all flags", () => {
     "-o",
     "./out",
     "-f",
-    "./creatifact-build.json",
+    "./creatifact.json",
     "--annotation",
     "a=1",
     "--annotation",
@@ -78,7 +78,7 @@ test("parseBuildArgs parses all flags", () => {
   expect(result.dir).toBe("./assets")
   expect(result.tag).toBe("org/myapp:1.0.0")
   expect(result.output).toBe("./out")
-  expect(result.file).toBe("./creatifact-build.json")
+  expect(result.file).toBe("./creatifact.json")
   expect(result.annotations).toEqual({ a: "1", b: "2" })
   expect(result.username).toBe("user")
   expect(result.password).toBe("secret")
@@ -550,7 +550,7 @@ test("runBuildFromArgs parses CLI and manifest together", async () => {
   const outputDir = join(tmp, "out")
   await mkdir(assetsDir, { recursive: true })
   await writeFile(join(assetsDir, "f.txt"), "data")
-  const manifestPath = join(tmp, "creatifact-build.json")
+  const manifestPath = join(tmp, "creatifact.json")
   await writeFile(manifestPath, JSON.stringify({ assets: "./assets", annotations: { a: "1" } }))
 
   await runBuildFromArgs(["-f", manifestPath, "-t", "org/pkg:1.0.0", "-o", outputDir])
@@ -732,7 +732,7 @@ async function setupReuseEnv(): Promise<ReuseEnv> {
     dir,
     configPath,
     counterPath,
-    manifestPath: join(dir, "creatifact-build.json"),
+    manifestPath: join(dir, "creatifact.json"),
     store: join(configDir, "store"),
   }
 }

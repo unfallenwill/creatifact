@@ -81,15 +81,13 @@ export interface BuildCommandOptions {
 
 export function buildBuildCommand(): Command {
   const cmd = new Command("build")
-    .description(
-      "Build an OCI image layout from a build manifest (default: ./creatifact-build.json)",
-    )
+    .description("Build an OCI image layout from a build manifest (default: ./creatifact.json)")
     .option("-t, --tag <repo:tag>", "Image reference, e.g. org/myapp:1.0.0 (required)")
     .option(
       "--dir <path>",
       'Local directory to pack as the top layer (overrides "assets" in the manifest)',
     )
-    .option("-f, --file <path>", "Build manifest path (default: ./creatifact-build.json)")
+    .option("-f, --file <path>", "Build manifest path (default: ./creatifact.json)")
     .option(
       "-o, --output <dir>",
       "Export a standalone OCI layout dir (default: shared store ~/.creatifact/store)",
@@ -647,7 +645,7 @@ export async function runBuildFromParsed(
   cliOpts: ParsedArgs,
   opts?: { configPath?: string; signal?: AbortSignal | undefined },
 ): Promise<BuildResult> {
-  const manifestPath = cliOpts.file ?? "./creatifact-build.json"
+  const manifestPath = cliOpts.file ?? "./creatifact.json"
   const loaded = await loadBuildManifest(manifestPath)
 
   const password = await resolvePassword(cliOpts.password, cliOpts.passwordStdin)

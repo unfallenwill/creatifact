@@ -25,10 +25,12 @@ async function run(
   args: string[],
   input?: string,
   env?: Record<string, string>,
+  cwd?: string,
 ): Promise<RunResult> {
   const result = await execa(process.execPath, [CLI, ...args], {
     ...(input === undefined ? {} : { input }),
     reject: false,
+    ...(cwd === undefined ? {} : { cwd }),
     // NO_COLOR pins most assertions to the contracted plain-text form so the
     // suite never depends on the host's ambient color heuristics (CI=true,
     // win32, a user's FORCE_COLOR). The color path itself is covered
@@ -196,7 +198,7 @@ describe("cli build — integration", () => {
     const outputDir = path.join(tmp, "output")
     mkdirSync(fixtureDir, { recursive: true })
     writeFileSync(path.join(fixtureDir, "asset.txt"), "from manifest")
-    const descPath = path.join(tmp, "creatifact-build.json")
+    const descPath = path.join(tmp, "creatifact.json")
     writeFileSync(
       descPath,
       JSON.stringify({
@@ -237,7 +239,7 @@ describe("cli build — integration", () => {
     mkdirSync(cliAssets, { recursive: true })
     writeFileSync(path.join(manifestAssets, "manifest.txt"), "manifest content")
     writeFileSync(path.join(cliAssets, "cli.txt"), "cli content")
-    const descPath = path.join(tmp, "creatifact-build.json")
+    const descPath = path.join(tmp, "creatifact.json")
     writeFileSync(descPath, JSON.stringify({ assets: manifestAssets }))
 
     try {
@@ -278,7 +280,7 @@ describe("cli build — integration", () => {
       ])
       expect(first.code, first.stderr).toBe(0)
 
-      const descPath = path.join(tmp, "creatifact-build.json")
+      const descPath = path.join(tmp, "creatifact.json")
       writeFileSync(descPath, JSON.stringify({ from: sourceLayout }))
       const { code } = await run([
         "build",
@@ -306,7 +308,7 @@ describe("cli build — integration", () => {
 
   it("build warns about legacy manifest fields and still needs -t", async () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
-    const descPath = path.join(tmp, "creatifact-build.json")
+    const descPath = path.join(tmp, "creatifact.json")
     writeFileSync(descPath, JSON.stringify({ tag: "old/test:1.0", dir: "./x" }))
 
     try {
@@ -323,7 +325,7 @@ describe("cli build — integration", () => {
     const assets = path.join(tmp, "assets")
     mkdirSync(assets, { recursive: true })
     writeFileSync(path.join(assets, "a.txt"), "a")
-    const descPath = path.join(tmp, "creatifact-build.json")
+    const descPath = path.join(tmp, "creatifact.json")
     writeFileSync(
       descPath,
       `{
@@ -344,7 +346,7 @@ describe("cli build — integration", () => {
   it("build --plan inlines gen.promptFile and never reports promptFile", async () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
     writeFileSync(path.join(tmp, "prompt.md"), "a cat on a cliff\n")
-    const descPath = path.join(tmp, "creatifact-build.json")
+    const descPath = path.join(tmp, "creatifact.json")
     writeFileSync(
       descPath,
       JSON.stringify({
@@ -374,6 +376,33 @@ describe("cli build — integration", () => {
       ])
       // promptFile never survives into the plan; the inlined prompt feeds the fingerprint
       expect(JSON.stringify(envelope)).not.toContain("promptFile")
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it("build loads ./creatifact.json from the working directory without -f", async () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
+    const assets = path.join(tmp, "assets")
+    mkdirSync(assets, { recursive: true })
+    writeFileSync(path.join(assets, "a.txt"), "a")
+    writeFileSync(
+      path.join(tmp, "creatifact.json"),
+      `{
+        // default manifest, no -f needed
+        "assets": "./assets",
+      }`,
+    )
+
+    try {
+      const { stdout, stderr, code } = await run(
+        ["build", "-t", "default:1.0"],
+        undefined,
+        undefined,
+        tmp,
+      )
+      expect(code, stderr).toBe(0)
+      expect(JSON.parse(lastLine(stdout)).ok).toBe(true)
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
@@ -1329,7 +1358,7 @@ describe("cli generate — integration", () => {
   it("build executes the gen section: artifacts become the top layer and the config records the run", async () => {
     const { env, dir, recordPath } = demoEnv()
     const outDir = path.join(dir, "built")
-    const manifestPath = path.join(dir, "creatifact-build.json")
+    const manifestPath = path.join(dir, "creatifact.json")
     writeFileSync(
       manifestPath,
       JSON.stringify({
@@ -1383,7 +1412,7 @@ describe("cli generate — integration", () => {
     const assetsDir = path.join(dir, "assets")
     mkdirSync(assetsDir, { recursive: true })
     writeFileSync(path.join(assetsDir, "a.txt"), "x")
-    const manifestPath = path.join(dir, "creatifact-build.json")
+    const manifestPath = path.join(dir, "creatifact.json")
     writeFileSync(
       manifestPath,
       JSON.stringify({
@@ -1441,7 +1470,7 @@ describe("cli generate — integration", () => {
 
   it("build rejects stages mixed with top-level sections", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "creatifact-stages-err-"))
-    const manifestPath = path.join(dir, "creatifact-build.json")
+    const manifestPath = path.join(dir, "creatifact.json")
     writeFileSync(
       manifestPath,
       JSON.stringify({
@@ -1484,7 +1513,7 @@ export default (settings) => ({
       JSON.stringify({ providers: { demo: { module: pluginPath } } }),
     )
     const env = { CREATIFACT_CONFIG_DIR: configDir }
-    const manifestPath = path.join(dir, "creatifact-build.json")
+    const manifestPath = path.join(dir, "creatifact.json")
     writeFileSync(
       manifestPath,
       JSON.stringify({
@@ -1541,7 +1570,7 @@ export default (settings) => ({
 
   it("build stages reuse unchanged stages across runs (incremental, no re-billing)", async () => {
     const { env, dir, recordPath } = demoEnv()
-    const manifestPath = path.join(dir, "creatifact-build.json")
+    const manifestPath = path.join(dir, "creatifact.json")
     writeFileSync(
       manifestPath,
       JSON.stringify({
@@ -1594,7 +1623,7 @@ export default (settings) => ({
 
   it("build --force re-runs every stage", async () => {
     const { env, dir, recordPath } = demoEnv()
-    const manifestPath = path.join(dir, "creatifact-build.json")
+    const manifestPath = path.join(dir, "creatifact.json")
     writeFileSync(
       manifestPath,
       JSON.stringify({ gen: { task: "text2image", provider: "demo", prompt: "a crane" } }),
@@ -1619,7 +1648,7 @@ export default (settings) => ({
 
   it("build --plan prints the plan envelope without executing or writing", async () => {
     const { env, dir, recordPath } = demoEnv()
-    const manifestPath = path.join(dir, "creatifact-build.json")
+    const manifestPath = path.join(dir, "creatifact.json")
     writeFileSync(
       manifestPath,
       JSON.stringify({ gen: { task: "text2image", provider: "demo", prompt: "a crane" } }),
@@ -1651,7 +1680,7 @@ export default (settings) => ({
 
   it("build stages resolve ${name.artifacts[0].url} references", async () => {
     const { env, dir } = demoEnv()
-    const manifestPath = path.join(dir, "creatifact-build.json")
+    const manifestPath = path.join(dir, "creatifact.json")
     writeFileSync(
       manifestPath,
       JSON.stringify({
@@ -1687,7 +1716,7 @@ export default (settings) => ({
     const { env, dir, recordPath } = demoEnv()
     const recipeDir = path.join(dir, "recipe")
     const resultDir = path.join(dir, "result")
-    const manifestPath = path.join(dir, "creatifact-build.json")
+    const manifestPath = path.join(dir, "creatifact.json")
     writeFileSync(
       manifestPath,
       JSON.stringify({
@@ -1772,7 +1801,7 @@ export default (settings) => ({
     const resultDir = path.join(dir, "result")
     mkdirSync(assetsDir, { recursive: true })
     writeFileSync(path.join(assetsDir, "ref.png"), "REFIMAGE")
-    const manifestPath = path.join(dir, "creatifact-build.json")
+    const manifestPath = path.join(dir, "creatifact.json")
     writeFileSync(
       manifestPath,
       JSON.stringify({
@@ -1837,7 +1866,7 @@ export default (settings) => ({
     const recipeDir = path.join(dir, "recipe")
     mkdirSync(assetsDir, { recursive: true })
     writeFileSync(path.join(assetsDir, "story.txt"), "a crane over the west lake at dusk")
-    const manifestPath = path.join(dir, "creatifact-build.json")
+    const manifestPath = path.join(dir, "creatifact.json")
     writeFileSync(
       manifestPath,
       JSON.stringify({
@@ -2326,7 +2355,7 @@ export default (settings) => ({
 
       // 2. bake a recipe whose images url will be rejected, with inputRefs anchors
       const recipeDir = path.join(dir, "recipe")
-      const manifestPath = path.join(dir, "creatifact-build.json")
+      const manifestPath = path.join(dir, "creatifact.json")
       writeFileSync(
         manifestPath,
         JSON.stringify({

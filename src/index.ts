@@ -54,7 +54,7 @@ program
   .command("-f <file> [args...]")
   .usage("<file>.json [options] [-- generate flags]")
   .description(
-    `Run the single command described by a JSON file — the exact mirror of one command line, for when flags get unwieldy. Example: {"command":"generate.text2image","prompt":"a crane"} equals \`creatifact generate text2image --prompt "a crane"\`; flags after the file override generate fields. Multi-step orchestration lives in creatifact-build.json (stages)`,
+    `Run the single command described by a JSON file — the exact mirror of one command line, for when flags get unwieldy. Example: {"command":"generate.text2image","prompt":"a crane"} equals \`creatifact generate text2image --prompt "a crane"\`; flags after the file override generate fields. Multi-step orchestration lives in creatifact.json (stages)`,
   )
   .allowExcessArguments(true)
   .passThroughOptions(true)
