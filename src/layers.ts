@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto"
 import { createWriteStream } from "node:fs"
-import { readdir, readFile, rename, stat } from "node:fs/promises"
+import { readFile, rename, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { Readable, type Readable as ReadableStream, Writable } from "node:stream"
 import { pipeline } from "node:stream/promises"
 import { createGunzip, createGzip, type ZlibOptions } from "node:zlib"
 import { type Entry, extract, type Pack, pack } from "tar-stream"
+import { glob } from "tinyglobby"
 import { LAYER_MEDIA_TYPE, type OCIDescriptor } from "./oci"
 
 export type FsEntry =
@@ -321,25 +322,15 @@ export async function createLayerFromView(
   return writeLayerBlob(tarPack, blobsDir)
 }
 
-async function readDirEntries(dir: string, base = ""): Promise<string[]> {
-  const entries = await readdir(dir, { withFileTypes: true })
-  const files: string[] = []
-  for (const entry of entries) {
-    const fullPath = join(dir, entry.name)
-    const relPath = base ? `${base}/${entry.name}` : entry.name
-    if (entry.isDirectory()) {
-      files.push(...(await readDirEntries(fullPath, relPath)))
-    } else if (entry.isFile()) {
-      files.push(relPath)
-    }
-  }
-  return files
-}
-
 export async function createLayerTarball(dir: string, blobsDir: string): Promise<OCIDescriptor> {
   const tarPack = pack()
 
-  const files = await readDirEntries(dir)
+  // tinyglobby traversal: every file, dotfiles included (dot:true — the
+  // hand-rolled version never filtered them either), POSIX-style relative
+  // paths. The explicit sort pins tar entry order — readdir order varies by
+  // filesystem (ext4 hash order vs APFS), and unsorted entries would make
+  // the same assets produce different layer digests across machines.
+  const files = (await glob(["**/*"], { cwd: dir, onlyFiles: true, dot: true })).sort()
   for (const relPath of files) {
     const fullPath = join(dir, relPath)
     const content = await readFile(fullPath)

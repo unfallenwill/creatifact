@@ -450,6 +450,41 @@ test("runBuild extracts copy paths into a new layer", async () => {
   await rm(tmp, { recursive: true })
 })
 
+test("runBuild packs dotfiles from the assets dir into the layer", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "build-test-"))
+  const assetsDir = join(tmp, "assets")
+  const outputDir = join(tmp, "out")
+  await mkdir(assetsDir, { recursive: true })
+  await writeFile(join(assetsDir, ".hidden"), "h")
+  await writeFile(join(assetsDir, "visible.txt"), "v")
+  await mkdir(join(assetsDir, "sub"))
+  await writeFile(join(assetsDir, "sub", ".gitignore"), "g")
+
+  await runBuild({
+    tag: "org/dot:1.0.0",
+    assetsDir,
+    output: outputDir,
+    annotations: {},
+    from: [],
+    copy: [],
+    plainHttp: false,
+    username: undefined,
+    password: undefined,
+  })
+
+  const index = JSON.parse(await readFile(join(outputDir, "index.json"), "utf8"))
+  const manifest = JSON.parse(
+    await readFile(join(outputDir, "blobs", "sha256", index.manifests[0].digest.slice(7)), "utf8"),
+  )
+  const layerBlob = await readFile(
+    join(outputDir, "blobs", "sha256", manifest.layers[0].digest.slice(7)),
+  )
+  const entries = await extractTarEntries(gunzipSync(layerBlob))
+  expect([...entries.keys()].sort()).toEqual([".hidden", "sub/.gitignore", "visible.txt"])
+
+  await rm(tmp, { recursive: true })
+})
+
 test("runBuild throws when copy path has no match", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "build-test-"))
   const sourceDir = join(tmp, "source")
