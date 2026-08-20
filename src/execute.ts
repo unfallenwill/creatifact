@@ -50,7 +50,10 @@ export async function executeCommand(
     case "pull":
       return { kind: "pull", ...(await runPullFromParsed(request.req, opts)) }
     case "generate":
-      return { kind: "generate", ...(await runGenerateRequest(request.req, opts)) }
+      return {
+        kind: "generate",
+        ...(await runGenerateRequest(request.req, opts)),
+      }
     case "login":
       return { kind: "login", ...(await runLoginFromParsed(request.req, opts)) }
     case "logout":

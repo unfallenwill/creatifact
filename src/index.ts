@@ -10,6 +10,7 @@ import { usageError } from "./errors"
 import { executeCommand, resultData } from "./execute"
 import { type FileRunResult, runFileFromArgs } from "./fileCmd"
 import { buildGenerateCommand } from "./generate"
+import { armInterrupts } from "./interrupt"
 import { buildAuthCommand } from "./login"
 import { buildModelsCommand, type ModelsCommandOptions, modelsArgsFromOptions } from "./models"
 import { emitError, emitResult } from "./output"
@@ -21,6 +22,11 @@ import { addGlobalOptions, configOpts, prettyOpts } from "./util"
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
   version: string
 }
+
+// One interrupt signal for the whole process: every in-flight request,
+// poll, and pipeline step composes it with its own deadlines. Second
+// Ctrl-C falls through to the shell's default kill.
+armInterrupts()
 
 const program = new Command()
   .name("creatifact")

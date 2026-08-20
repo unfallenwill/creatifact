@@ -19,6 +19,7 @@ import {
   parseGenConfigBlob,
   type StepProvenance,
 } from "./genPackage"
+import { interruptSignal } from "./interrupt"
 import { emitResult } from "./output"
 import {
   type Artifact,
@@ -1001,12 +1002,12 @@ async function saveArtifacts(artifacts: Artifact[], outputDir: string): Promise<
     if (artifact.base64 !== undefined) {
       bytes = Buffer.from(artifact.base64, "base64")
     } else if (artifact.url !== undefined) {
-      try {
-        bytes = await fetchArtifactBytes(artifact.url)
-      } catch (e) {
-        warn(`could not download ${artifact.url} (${(e as Error).message}); skipped`)
+      const fetched = await fetchArtifactBytes(artifact.url)
+      if (fetched.isErr()) {
+        warn(`could not download ${artifact.url} (${fetched.error.message}); skipped`)
         continue
       }
+      bytes = fetched.value
     } else {
       continue
     }
@@ -1207,7 +1208,7 @@ function parseHandle(raw: string): JobHandle {
 
 async function runResumeTask(
   req: GenRequest,
-  opts: { configPath?: string | undefined },
+  opts: { configPath?: string | undefined; signal?: AbortSignal | undefined },
 ): Promise<GenerateResult> {
   let raw: string | undefined
   if (req.handle !== undefined) {
@@ -1224,41 +1225,33 @@ async function runResumeTask(
     fail(`provider '${handle.providerId}' implements no video generation`)
   }
 
-  const controller = new AbortController()
-  const onSignal = () => controller.abort()
-  process.on("SIGINT", onSignal)
-  process.on("SIGTERM", onSignal)
+  const signal = opts.signal ?? interruptSignal()
 
   const timeoutMs = req.timeout === undefined ? 600_000 : parseDurationMs(req.timeout, "--timeout")
   const intervalMs = req.interval === undefined ? 5000 : parseDurationMs(req.interval, "--interval")
 
   const startedAt = Date.now()
   let final: Awaited<ReturnType<typeof pollUntil>>
-  try {
-    final = await pollUntil((h) => api.poll(h, { signal: controller.signal }), handle, {
-      intervalMs,
-      timeoutMs,
-      signal: controller.signal,
-      onStatus: (s) =>
-        status(
-          `polling... ${s.state}${s.state === "running" && s.progress !== undefined ? ` ${s.progress}%` : ""} (${Math.round((Date.now() - startedAt) / 1000)}s)`,
-        ),
-    }).catch((e: unknown) => {
-      if (controller.signal.aborted || e instanceof JobTimeoutError) {
-        throw new CliError(
-          "E_TIMEOUT",
-          `${(e as Error).message}; task handle: ${JSON.stringify(handle)}`,
-          {
-            handle,
-          },
-        )
-      }
-      throw e
-    })
-  } finally {
-    process.off("SIGINT", onSignal)
-    process.off("SIGTERM", onSignal)
-  }
+  final = await pollUntil((h) => api.poll(h, { signal }), handle, {
+    intervalMs,
+    timeoutMs,
+    signal,
+    onStatus: (s) =>
+      status(
+        `polling... ${s.state}${s.state === "running" && s.progress !== undefined ? ` ${s.progress}%` : ""} (${Math.round((Date.now() - startedAt) / 1000)}s)`,
+      ),
+  }).catch((e: unknown) => {
+    if (signal.aborted || e instanceof JobTimeoutError) {
+      throw new CliError(
+        "E_TIMEOUT",
+        `${(e as Error).message}; task handle: ${JSON.stringify(handle)}`,
+        {
+          handle,
+        },
+      )
+    }
+    throw e
+  })
 
   if (final.state === "failed") {
     throw new ProviderError(
@@ -1501,56 +1494,48 @@ async function executeAndPackage(opts: {
   runReq: GenRequest
   provider: Provider
   model: string
+  signal: AbortSignal
   fromRef?: string
   configPath?: string
 }): Promise<GenerateResult> {
-  const { req, runReq, provider, model } = opts
-  const controller = new AbortController()
-  const onSignal = () => controller.abort()
-  process.on("SIGINT", onSignal)
-  process.on("SIGTERM", onSignal)
+  const { req, runReq, provider, model, signal } = opts
 
-  try {
-    const ctx: ExecCtx = { req: runReq, provider, model, signal: controller.signal }
-    const result = await executeWithFallback(ctx, req, opts.configPath)
-    // Text/understand/embed carry a complete structured payload; packaging
-    // stays opt-in (--tag / --output) so stdout-only runs are unchanged.
-    if ("task" in result) {
-      return await packageTextResultIfRequested(opts, result)
-    }
-    // --no-wait submit: the handle is the payload.
-    if ("handle" in result) {
-      return { task: req.task, provider: provider.id, model, handle: result.handle }
-    }
+  const ctx: ExecCtx = { req: runReq, provider, model, signal }
+  const result = await executeWithFallback(ctx, req, opts.configPath)
+  // Text/understand/embed carry a complete structured payload; packaging
+  // stays opt-in (--tag / --output) so stdout-only runs are unchanged.
+  if ("task" in result) {
+    return await packageTextResultIfRequested(opts, result)
+  }
+  // --no-wait submit: the handle is the payload.
+  if ("handle" in result) {
+    return { task: req.task, provider: provider.id, model, handle: result.handle }
+  }
 
-    if (req.noPack === true || !TASKS[req.task].media) {
-      return mediaResult(req, provider.id, model, result)
-    }
+  if (req.noPack === true || !TASKS[req.task].media) {
+    return mediaResult(req, provider.id, model, result)
+  }
 
-    const resultTag = req.tag ?? "gen-output:latest"
-    // Default target is the shared store (tag = pointer); --output exports.
-    const outputDir = req.output ?? storeDir(envForConfigPath(opts.configPath))
-    const pkg = await buildResultPackage({
-      outputDir,
-      tag: resultTag,
-      ...(req.output === undefined ? { store: true } : {}),
-      ...(opts.fromRef === undefined ? {} : { fromRef: opts.fromRef }),
-      artifacts: result.artifacts,
-      spec: effectiveGenSpec(req, provider.id, model),
-      usage: result.usage,
-    })
-    for (const message of pkg.warnings) warn(message)
-    ok(`built ${resultTag} → ${outputDir}`)
-    return {
-      ...mediaResult(req, provider.id, model, result),
-      outputDir,
-      tag: resultTag,
-      digest: pkg.digest,
-      ...(pkg.warnings.length > 0 ? { warnings: pkg.warnings } : {}),
-    }
-  } finally {
-    process.off("SIGINT", onSignal)
-    process.off("SIGTERM", onSignal)
+  const resultTag = req.tag ?? "gen-output:latest"
+  // Default target is the shared store (tag = pointer); --output exports.
+  const outputDir = req.output ?? storeDir(envForConfigPath(opts.configPath))
+  const pkg = await buildResultPackage({
+    outputDir,
+    tag: resultTag,
+    ...(req.output === undefined ? { store: true } : {}),
+    ...(opts.fromRef === undefined ? {} : { fromRef: opts.fromRef }),
+    artifacts: result.artifacts,
+    spec: effectiveGenSpec(req, provider.id, model),
+    usage: result.usage,
+  })
+  for (const message of pkg.warnings) warn(message)
+  ok(`built ${resultTag} → ${outputDir}`)
+  return {
+    ...mediaResult(req, provider.id, model, result),
+    outputDir,
+    tag: resultTag,
+    digest: pkg.digest,
+    ...(pkg.warnings.length > 0 ? { warnings: pkg.warnings } : {}),
   }
 }
 
@@ -1568,6 +1553,7 @@ export async function runGenerateRequest(
     runReq: req,
     provider,
     model,
+    signal: opts.signal ?? interruptSignal(),
     ...(opts.configPath === undefined ? {} : { configPath: opts.configPath }),
   })
 }
@@ -1662,7 +1648,7 @@ async function runGeneratePackage(
   ref: string,
   positionals: string[],
   options: GenerateCommandOptions,
-  opts: { configPath?: string | undefined } = {},
+  opts: { configPath?: string | undefined; signal?: AbortSignal | undefined } = {},
 ): Promise<GenerateResult> {
   const plainHttp = options.plainHttp === true
 
@@ -1696,6 +1682,7 @@ async function runGeneratePackage(
       runReq,
       provider,
       model,
+      signal: opts.signal ?? interruptSignal(),
       fromRef: ref,
       ...(opts.configPath === undefined ? {} : { configPath: opts.configPath }),
     })
@@ -1723,6 +1710,8 @@ function rejectPkgRefsOutsidePackageMode(req: GenRequest): void {
 
 export interface GenerateRunOptions {
   configPath?: string | undefined
+  /** Cancellation for the whole run; defaults to the process interrupt signal. */
+  signal?: AbortSignal | undefined
 }
 
 const TASK_DESCRIPTIONS: Record<GenTaskName, string> = {

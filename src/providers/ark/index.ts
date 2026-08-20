@@ -1,5 +1,10 @@
 import { toImageUrl } from "../core/fileref"
-import { createJsonClient, type JsonClient, SLOW_POST_TIMEOUT_MS } from "../core/http"
+import {
+  createJsonClient,
+  type JsonClient,
+  SLOW_POST_TIMEOUT_MS,
+  unwrapOrThrow,
+} from "../core/http"
 import { mergeModelDeclarations } from "../core/modelRegistry"
 import {
   type EmbedApi,
@@ -159,18 +164,22 @@ export function createArkProvider(
       if (req.options) {
         applyVideoOptions(body, req.options)
       }
-      const resp = await client.post<ArkTaskResponse>("/contents/generations/tasks", body, {
-        timeoutMs: SLOW_POST_TIMEOUT_MS,
-        signal: ctx?.signal,
-      })
+      const resp = unwrapOrThrow(
+        await client.post<ArkTaskResponse>("/contents/generations/tasks", body, {
+          timeoutMs: SLOW_POST_TIMEOUT_MS,
+          signal: ctx?.signal,
+        }),
+      )
       return { providerId: "ark", id: resp.id }
     },
 
     async poll(handle: JobHandle, ctx): Promise<JobStatus> {
       guardHandle("ark", handle)
-      const task = await client.get<ArkTaskResponse>(`/contents/generations/tasks/${handle.id}`, {
-        signal: ctx?.signal,
-      })
+      const task = unwrapOrThrow(
+        await client.get<ArkTaskResponse>(`/contents/generations/tasks/${handle.id}`, {
+          signal: ctx?.signal,
+        }),
+      )
       if (task.status === "queued") return { state: "pending" }
       if (task.status === "running") return { state: "running" }
       if (task.status === "failed" || task.status === "cancelled" || task.status === "expired") {
@@ -212,10 +221,12 @@ export function createArkProvider(
         if (watermark !== undefined) body["watermark"] = watermark
         Object.assign(body, rest)
       }
-      const resp = await client.post<ArkImageResponse>("/images/generations", body, {
-        timeoutMs: SLOW_POST_TIMEOUT_MS,
-        signal: ctx?.signal,
-      })
+      const resp = unwrapOrThrow(
+        await client.post<ArkImageResponse>("/images/generations", body, {
+          timeoutMs: SLOW_POST_TIMEOUT_MS,
+          signal: ctx?.signal,
+        }),
+      )
       return {
         artifacts: (resp.data ?? []).map((item) => ({
           url: item.url,
@@ -256,14 +267,16 @@ export function createArkProvider(
   function understandApi(fileKind: "image_url" | "video_url"): UnderstandApi<ArkChatOptions> {
     return {
       async create(req, ctx) {
-        const resp = await client.post<ArkChatResponse>(
-          "/chat/completions",
-          {
-            model: req.model,
-            messages: await toChatMessages(req.messages, fileKind),
-            ...(req.options ?? {}),
-          },
-          { signal: ctx?.signal },
+        const resp = unwrapOrThrow(
+          await client.post<ArkChatResponse>(
+            "/chat/completions",
+            {
+              model: req.model,
+              messages: await toChatMessages(req.messages, fileKind),
+              ...(req.options ?? {}),
+            },
+            { signal: ctx?.signal },
+          ),
         )
         return {
           text: resp.choices?.[0]?.message?.content ?? "",
@@ -276,14 +289,16 @@ export function createArkProvider(
   const embed: EmbedApi<ArkEmbedOptions> = {
     async create(req, ctx) {
       // Text embeddings take no dimensions param (multimodal endpoint only); options passthrough covers it
-      const resp = await client.post<ArkEmbedResponse>(
-        "/embeddings",
-        {
-          model: req.model,
-          input: req.inputs,
-          ...(req.options ?? {}),
-        },
-        { signal: ctx?.signal },
+      const resp = unwrapOrThrow(
+        await client.post<ArkEmbedResponse>(
+          "/embeddings",
+          {
+            model: req.model,
+            input: req.inputs,
+            ...(req.options ?? {}),
+          },
+          { signal: ctx?.signal },
+        ),
       )
       const vectors = (resp.data ?? []).map((item) => item.embedding ?? [])
       return {
@@ -302,14 +317,16 @@ export function createArkProvider(
         messages.push({ role: "system", content: req.system })
       }
       messages.push({ role: "user", content: req.prompt })
-      const resp = await client.post<ArkChatResponse>(
-        "/chat/completions",
-        {
-          model: req.model,
-          messages,
-          ...(req.options ?? {}),
-        },
-        { signal: ctx?.signal },
+      const resp = unwrapOrThrow(
+        await client.post<ArkChatResponse>(
+          "/chat/completions",
+          {
+            model: req.model,
+            messages,
+            ...(req.options ?? {}),
+          },
+          { signal: ctx?.signal },
+        ),
       )
       return {
         text: resp.choices?.[0]?.message?.content ?? "",

@@ -1,6 +1,8 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { errAsync, okAsync } from "neverthrow"
+import { DownloadError } from "../download"
 import {
   artifactFromStore,
   buildResultPackage,
@@ -20,7 +22,7 @@ test("artifactFromStore resolves bytes by digest+url and misses cleanly", async 
       outputDir: join(tmp, "store"),
       tag: "demo/src:v1",
       store: true,
-      fetchBytes: async () => bytes,
+      fetchBytes: () => okAsync(bytes),
       artifacts: [{ url, mimeType: "image/png" }],
       spec: { task: "text2image", provider: "demo" },
       createdAt: "2026-08-17T00:00:00.000Z",
@@ -90,7 +92,7 @@ test("buildResultPackage downloads url artifacts and packs base64, keeping prove
     outputDir,
     tag: "org/result:1.0",
     fromRef: "example.com/xxxxxx:v1.0",
-    fetchBytes: async () => urlBytes,
+    fetchBytes: () => okAsync(urlBytes),
     artifacts: [
       { url: "https://cdn.test/a.png", mimeType: "image/png" },
       { base64: Buffer.from("png-bytes").toString("base64"), mimeType: "image/png" },
@@ -211,9 +213,7 @@ test("buildResultPackage degrades to a url-only record when the download fails",
   const built = await buildResultPackage({
     outputDir,
     tag: "org/result:1.0",
-    fetchBytes: async (url) => {
-      throw new Error(`HTTP 403 downloading ${url}`)
-    },
+    fetchBytes: (url) => errAsync(new DownloadError(`HTTP 403 downloading ${url}`, "http", 403)),
     artifacts: [{ url: "https://cdn.test/expired.mp4", mimeType: "video/mp4" }],
     spec: { task: "text2video", provider: "demo" },
     createdAt: "2026-08-17T00:00:00.000Z",

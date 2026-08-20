@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto"
 import { readFile, stat } from "node:fs/promises"
 import { MAX_INLINE_BYTES } from "../core/fileref"
-import { createJsonClient, type JsonClient, SLOW_POST_TIMEOUT_MS } from "../core/http"
+import {
+  createJsonClient,
+  type JsonClient,
+  SLOW_POST_TIMEOUT_MS,
+  unwrapOrThrow,
+} from "../core/http"
 import { pollToArtifacts } from "../core/job"
 import { mergeModelDeclarations } from "../core/modelRegistry"
 import {
@@ -245,10 +250,12 @@ export function createKlingProvider(
       }
 
       const path = req.firstFrame ? `/image-to-video/${req.model}` : `/text-to-video/${req.model}`
-      const envelope = await client.post<KlingEnvelope<KlingNewTask>>(
-        path,
-        buildVideoBody(req.options, contents, externalId),
-        { timeoutMs: SLOW_POST_TIMEOUT_MS, signal: ctx?.signal },
+      const envelope = unwrapOrThrow(
+        await client.post<KlingEnvelope<KlingNewTask>>(
+          path,
+          buildVideoBody(req.options, contents, externalId),
+          { timeoutMs: SLOW_POST_TIMEOUT_MS, signal: ctx?.signal },
+        ),
       )
       unwrap(envelope)
       return { providerId: "kling", id: externalId }
@@ -256,9 +263,10 @@ export function createKlingProvider(
 
     async poll(handle: JobHandle, ctx): Promise<JobStatus> {
       guardHandle("kling", handle)
-      const envelope = await client.get<KlingEnvelope<KlingNewTask[]>>(
-        `/tasks?external_task_ids=${handle.id}`,
-        { signal: ctx?.signal },
+      const envelope = unwrapOrThrow(
+        await client.get<KlingEnvelope<KlingNewTask[]>>(`/tasks?external_task_ids=${handle.id}`, {
+          signal: ctx?.signal,
+        }),
       )
       const task = unwrap<KlingNewTask[]>(envelope)?.[0]
       if (!task) return { state: "pending" }
@@ -283,10 +291,10 @@ export function createKlingProvider(
         body["watermark_info"] = { enabled: watermark }
       }
       // Kling's image generation endpoint is the legacy task-based one; the sync API polls internally (reusing pollUntil)
-      const submitted = await client.post<KlingEnvelope<KlingImageTask>>(
-        "/v1/images/generations",
-        body,
-        { timeoutMs: SLOW_POST_TIMEOUT_MS },
+      const submitted = unwrapOrThrow(
+        await client.post<KlingEnvelope<KlingImageTask>>("/v1/images/generations", body, {
+          timeoutMs: SLOW_POST_TIMEOUT_MS,
+        }),
       )
       // Envelope business errors (insufficient balance / invalid params / ...) throw here immediately,
       // otherwise we would poll a nonexistent task until the 300s timeout
@@ -295,8 +303,8 @@ export function createKlingProvider(
       // The polling endpoint /v1/images/generations/{id} can resume timed-out tasks manually
       return pollToArtifacts(
         async () => {
-          const envelope = await client.get<KlingEnvelope<KlingImageTask>>(
-            `/v1/images/generations/${externalId}`,
+          const envelope = unwrapOrThrow(
+            await client.get<KlingEnvelope<KlingImageTask>>(`/v1/images/generations/${externalId}`),
           )
           return imageTaskToStatus(unwrap(envelope))
         },

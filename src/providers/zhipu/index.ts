@@ -1,5 +1,10 @@
 import { mimeOfUrl, toImageUrl } from "../core/fileref"
-import { createJsonClient, type JsonClient, SLOW_POST_TIMEOUT_MS } from "../core/http"
+import {
+  createJsonClient,
+  type JsonClient,
+  SLOW_POST_TIMEOUT_MS,
+  unwrapOrThrow,
+} from "../core/http"
 import { pollToArtifacts } from "../core/job"
 import { mergeModelDeclarations } from "../core/modelRegistry"
 import {
@@ -239,7 +244,9 @@ export function createZhipuProvider(
 
   /** GET /async-result/{id} → JobStatus; video and image tasks share this query endpoint. */
   async function pollAsyncResult(handle: JobHandle): Promise<JobStatus> {
-    const body = await client.get<ZhipuAsyncResultResponse>(`/async-result/${handle.id}`)
+    const body = unwrapOrThrow(
+      await client.get<ZhipuAsyncResultResponse>(`/async-result/${handle.id}`),
+    )
     switch (body.task_status) {
       case "PROCESSING":
         return { state: "running" }
@@ -288,10 +295,12 @@ export function createZhipuProvider(
         body["image_url"] = optionImages
       }
 
-      const resp = await client.post<ZhipuAsyncCreateResponse>("/videos/generations", body, {
-        timeoutMs: SLOW_POST_TIMEOUT_MS,
-        signal: ctx?.signal,
-      })
+      const resp = unwrapOrThrow(
+        await client.post<ZhipuAsyncCreateResponse>("/videos/generations", body, {
+          timeoutMs: SLOW_POST_TIMEOUT_MS,
+          signal: ctx?.signal,
+        }),
+      )
       if (!resp.id) {
         throw new ProviderError("internal", "Zhipu did not return a task id", resp)
       }
@@ -316,14 +325,16 @@ export function createZhipuProvider(
         "Zhipu async image generation only supports model 'glm-image'",
       )
     }
-    const submitted = await client.post<ZhipuAsyncCreateResponse>(
-      "/async/images/generations",
-      {
-        model: req.model,
-        prompt: req.prompt,
-        ...options,
-      },
-      { timeoutMs: SLOW_POST_TIMEOUT_MS },
+    const submitted = unwrapOrThrow(
+      await client.post<ZhipuAsyncCreateResponse>(
+        "/async/images/generations",
+        {
+          model: req.model,
+          prompt: req.prompt,
+          ...options,
+        },
+        { timeoutMs: SLOW_POST_TIMEOUT_MS },
+      ),
     )
     if (!submitted.id) {
       throw new ProviderError("internal", "Zhipu did not return a task id", submitted)
@@ -343,14 +354,16 @@ export function createZhipuProvider(
     req: ImageGenerateRequest<ZhipuImageOptions>,
     options: Record<string, unknown>,
   ): Promise<ImageGenerateResult> {
-    const resp = await client.post<ZhipuImageSyncResponse>(
-      "/images/generations",
-      {
-        model: req.model,
-        prompt: req.prompt,
-        ...options,
-      },
-      { timeoutMs: SLOW_POST_TIMEOUT_MS },
+    const resp = unwrapOrThrow(
+      await client.post<ZhipuImageSyncResponse>(
+        "/images/generations",
+        {
+          model: req.model,
+          prompt: req.prompt,
+          ...options,
+        },
+        { timeoutMs: SLOW_POST_TIMEOUT_MS },
+      ),
     )
     const urls = (resp.data ?? [])
       .map((item) => item.url)
@@ -374,11 +387,13 @@ export function createZhipuProvider(
       const messages: Array<{ role: string; content: string }> = []
       if (req.system !== undefined) messages.push({ role: "system", content: req.system })
       messages.push({ role: "user", content: req.prompt })
-      const resp = await client.post<ZhipuChatResponse>("/chat/completions", {
-        model: req.model,
-        messages,
-        ...(req.options ?? {}),
-      })
+      const resp = unwrapOrThrow(
+        await client.post<ZhipuChatResponse>("/chat/completions", {
+          model: req.model,
+          messages,
+          ...(req.options ?? {}),
+        }),
+      )
       return {
         text: resp.choices?.[0]?.message?.content ?? "",
         ...(resp.usage === undefined ? {} : { usage: { native: resp.usage } }),

@@ -14,8 +14,8 @@ export interface PipelineStep {
 }
 
 export interface PipelineRunOptions {
-  configPath?: string
-  signal?: AbortSignal
+  configPath?: string | undefined
+  signal?: AbortSignal | undefined
 }
 
 const PLACEHOLDER_RE =
@@ -402,7 +402,10 @@ async function runStep(
   }
 
   try {
-    const result = await executeCommand(request, { configPath: opts.configPath })
+    const result = await executeCommand(request, {
+      configPath: opts.configPath,
+      signal: opts.signal,
+    })
     if (step.name !== undefined) results.set(step.name, result)
     return {
       command: step.command,

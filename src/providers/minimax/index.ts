@@ -1,5 +1,10 @@
 import { mimeOfUrl, toImageUrl } from "../core/fileref"
-import { createJsonClient, type JsonClient, SLOW_POST_TIMEOUT_MS } from "../core/http"
+import {
+  createJsonClient,
+  type JsonClient,
+  SLOW_POST_TIMEOUT_MS,
+  unwrapOrThrow,
+} from "../core/http"
 import { mergeModelDeclarations } from "../core/modelRegistry"
 import {
   type CallContext,
@@ -322,10 +327,12 @@ export function createMiniMaxProvider(
       )
     }
 
-    const resp = await client.post<MiniMaxV1CreateResponse>("/v1/video_generation", body, {
-      timeoutMs: SLOW_POST_TIMEOUT_MS,
-      signal: ctx?.signal,
-    })
+    const resp = unwrapOrThrow(
+      await client.post<MiniMaxV1CreateResponse>("/v1/video_generation", body, {
+        timeoutMs: SLOW_POST_TIMEOUT_MS,
+        signal: ctx?.signal,
+      }),
+    )
     checkBaseResp(resp)
     if (!resp.task_id) {
       throw new ProviderError("internal", "MiniMax did not return task_id", resp)
@@ -334,8 +341,10 @@ export function createMiniMaxProvider(
   }
 
   async function pollV1(handle: JobHandle): Promise<JobStatus> {
-    const query = await client.get<MiniMaxV1QueryResponse>(
-      `/v1/query/video_generation?task_id=${encodeURIComponent(handle.id)}`,
+    const query = unwrapOrThrow(
+      await client.get<MiniMaxV1QueryResponse>(
+        `/v1/query/video_generation?task_id=${encodeURIComponent(handle.id)}`,
+      ),
     )
     checkBaseResp(query)
 
@@ -349,8 +358,10 @@ export function createMiniMaxProvider(
         if (!query.file_id) {
           throw new ProviderError("internal", "MiniMax query returned no file_id", query)
         }
-        const file = await client.get<MiniMaxV1FileResponse>(
-          `/v1/files/retrieve?file_id=${encodeURIComponent(query.file_id)}`,
+        const file = unwrapOrThrow(
+          await client.get<MiniMaxV1FileResponse>(
+            `/v1/files/retrieve?file_id=${encodeURIComponent(query.file_id)}`,
+          ),
         )
         checkBaseResp(file)
         const url = file.file?.download_url
@@ -380,7 +391,9 @@ export function createMiniMaxProvider(
   }
 
   async function pollV2(handle: JobHandle): Promise<JobStatus> {
-    const body = await client.get<MiniMaxV2TaskResponse>(`/v2/query/video_generation/${handle.id}`)
+    const body = unwrapOrThrow(
+      await client.get<MiniMaxV2TaskResponse>(`/v2/query/video_generation/${handle.id}`),
+    )
     const task = body.task
     switch (task?.status) {
       case "queued":
@@ -428,17 +441,19 @@ export function createMiniMaxProvider(
       req.firstFrame ? await toImageUrl(req.firstFrame) : undefined,
       req.lastFrame ? await toImageUrl(req.lastFrame) : undefined,
     )
-    const body = await client.post<MiniMaxV2TaskResponse>(
-      "/v2/video_generation",
-      {
-        model: req.model,
-        content,
-        resolution,
-        duration,
-        ...(ratio ? { ratio } : {}),
-        ...rest,
-      },
-      { timeoutMs: SLOW_POST_TIMEOUT_MS, signal: ctx?.signal },
+    const body = unwrapOrThrow(
+      await client.post<MiniMaxV2TaskResponse>(
+        "/v2/video_generation",
+        {
+          model: req.model,
+          content,
+          resolution,
+          duration,
+          ...(ratio ? { ratio } : {}),
+          ...rest,
+        },
+        { timeoutMs: SLOW_POST_TIMEOUT_MS, signal: ctx?.signal },
+      ),
     )
     if (!body.task_id) {
       throw new ProviderError("internal", "MiniMax did not return task_id", body)
@@ -460,7 +475,7 @@ export function createMiniMaxProvider(
       if (isV1Handle(handle)) {
         throw new ProviderError("invalid", "MiniMax v1 video generation has no cancel endpoint")
       }
-      await client.del(`/v2/video_generation/${handle.id}`)
+      unwrapOrThrow(await client.del(`/v2/video_generation/${handle.id}`))
     },
 
     async poll(handle: JobHandle): Promise<JobStatus> {
@@ -471,25 +486,27 @@ export function createMiniMaxProvider(
 
   const imageGenerate: ImageGenerateApi<MiniMaxImageOptions> = {
     async create(req) {
-      const body = await client.post<MiniMaxImageResponse>(
-        "/v1/image_generation",
-        {
-          model: req.model,
-          prompt: req.prompt,
-          ...(req.image
-            ? {
-                // JPG/JPEG/PNG data URL or public URL; mime inferred from extension, base64 falls back to png
-                subject_reference: [
-                  {
-                    type: "character",
-                    image_file: await toImageUrl(req.image),
-                  },
-                ],
-              }
-            : {}),
-          ...(req.options ?? {}),
-        },
-        { timeoutMs: SLOW_POST_TIMEOUT_MS },
+      const body = unwrapOrThrow(
+        await client.post<MiniMaxImageResponse>(
+          "/v1/image_generation",
+          {
+            model: req.model,
+            prompt: req.prompt,
+            ...(req.image
+              ? {
+                  // JPG/JPEG/PNG data URL or public URL; mime inferred from extension, base64 falls back to png
+                  subject_reference: [
+                    {
+                      type: "character",
+                      image_file: await toImageUrl(req.image),
+                    },
+                  ],
+                }
+              : {}),
+            ...(req.options ?? {}),
+          },
+          { timeoutMs: SLOW_POST_TIMEOUT_MS },
+        ),
       )
       checkBaseResp(body)
       return {
@@ -511,14 +528,16 @@ export function createMiniMaxProvider(
       const messages: Array<{ role: string; content: string }> = []
       if (req.system !== undefined) messages.push({ role: "system", content: req.system })
       messages.push({ role: "user", content: req.prompt })
-      const resp = await client.post<MiniMaxChatResponse>(
-        "/v1/chat/completions",
-        {
-          model: req.model,
-          messages,
-          ...(req.options ?? {}),
-        },
-        { signal: ctx?.signal },
+      const resp = unwrapOrThrow(
+        await client.post<MiniMaxChatResponse>(
+          "/v1/chat/completions",
+          {
+            model: req.model,
+            messages,
+            ...(req.options ?? {}),
+          },
+          { signal: ctx?.signal },
+        ),
       )
       checkBaseResp(resp)
       return {

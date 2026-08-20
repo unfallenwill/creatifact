@@ -9,6 +9,7 @@ import {
   runGenerateRequest,
   TASKS,
 } from "./generate"
+import { interruptSignal } from "./interrupt"
 import { runPipeline } from "./pipeline"
 import { listConfiguredProviderIds } from "./providers"
 import {
@@ -70,7 +71,10 @@ export async function runFileFromArgs(
     if (args.length > 1) {
       throw usageError("command-line flags are not supported with a steps file")
     }
-    const run = await runPipeline(parsed.steps, opts)
+    const run = await runPipeline(parsed.steps, {
+      configPath: opts.configPath,
+      signal: interruptSignal(),
+    })
     return {
       kind: "pipeline",
       steps: run.steps.map((s) => ({

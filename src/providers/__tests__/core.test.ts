@@ -86,6 +86,12 @@ test("guardFrameSupport rejects explicit false, passes omitted/unknown/true", ()
 
 // http
 
+/** Assert-unwrap helper: expects an Err and hands its error back for matching. */
+function errOf<E>(r: { isErr(): boolean; _unsafeUnwrapErr(): E }): E {
+  expect(r.isErr()).toBe(true)
+  return r._unsafeUnwrapErr()
+}
+
 test("requestJson retries retryable status then succeeds", async () => {
   const mock = mockFetch([
     () => jsonResponse(429, { error: "rate" }),
@@ -93,7 +99,8 @@ test("requestJson retries retryable status then succeeds", async () => {
     () => jsonResponse(200, { ok: true }),
   ])
 
-  await expect(requestJson("https://example.test/x", { retries: 3 })).resolves.toEqual({ ok: true })
+  const res = await requestJson("https://example.test/x", { retries: 3 })
+  expect(res._unsafeUnwrap()).toEqual({ ok: true })
   expect(mock.recorded.length).toBe(3)
 
   mock.restore()
@@ -105,9 +112,8 @@ test("requestJson does not retry POST submits by default (billable)", async () =
     () => jsonResponse(500, { error: "boom" }),
   ])
 
-  await expect(
-    requestJson("https://example.test/x", { method: "POST", body: { a: 1 } }),
-  ).rejects.toMatchObject({ category: "internal" })
+  const res = await requestJson("https://example.test/x", { method: "POST", body: { a: 1 } })
+  expect(errOf(res)).toMatchObject({ category: "internal" })
   expect(mock.recorded.length).toBe(1) // no second attempt
 
   mock.restore()
@@ -124,9 +130,8 @@ test("requestJson stops retrying once the caller aborts", async () => {
     () => jsonResponse(200, { ok: true }),
   ])
 
-  await expect(
-    requestJson("https://example.test/x", { retries: 5, signal: controller.signal }),
-  ).rejects.toMatchObject({ message: "request aborted" })
+  const res = await requestJson("https://example.test/x", { retries: 5, signal: controller.signal })
+  expect(errOf(res)).toMatchObject({ message: "request aborted" })
   expect(mock.recorded.length).toBe(2) // third attempt never starts
 
   mock.restore()
@@ -135,11 +140,10 @@ test("requestJson stops retrying once the caller aborts", async () => {
 test("requestJson classify hook takes precedence", async () => {
   const mock = mockFetch([() => jsonResponse(400, { code: "SensitiveContentDetected" })])
 
-  await expect(
-    requestJson("https://example.test/x", {
-      classifyError: (status) => (status === 400 ? "moderation" : undefined),
-    }),
-  ).rejects.toMatchObject({ category: "moderation" })
+  const res = await requestJson("https://example.test/x", {
+    classifyError: (status) => (status === 400 ? "moderation" : undefined),
+  })
+  expect(errOf(res)).toMatchObject({ category: "moderation" })
 
   mock.restore()
 })
@@ -155,9 +159,11 @@ test("requestJson honors Retry-After seconds on 429", async () => {
   ])
 
   const started = Date.now()
-  await expect(requestJson("https://example.test/x", { retries: 2 })).resolves.toEqual({ ok: true })
-  // retry-after: 0 → backoff sleep collapses to ~0 instead of 250-500ms jitter
-  expect(Date.now() - started).toBeLessThan(200)
+  const res = await requestJson("https://example.test/x", { retries: 2 })
+  expect(res._unsafeUnwrap()).toEqual({ ok: true })
+  // retry-after: 0 collapses the server-hint sleep; p-retry still adds its
+  // own jittered minimum (~250-500ms), so the bound is ~1s not ~0.
+  expect(Date.now() - started).toBeLessThan(1500)
   expect(mock.recorded.length).toBe(2)
 
   mock.restore()
@@ -166,7 +172,8 @@ test("requestJson honors Retry-After seconds on 429", async () => {
 test("requestJson reports non-JSON 200 body without retrying", async () => {
   const mock = mockFetch([() => new Response("<html>gateway noise</html>", { status: 200 })])
 
-  await expect(requestJson("https://example.test/x", { retries: 2 })).rejects.toMatchObject({
+  const res = await requestJson("https://example.test/x", { retries: 2 })
+  expect(errOf(res)).toMatchObject({
     category: "internal",
     message: expect.stringContaining("<html>gateway noise</html>"),
   })
@@ -182,7 +189,8 @@ test("requestJson surfaces non-JSON error pages with status and snippet", async 
     () => new Response("<html>Bad Gateway</html>", { status: 502 }),
   ])
 
-  await expect(requestJson("https://example.test/x", { retries: 2 })).rejects.toMatchObject({
+  const res = await requestJson("https://example.test/x", { retries: 2 })
+  expect(errOf(res)).toMatchObject({
     category: "internal",
     message: expect.stringContaining("HTTP 502"),
     status: 502,
@@ -195,11 +203,13 @@ test("requestJson surfaces non-JSON error pages with status and snippet", async 
 test("requestJson sends auth headers and json body", async () => {
   const mock = mockFetch([() => jsonResponse(200, {})])
 
-  await requestJson("https://example.test/x", {
-    method: "POST",
-    headers: { authorization: "Bearer t" },
-    body: { a: 1 },
-  })
+  ;(
+    await requestJson("https://example.test/x", {
+      method: "POST",
+      headers: { authorization: "Bearer t" },
+      body: { a: 1 },
+    })
+  )._unsafeUnwrap()
 
   const { init } = at(mock.recorded, 0)
   expect(headersOf(at(mock.recorded, 0))["authorization"]).toBe("Bearer t")
@@ -225,7 +235,9 @@ test("createJsonClient merges base/dynamic headers and defaults", async () => {
     retries: 0,
   })
 
-  await client.post<{ ok: number }>("/x", { a: 1 }, { headers: { "x-custom": "1" } })
+  ;(
+    await client.post<{ ok: number }>("/x", { a: 1 }, { headers: { "x-custom": "1" } })
+  )._unsafeUnwrap()
 
   const rec = at(mock.recorded, 0)
   expect(rec.url).toBe("https://api.test/x")

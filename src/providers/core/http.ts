@@ -1,3 +1,6 @@
+import { type Result, ResultAsync } from "neverthrow"
+import pRetry, { AbortError } from "p-retry"
+
 import { type ErrorCategory, ProviderError } from "./types"
 
 export type ClassifyError = (status: number, body: unknown) => ErrorCategory | undefined
@@ -148,34 +151,64 @@ async function attemptOnce<T>(url: string, opts: RequestJsonOptions): Promise<At
   }
 }
 
-export async function requestJson<T>(url: string, opts: RequestJsonOptions = {}): Promise<T> {
-  const retries = opts.retries ?? defaultRetries(opts.method)
-  let lastError: ProviderError | undefined
-  let lastRetryAfterMs: number | undefined
+/**
+ * Fetch and decode JSON as a Result (neverthrow philosophy: provider-call
+ * failures are values that flow to the CLI edge; callers interop with the
+ * throwing plugin contract via _unsafeUnwrap at their boundary). Retry
+ * policy is declarative (p-retry philosophy): the attempt function decides
+ * *what* fails — AbortError for permanent failures — while the options own
+ * pacing (exponential backoff with jitter) and budget. A server's
+ * Retry-After hint is honored inside the attempt so the hint, not the
+ * client's backoff, paces the next try.
+ */
+export function requestJson<T>(
+  url: string,
+  opts: RequestJsonOptions = {},
+): ResultAsync<T, ProviderError> {
+  return ResultAsync.fromPromise(
+    pRetry(
+      async () => {
+        const result = await attemptOnce<T>(url, opts)
+        if (result.ok) return result.value
+        if (!result.retryable) throw new AbortError(result.error)
+        if (result.retryAfterMs !== undefined) {
+          await new Promise((resolve) => setTimeout(resolve, result.retryAfterMs))
+        }
+        throw result.error
+      },
+      {
+        retries: opts.retries ?? defaultRetries(opts.method),
+        minTimeout: 500,
+        factor: 2,
+        maxTimeout: MAX_BACKOFF_MS,
+        randomize: true,
+        signal: opts.signal,
+      },
+    ),
+    recoverProviderError,
+  )
+}
 
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    if (opts.signal?.aborted) {
-      throw new ProviderError("internal", "request aborted", opts.signal.reason)
-    }
-    if (attempt > 0) {
-      // Exponential backoff with jitter (50-100%) so concurrent clients
-      // hammered by the same 429 don't retry in lockstep.
-      const exp = Math.min(500 * 2 ** (attempt - 1), MAX_BACKOFF_MS)
-      const delay = lastRetryAfterMs ?? exp * (0.5 + Math.random() * 0.5)
-      await new Promise((resolve) => setTimeout(resolve, delay))
-    }
-    const result = await attemptOnce<T>(url, opts)
-    if (result.ok) {
-      return result.value
-    }
-    lastError = result.error
-    lastRetryAfterMs = result.retryAfterMs
-    if (!result.retryable || attempt === retries) {
-      throw result.error
-    }
+/** Map whatever p-retry surfaces back to a ProviderError. */
+function recoverProviderError(e: unknown): ProviderError {
+  if (e instanceof ProviderError) return e
+  const original = (e as { originalError?: unknown } | null)?.originalError
+  if (original instanceof ProviderError) return original
+  if (e instanceof Error && e.name === "AbortError") {
+    return new ProviderError("internal", "request aborted", e)
   }
+  return new ProviderError("internal", e instanceof Error ? e.message : String(e), e)
+}
 
-  throw lastError ?? new ProviderError("internal", "request failed")
+/**
+ * Throwing edge for the plugin contract: provider functions expose
+ * Promise<T> + throw semantics to generate.ts and third-party plugin
+ * callers, so this is the single sanctioned unwrap point — Result values
+ * live between here and the CLI envelope.
+ */
+export function unwrapOrThrow<T>(result: Result<T, ProviderError>): T {
+  if (result.isErr()) throw result.error
+  return result.value
 }
 
 export interface JsonClientConfig {
@@ -190,13 +223,13 @@ export interface JsonClientConfig {
 }
 
 export interface JsonClient {
-  get<T>(path: string, opts?: Omit<RequestJsonOptions, "method">): Promise<T>
+  get<T>(path: string, opts?: Omit<RequestJsonOptions, "method">): ResultAsync<T, ProviderError>
   post<T>(
     path: string,
     body?: unknown,
     opts?: Omit<RequestJsonOptions, "method" | "body">,
-  ): Promise<T>
-  del<T>(path: string, opts?: Omit<RequestJsonOptions, "method">): Promise<T>
+  ): ResultAsync<T, ProviderError>
+  del<T>(path: string, opts?: Omit<RequestJsonOptions, "method">): ResultAsync<T, ProviderError>
 }
 
 /**
@@ -223,17 +256,17 @@ export function createJsonClient(config: JsonClientConfig): JsonClient {
   }
 
   return {
-    get<T>(path: string, opts?: Omit<RequestJsonOptions, "method">): Promise<T> {
+    get<T>(path: string, opts?: Omit<RequestJsonOptions, "method">): ResultAsync<T, ProviderError> {
       return requestJson<T>(`${config.baseUrl}${path}`, merge(opts))
     },
     post<T>(
       path: string,
       body?: unknown,
       opts?: Omit<RequestJsonOptions, "method" | "body">,
-    ): Promise<T> {
+    ): ResultAsync<T, ProviderError> {
       return requestJson<T>(`${config.baseUrl}${path}`, merge({ ...opts, body, method: "POST" }))
     },
-    del<T>(path: string, opts?: Omit<RequestJsonOptions, "method">): Promise<T> {
+    del<T>(path: string, opts?: Omit<RequestJsonOptions, "method">): ResultAsync<T, ProviderError> {
       return requestJson<T>(`${config.baseUrl}${path}`, merge({ ...opts, method: "DELETE" }))
     },
   }

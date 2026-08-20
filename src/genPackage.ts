@@ -271,20 +271,18 @@ async function stageArtifacts(
   let fileCount = 0
   for (const [i, artifact] of artifacts.entries()) {
     if (artifact.url !== undefined) {
-      let bytes: Buffer | undefined
-      try {
-        bytes = await artifactBytes(artifact, fetchBytes)
-      } catch (e) {
+      const bytes = await artifactBytes(artifact, fetchBytes)
+      if (bytes.isErr()) {
         warnings.push(
-          `could not download ${artifact.url} (${(e as Error).message}); ` +
+          `could not download ${artifact.url} (${bytes.error.message}); ` +
             "the package records the url only and is not self-contained for this artifact",
         )
         recorded.push({ url: artifact.url, mimeType: artifact.mimeType })
         continue
       }
-      if (bytes !== undefined) {
+      if (bytes.value !== undefined) {
         const name = `artifact-${i + 1}.${artifactExtension(artifact)}`
-        await writeFile(join(stage, name), bytes)
+        await writeFile(join(stage, name), bytes.value)
         recorded.push({ name, url: artifact.url, mimeType: artifact.mimeType })
         fileCount++
       }

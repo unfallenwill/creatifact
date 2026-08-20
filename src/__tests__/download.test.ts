@@ -1,3 +1,5 @@
+import { okAsync } from "neverthrow"
+
 import { artifactBytes, artifactExtension, fetchArtifactBytes } from "../download"
 
 function jsonResponse(status: number, body = "x"): Response {
@@ -23,8 +25,9 @@ describe("fetchArtifactBytes", () => {
     const fetchMock = vi.fn(async () => new Response("media-bytes", { status: 200 }))
     vi.stubGlobal("fetch", fetchMock)
     try {
-      const bytes = await fetchArtifactBytes("https://cdn.test/a.png", { retries: 0 })
-      expect(bytes.toString()).toBe("media-bytes")
+      const result = await fetchArtifactBytes("https://cdn.test/a.png", { retries: 0 })
+      expect(result.isOk()).toBe(true)
+      expect(result.unwrapOr(Buffer.alloc(0)).toString()).toBe("media-bytes")
       expect(fetchMock).toHaveBeenCalledTimes(1)
     } finally {
       vi.unstubAllGlobals()
@@ -38,8 +41,9 @@ describe("fetchArtifactBytes", () => {
       .mockResolvedValueOnce(new Response("ok", { status: 200 }))
     vi.stubGlobal("fetch", fetchMock)
     try {
-      const bytes = await fetchArtifactBytes("https://cdn.test/a.mp4")
-      expect(bytes.toString()).toBe("ok")
+      const result = await fetchArtifactBytes("https://cdn.test/a.mp4")
+      expect(result.isOk()).toBe(true)
+      expect(result.unwrapOr(Buffer.alloc(0)).toString()).toBe("ok")
       expect(fetchMock).toHaveBeenCalledTimes(2)
     } finally {
       vi.unstubAllGlobals()
@@ -50,7 +54,9 @@ describe("fetchArtifactBytes", () => {
     const fetchMock = vi.fn(async () => jsonResponse(404))
     vi.stubGlobal("fetch", fetchMock)
     try {
-      await expect(fetchArtifactBytes("https://cdn.test/gone.png")).rejects.toThrow(/404/)
+      const result = await fetchArtifactBytes("https://cdn.test/gone.png")
+      expect(result.isErr()).toBe(true)
+      expect(result._unsafeUnwrapErr().message).toMatch(/404/)
       expect(fetchMock).toHaveBeenCalledTimes(1)
     } finally {
       vi.unstubAllGlobals()
@@ -63,7 +69,9 @@ describe("fetchArtifactBytes", () => {
     })
     vi.stubGlobal("fetch", fetchMock)
     try {
-      await expect(fetchArtifactBytes("https://cdn.test/a.png")).rejects.toThrow(/fetch failed/)
+      const result = await fetchArtifactBytes("https://cdn.test/a.png")
+      expect(result.isErr()).toBe(true)
+      expect(result._unsafeUnwrapErr().message).toMatch(/fetch failed/)
       expect(fetchMock).toHaveBeenCalledTimes(2)
     } finally {
       vi.unstubAllGlobals()
@@ -74,8 +82,9 @@ describe("fetchArtifactBytes", () => {
     const fetchMock = vi.fn()
     vi.stubGlobal("fetch", fetchMock)
     try {
-      const bytes = await fetchArtifactBytes("data:image/png;base64,aGk=")
-      expect(bytes.toString()).toBe("hi")
+      const result = await fetchArtifactBytes("data:image/png;base64,aGk=")
+      expect(result.isOk()).toBe(true)
+      expect(result.unwrapOr(Buffer.alloc(0)).toString()).toBe("hi")
       expect(fetchMock).not.toHaveBeenCalled()
     } finally {
       vi.unstubAllGlobals()
@@ -85,11 +94,15 @@ describe("fetchArtifactBytes", () => {
 
 describe("artifactBytes", () => {
   it("decodes base64, delegates urls to the fetcher, and skips empty artifacts", async () => {
-    const fetchBytes = async (url: string) => Buffer.from(`net:${url}`)
-    expect((await artifactBytes({ base64: "aGk=" }, fetchBytes))?.toString()).toBe("hi")
-    expect((await artifactBytes({ url: "https://cdn.test/a.png" }, fetchBytes))?.toString()).toBe(
-      "net:https://cdn.test/a.png",
+    const fetchBytes = (url: string) => okAsync(Buffer.from(`net:${url}`))
+    expect((await artifactBytes({ base64: "aGk=" }, fetchBytes))._unsafeUnwrap()?.toString()).toBe(
+      "hi",
     )
-    expect(await artifactBytes({}, fetchBytes)).toBeUndefined()
+    expect(
+      (await artifactBytes({ url: "https://cdn.test/a.png" }, fetchBytes))
+        ._unsafeUnwrap()
+        ?.toString(),
+    ).toBe("net:https://cdn.test/a.png")
+    expect((await artifactBytes({}, fetchBytes))._unsafeUnwrap()).toBeUndefined()
   })
 })
