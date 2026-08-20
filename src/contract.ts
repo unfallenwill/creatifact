@@ -206,12 +206,13 @@ export const buildRequestFields = {
   username: nonEmptyString.describe("Registry username (package.* / auth.login)."),
   password: nonEmptyString.describe("Registry password (package.* / auth.login)."),
   plainHttp: boolField.describe("Use HTTP instead of HTTPS for the registry."),
-  // plan is CLI-only (never a -f JSON field): excluded from the -f face.
+  // plan/bake/force are CLI-only (never -f JSON fields): excluded from the
+  // -f face.
 } as const
 
 const _buildFaceCheck: assertExact<
   keyof typeof buildRequestFields,
-  Exclude<keyof BuildRequest, "passwordStdin" | "plan">
+  Exclude<keyof BuildRequest, "passwordStdin" | "plan" | "bake" | "force">
 > = true
 void _buildFaceCheck
 

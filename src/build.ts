@@ -5,7 +5,7 @@ import { isAbsolute, join } from "node:path"
 
 import { Command } from "commander"
 
-import { envForConfigPath, loadConfig, storeDir } from "./config"
+import { defaultGenProvider, envForConfigPath, loadConfig, storeDir } from "./config"
 import { runDag } from "./dag"
 import { artifactBytes, artifactExtension } from "./download"
 import { usageError } from "./errors"
@@ -25,6 +25,8 @@ import {
   loadBuildManifest,
 } from "./manifest"
 import {
+  BUILD_INPUTS_ANNOTATION,
+  BUILD_PLAN_ANNOTATION,
   EMPTY_CONFIG_MEDIA_TYPE,
   type LoadedImage,
   MANIFEST_MEDIA_TYPE,
@@ -38,6 +40,16 @@ import {
   writeBlob,
   writeOciLayout,
 } from "./oci"
+import {
+  fingerprintStage,
+  hashAssetsDir,
+  planDigestOf,
+  readPreviousStageResult,
+  resolveSourceDigest,
+  type StageInputs,
+  stageDependencies,
+  topoOrder,
+} from "./plan"
 import type { Artifact } from "./providers"
 import { fetchImage, type ImageFetchOptions } from "./pull"
 import { isLocalRef } from "./refs"
@@ -62,6 +74,8 @@ export interface BuildCommandOptions {
   passwordStdin?: boolean
   plainHttp?: boolean
   plan?: boolean
+  bake?: boolean
+  force?: boolean
   configDir?: string
 }
 
@@ -91,8 +105,13 @@ export function buildBuildCommand(): Command {
     .option("--plain-http", "Use HTTP for registry sources (local registries)")
     .option(
       "--plan",
+      "Print the build plan (what would run, what would be reused) without executing anything",
+    )
+    .option(
+      "--bake",
       "Bake the gen recipe without executing it (recipe-only package; creatifact generate <ref> runs it later)",
     )
+    .option("--force", "Run every stage, ignoring the store's previous fingerprints")
   return addGlobalOptions(cmd)
 }
 
@@ -115,6 +134,8 @@ export function buildArgsFromOptions(o: BuildCommandOptions): ParsedArgs {
     passwordStdin: o.passwordStdin === true,
     plainHttp: o.plainHttp === true,
     ...(o.plan === true ? { plan: true } : {}),
+    ...(o.bake === true ? { bake: true } : {}),
+    ...(o.force === true ? { force: true } : {}),
   }
 }
 
@@ -129,8 +150,10 @@ export interface BuildOptions {
   plainHttp: boolean
   username: string | undefined
   password: string | undefined
-  /** Skip executing the gen section (recipe-only package). */
-  plan?: boolean
+  /** Bake the gen recipe without executing it (recipe-only package). */
+  bake?: boolean
+  /** Extra annotations for this build's store entry (input fingerprint). */
+  storeAnnotations?: Record<string, string>
   signal?: AbortSignal | undefined
   configPath?: string | undefined
 }
@@ -146,6 +169,8 @@ export interface ParsedArgs {
   passwordStdin: boolean
   plainHttp: boolean
   plan?: boolean
+  bake?: boolean
+  force?: boolean
 }
 
 export function parseBuildArgs(args: string[]): ParsedArgs {
@@ -270,13 +295,44 @@ async function copyLayer(
   return createLayerFromView(selected, selectedOpaque, blobsDir)
 }
 
+/** One stage's line in the plan report (dry-run or executed build). */
+export interface PlanStageReport {
+  name: string
+  inputsDigest: string
+  status: "executed" | "reused" | "would-execute" | "would-reuse"
+  digest?: string
+  tag?: string
+  dependencies: string[]
+}
+
+/** The plan value: stages, their input fingerprints, and the plan digest. */
+export interface PlanReport {
+  planDigest: string
+  stages: PlanStageReport[]
+}
+
 export interface BuildResult {
   digest: string
   outputDir: string
   tag: string
+  /** This build was satisfied entirely from the store (inputs unchanged). */
+  reused?: boolean
   /** stages mode: per-stage results (name → build result), skipped stages. */
-  stages?: Array<{ name: string; digest: string; tag: string; outputDir: string }>
+  stages?: Array<{
+    name: string
+    digest: string
+    tag: string
+    outputDir: string
+    reused?: boolean
+    inputsDigest?: string
+  }>
   skipped?: Array<{ name: string; reason: string }>
+  /** The resolved plan (every executed/reused stage carries its fingerprint). */
+  plan?: PlanReport
+  /** False for `--plan` dry runs (digest/outputDir are empty there). */
+  executed?: boolean
+  /** A gen stage's staged artifacts (referenceable as ${name.artifacts[N].url}). */
+  artifacts?: Array<{ name?: string; url?: string; mimeType?: string | undefined }>
 }
 
 export async function runBuild(options: BuildOptions): Promise<BuildResult> {
@@ -317,11 +373,11 @@ export async function runBuild(options: BuildOptions): Promise<BuildResult> {
   }
 
   // The gen section is a RUN instruction: execute it during the build and
-  // bake the real artifacts as the top layer (unless --plan keeps the
+  // bake the real artifacts as the top layer (unless --bake keeps the
   // recipe-only package). pkg:// refs in the spec resolve against the layers
   // assembled above.
   let genRun: GenRunResult | undefined
-  if (options.gen !== undefined && options.plan !== true) {
+  if (options.gen !== undefined && options.bake !== true) {
     genRun = await runGenSection(options, layers)
     if (genRun.layer !== undefined) layers.push(genRun.layer)
   }
@@ -341,12 +397,16 @@ export async function runBuild(options: BuildOptions): Promise<BuildResult> {
   if (explicit) {
     await writeOciLayout(outputDir, manifestDescriptor, options.tag)
   } else {
-    await upsertStoreEntry(outputDir, manifestDescriptor, options.tag)
+    await upsertStoreEntry(outputDir, manifestDescriptor, options.tag, options.storeAnnotations)
   }
 
-  console.log(`Built ${options.tag} → ${outputDir}${explicit ? "" : " (store)"}`)
-  ok(`built ${options.tag}`)
-  return { digest: manifestDescriptor.digest, outputDir, tag: options.tag }
+  ok(`built ${options.tag} → ${outputDir}${explicit ? "" : " (store)"}`)
+  return {
+    digest: manifestDescriptor.digest,
+    outputDir,
+    tag: options.tag,
+    ...(genRun === undefined ? {} : { artifacts: genRun.result.artifacts }),
+  }
 }
 
 /** The build's gen config blob: the spec (executed or planned) + run meta. */
@@ -568,6 +628,15 @@ async function genRequestFromSpec(
   return { ...req, ...media }
 }
 
+/** Build-wide context for planning and incremental reuse. */
+export interface BuildContext {
+  /** The shared content store (diff base for reuse decisions). */
+  store: string
+  defaultProvider: string | undefined
+  reuse: "stale" | "never"
+  force: boolean
+}
+
 export async function runBuildFromParsed(
   cliOpts: ParsedArgs,
   opts?: { configPath?: string; signal?: AbortSignal | undefined },
@@ -582,7 +651,7 @@ export async function runBuildFromParsed(
   )
   options.configPath = opts?.configPath
   options.signal = opts?.signal
-  if (cliOpts.plan === true) options.plan = true
+  if (cliOpts.bake === true) options.bake = true
   options.assetsDir = resolveLocalDir(options.assetsDir, loaded.baseDir)
   options.from = options.from.map((spec) => resolveLocalSpec(spec, loaded.baseDir))
   options.copy = options.copy.map((entry) => ({
@@ -612,8 +681,241 @@ export async function runBuildFromParsed(
     }
   })
 
-  if (stages !== undefined) return runStagesBuild(options, stages)
-  return runBuild(options)
+  const config = loadConfig(options.configPath)
+  const ctx: BuildContext = {
+    store: storeDir(envForConfigPath(options.configPath)),
+    defaultProvider: defaultGenProvider(config),
+    reuse: buildReuse(config),
+    force: cliOpts.force === true,
+  }
+
+  if (cliOpts.plan === true) {
+    return stages !== undefined
+      ? runStagesPlan(options, stages, ctx)
+      : runTopLevelPlan(options, ctx)
+  }
+  if (stages !== undefined) return runStagesBuild(options, stages, ctx)
+  return runTopLevelBuild(options, ctx)
+}
+
+/**
+ * Plan → execute: resolve every stage's inputs, fingerprint them, diff
+ * against the store's previous fingerprints, and skip unchanged stages.
+ * The plan is a value: `--plan` prints it without executing; a real build
+ * reports it in the envelope with per-stage executed/reused statuses.
+ */
+
+/** Fingerprint a top-level build (the implicit single stage). */
+async function topLevelInputsDigest(options: BuildOptions, ctx: BuildContext): Promise<string> {
+  const from = await Promise.all(options.from.map((spec) => resolveDigestEntry(spec, ctx.store)))
+  const copy = await Promise.all(
+    options.copy.map(async (entry) => {
+      const resolved = await resolveDigestEntry(entry.from, ctx.store)
+      return {
+        from: resolved.from,
+        paths: entry.paths,
+        ...(resolved.digest === undefined ? {} : { digest: resolved.digest }),
+      }
+    }),
+  )
+  let assets: string | undefined
+  if (options.assetsDir !== undefined) {
+    await validateAssetsDir(options.assetsDir)
+    assets = await hashAssetsDir(options.assetsDir)
+  }
+  return fingerprintStage({
+    ...(ctx.defaultProvider === undefined ? {} : { defaultProvider: ctx.defaultProvider }),
+    ...(options.gen === undefined ? {} : { gen: options.gen }),
+    from,
+    copy,
+    ...(assets === undefined ? {} : { assets }),
+    annotations: options.annotations,
+  })
+}
+
+/** Fingerprint one resolved stage (annotations/from/copy/assets resolved). */
+async function stageInputsDigest(
+  stage: BuildStage,
+  fields: Record<string, unknown>,
+  ctx: BuildContext,
+): Promise<string> {
+  const fromSpecs = (fields["from"] as string[] | undefined) ?? []
+  const copyEntries = (fields["copy"] as CopyEntry[] | undefined) ?? []
+  const from = await Promise.all(fromSpecs.map((spec) => resolveDigestEntry(spec, ctx.store)))
+  const copy = await Promise.all(
+    copyEntries.map(async (entry) => {
+      const resolved = await resolveDigestEntry(entry.from, ctx.store)
+      return {
+        from: resolved.from,
+        paths: entry.paths,
+        ...(resolved.digest === undefined ? {} : { digest: resolved.digest }),
+      }
+    }),
+  )
+  const assetsPath = (fields["assets"] as string | undefined) ?? stage.assets
+  let assets: string | undefined
+  if (assetsPath !== undefined) {
+    await validateAssetsDir(assetsPath)
+    assets = await hashAssetsDir(assetsPath)
+  }
+  const inputs: StageInputs = {
+    ...(ctx.defaultProvider === undefined ? {} : { defaultProvider: ctx.defaultProvider }),
+    ...(stage.gen === undefined ? {} : { gen: stage.gen }),
+    from,
+    copy,
+    ...(assets === undefined ? {} : { assets }),
+    annotations: (fields["annotations"] as Record<string, string> | undefined) ?? {},
+  }
+  return fingerprintStage(inputs)
+}
+
+/** Resolve one from/copy source: local layout / store tag → digest. */
+async function resolveDigestEntry(
+  spec: string,
+  store: string,
+): Promise<{ from: string; digest?: string }> {
+  const digest = await resolveSourceDigest(spec, process.cwd(), store)
+  return digest === undefined ? { from: spec } : { from: spec, digest }
+}
+
+interface PreviousEntry {
+  digest: string
+  inputsDigest?: string
+}
+
+/** The store's previous entry for one tag (the incremental diff base). */
+async function previousEntry(store: string, ref: string): Promise<PreviousEntry | undefined> {
+  const entry = (await readIndexEntries(store)).find(
+    (m) => m.annotations?.[REF_NAME_ANNOTATION] === ref,
+  )
+  if (entry === undefined) return undefined
+  return {
+    digest: entry.digest,
+    ...(entry.annotations?.[BUILD_INPUTS_ANNOTATION] === undefined
+      ? {}
+      : { inputsDigest: entry.annotations[BUILD_INPUTS_ANNOTATION] }),
+  }
+}
+
+/** Previous store entries for a set of tags, keyed by tag. */
+async function previousEntryMap(
+  store: string,
+  tags: string[],
+): Promise<Map<string, PreviousEntry>> {
+  const entries = await readIndexEntries(store)
+  const map = new Map<string, PreviousEntry>()
+  for (const entry of entries) {
+    const ref = entry.annotations?.[REF_NAME_ANNOTATION]
+    if (ref !== undefined && tags.includes(ref)) {
+      map.set(ref, {
+        digest: entry.digest,
+        ...(entry.annotations?.[BUILD_INPUTS_ANNOTATION] === undefined
+          ? {}
+          : { inputsDigest: entry.annotations[BUILD_INPUTS_ANNOTATION] }),
+      })
+    }
+  }
+  return map
+}
+
+/** Assemble the plan report: per-stage fingerprints + the plan digest. */
+function reportPlan(targetTag: string, stages: PlanStageReport[]): PlanReport {
+  return {
+    planDigest: planDigestOf(
+      stages.map((s) => ({
+        name: s.name,
+        inputsDigest: s.inputsDigest,
+        dependencies: s.dependencies,
+      })),
+      targetTag,
+    ),
+    stages,
+  }
+}
+
+/** Point the build's own tag at the final stage's package (docker-style
+ * alias) and record the plan digest for future plan diffing. */
+async function aliasFinalEntry(
+  store: string,
+  tag: string,
+  digest: string,
+  planDigest: string,
+): Promise<void> {
+  const blobPath = join(store, "blobs", "sha256", digest.slice("sha256:".length))
+  const size = (await stat(blobPath)).size
+  await upsertStoreEntry(store, { mediaType: MANIFEST_MEDIA_TYPE, digest, size }, tag, {
+    [BUILD_PLAN_ANNOTATION]: planDigest,
+  })
+}
+
+/** Top-level build with incremental reuse against the store's tag entry. */
+async function runTopLevelBuild(options: BuildOptions, ctx: BuildContext): Promise<BuildResult> {
+  const inputsDigest = await topLevelInputsDigest(options, ctx)
+  // An explicit --output exports a standalone layout: no diff base, no reuse.
+  const prev =
+    options.output === undefined ? await previousEntry(ctx.store, options.tag) : undefined
+  const reusable = ctx.reuse === "stale" && !ctx.force && prev?.inputsDigest === inputsDigest
+  if (reusable && prev !== undefined) {
+    status(`build: reusing ${options.tag} (inputs unchanged)`)
+    return {
+      digest: prev.digest,
+      outputDir: ctx.store,
+      tag: options.tag,
+      reused: true,
+      plan: reportPlan(options.tag, [
+        {
+          name: options.tag,
+          inputsDigest,
+          status: "reused",
+          digest: prev.digest,
+          tag: options.tag,
+          dependencies: [],
+        },
+      ]),
+    }
+  }
+  const result = await runBuild({
+    ...options,
+    ...(options.output === undefined
+      ? { storeAnnotations: { [BUILD_INPUTS_ANNOTATION]: inputsDigest } }
+      : {}),
+  })
+  return {
+    ...result,
+    plan: reportPlan(options.tag, [
+      {
+        name: options.tag,
+        inputsDigest,
+        status: "executed",
+        digest: result.digest,
+        tag: options.tag,
+        dependencies: [],
+      },
+    ]),
+  }
+}
+
+/** `--plan` dry run for a top-level build: fingerprint + diff, nothing runs. */
+async function runTopLevelPlan(options: BuildOptions, ctx: BuildContext): Promise<BuildResult> {
+  const inputsDigest = await topLevelInputsDigest(options, ctx)
+  const prev =
+    options.output === undefined ? await previousEntry(ctx.store, options.tag) : undefined
+  const reusable = ctx.reuse === "stale" && !ctx.force && prev?.inputsDigest === inputsDigest
+  return {
+    digest: "",
+    outputDir: "",
+    tag: options.tag,
+    executed: false,
+    plan: reportPlan(options.tag, [
+      {
+        name: options.tag,
+        inputsDigest,
+        status: reusable && prev !== undefined ? "would-reuse" : "would-execute",
+        ...(reusable && prev !== undefined ? { digest: prev.digest, tag: options.tag } : {}),
+        dependencies: [],
+      },
+    ]),
+  }
 }
 
 /**
@@ -622,33 +924,70 @@ export async function runBuildFromParsed(
  * edge; independent stages run concurrently (width from config). Each stage
  * is a mini build whose package lands in the store under a derived tag
  * (`<repo>/<stage>:<tag>`), so later stages reference earlier results by
- * tag/digest/url. The final product is the last stage's package.
+ * tag/digest/url. Stages whose resolved inputs fingerprint unchanged since
+ * the store's previous run are reused instead of executed (gen stages keep
+ * their previous result — no re-billing). The final product is the last
+ * stage's package, aliased under the `-t` tag.
  */
-async function runStagesBuild(options: BuildOptions, stages: BuildStage[]): Promise<BuildResult> {
+async function runStagesBuild(
+  options: BuildOptions,
+  stages: BuildStage[],
+  ctx: BuildContext,
+): Promise<BuildResult> {
   const names = stages.map((s) => s.name)
   const concurrency = buildConcurrency(loadConfig(options.configPath))
   const results = new Map<string, StageRef>()
-
+  const stageOf = (name: string): BuildStage => {
+    const stage = stages[names.indexOf(name)]
+    if (stage === undefined) throw usageError(`internal: unknown stage '${name}'`)
+    return stage
+  }
   const stageTag = (stage: BuildStage): string => {
     const [repo, ver] = splitTag(options.tag)
     return `${repo}/${stage.name}:${ver}`
   }
+  const payloadOf = (name: string): Record<string, unknown> => {
+    const stage = stageOf(name)
+    return { ...stage, annotations: stage.annotations ?? {} }
+  }
+  const dependencies = stageDependencies(names, payloadOf)
+  const previous = await previousEntryMap(
+    ctx.store,
+    stages.map((s) => stageTag(s)),
+  )
+  const reports = new Map<string, PlanStageReport>()
 
   const run = await runDag(
     names,
-    (name) => {
-      const stage = stages[names.indexOf(name)]
-      return stage === undefined ? {} : { ...stage, annotations: stage.annotations ?? {} }
-    },
+    payloadOf,
     {
       // Fields resolve lazily inside run (the moment the stage's last
       // dependency completes, so parallel branches never wait on each
       // other's values).
       run: async (name) => {
-        const stage = stages[names.indexOf(name)]
-        if (stage === undefined) throw usageError(`internal: unknown stage '${name}'`)
+        const stage = stageOf(name)
         const fields = resolveStageRefs(stage, results)
         const tag = stageTag(stage)
+        const inputsDigest = await stageInputsDigest(stage, fields, ctx)
+        const prev = previous.get(tag)
+        const reusable = ctx.reuse === "stale" && !ctx.force && prev?.inputsDigest === inputsDigest
+        if (reusable && prev !== undefined) {
+          const prior = await readPreviousStageResult(ctx.store, prev.digest, tag)
+          if (prior !== undefined) {
+            status(`stage ${name}: reusing (inputs unchanged)`)
+            results.set(name, prior)
+            reports.set(name, {
+              name,
+              inputsDigest,
+              status: "reused",
+              digest: prev.digest,
+              tag,
+              dependencies: dependencies.get(name) ?? [],
+            })
+            return { digest: prev.digest, outputDir: ctx.store, tag, reused: true }
+          }
+          // Previous blobs are gone — fall through and execute.
+        }
         status(`stage ${name} → ${tag}`)
         const result = await runBuild({
           ...options,
@@ -659,9 +998,18 @@ async function runStagesBuild(options: BuildOptions, stages: BuildStage[]): Prom
           copy: (fields["copy"] as CopyEntry[]) ?? [],
           ...(stage.gen === undefined ? {} : { gen: stage.gen }),
           output: undefined,
+          storeAnnotations: { [BUILD_INPUTS_ANNOTATION]: inputsDigest },
         })
         const ref = stageRefOf(tag, result)
         results.set(name, ref)
+        reports.set(name, {
+          name,
+          inputsDigest,
+          status: "executed",
+          digest: result.digest,
+          tag,
+          dependencies: dependencies.get(name) ?? [],
+        })
         return result
       },
       skipPayload: (name) => ({ name }),
@@ -677,19 +1025,113 @@ async function runStagesBuild(options: BuildOptions, stages: BuildStage[]): Prom
     .filter((s): s is { name: string; result: BuildResult } => s.result !== undefined)
   const last = completed.at(-1)
   if (last === undefined) throw usageError("stages produced no result")
+
+  const plan = reportPlan(
+    options.tag,
+    topoOrder(names, payloadOf).flatMap((n) => {
+      const report = reports.get(n)
+      return report === undefined ? [] : [report]
+    }),
+  )
+
+  // The final product is the last stage's package, aliased under -t.
+  await aliasFinalEntry(ctx.store, options.tag, last.result.digest, plan.planDigest)
+
   return {
     digest: last.result.digest,
     outputDir: last.result.outputDir,
     tag: options.tag,
-    stages: completed.map((s) => ({
-      name: s.name,
-      digest: s.result.digest,
-      tag: s.result.tag,
-      outputDir: s.result.outputDir,
-    })),
+    stages: completed.map((s) => {
+      const report = reports.get(s.name)
+      return {
+        name: s.name,
+        digest: s.result.digest,
+        tag: s.result.tag,
+        outputDir: s.result.outputDir,
+        ...(s.result.reused === true ? { reused: true } : {}),
+        ...(report === undefined ? {} : { inputsDigest: report.inputsDigest }),
+      }
+    }),
     ...(run.skipped.length === 0
       ? {}
       : { skipped: run.skipped.map((s) => ({ name: s.key, reason: s.reason })) }),
+    plan,
+  }
+}
+
+/** `--plan` dry run for stages mode: resolve + fingerprint + diff, nothing
+ * runs. Effective refs start from the store's previous results; stages
+ * without a matching previous fingerprint are would-execute, and their
+ * downstream refs stay unresolved placeholders (the honest prediction). */
+async function runStagesPlan(
+  options: BuildOptions,
+  stages: BuildStage[],
+  ctx: BuildContext,
+): Promise<BuildResult> {
+  const names = stages.map((s) => s.name)
+  const stageOf = (name: string): BuildStage => {
+    const stage = stages[names.indexOf(name)]
+    if (stage === undefined) throw usageError(`internal: unknown stage '${name}'`)
+    return stage
+  }
+  const stageTag = (stage: BuildStage): string => {
+    const [repo, ver] = splitTag(options.tag)
+    return `${repo}/${stage.name}:${ver}`
+  }
+  const payloadOf = (name: string): Record<string, unknown> => {
+    const stage = stageOf(name)
+    return { ...stage, annotations: stage.annotations ?? {} }
+  }
+  const dependencies = stageDependencies(names, payloadOf)
+  const previous = await previousEntryMap(
+    ctx.store,
+    stages.map((s) => stageTag(s)),
+  )
+  const results = new Map<string, StageRef>()
+  const reports = new Map<string, PlanStageReport>()
+
+  for (const name of topoOrder(names, payloadOf)) {
+    const stage = stageOf(name)
+    const fields = resolveStageRefs(stage, results)
+    const tag = stageTag(stage)
+    const inputsDigest = await stageInputsDigest(stage, fields, ctx)
+    const prev = previous.get(tag)
+    const reusable = ctx.reuse === "stale" && !ctx.force && prev?.inputsDigest === inputsDigest
+    if (reusable && prev !== undefined) {
+      const prior = await readPreviousStageResult(ctx.store, prev.digest, tag)
+      if (prior !== undefined) {
+        results.set(name, prior)
+        reports.set(name, {
+          name,
+          inputsDigest,
+          status: "would-reuse",
+          digest: prev.digest,
+          tag,
+          dependencies: dependencies.get(name) ?? [],
+        })
+        continue
+      }
+    }
+    reports.set(name, {
+      name,
+      inputsDigest,
+      status: "would-execute",
+      dependencies: dependencies.get(name) ?? [],
+    })
+  }
+
+  return {
+    digest: "",
+    outputDir: "",
+    tag: options.tag,
+    executed: false,
+    plan: reportPlan(
+      options.tag,
+      names.flatMap((n) => {
+        const report = reports.get(n)
+        return report === undefined ? [] : [report]
+      }),
+    ),
   }
 }
 
@@ -752,7 +1194,12 @@ function resolveStageRefs(
 
 /** The referencable surface of one completed stage result. */
 function stageRefOf(tag: string, result: BuildResult): StageRef {
-  return { tag, digest: result.digest, outputDir: result.outputDir, artifacts: [] }
+  return {
+    tag,
+    digest: result.digest,
+    outputDir: result.outputDir,
+    artifacts: result.artifacts ?? [],
+  }
 }
 
 /** Split a "repo:tag" reference into its parts. */
@@ -770,6 +1217,16 @@ function buildConcurrency(config: Record<string, unknown>): number {
   const value = (build as Record<string, unknown>)["concurrency"]
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) return 4
   return value
+}
+
+/** Incremental reuse: config key defaults.build.reuse ("stale" | "never",
+ * default "stale" — unchanged stages reuse their previous store result). */
+function buildReuse(config: Record<string, unknown>): "stale" | "never" {
+  const defaults = config["defaults"]
+  if (typeof defaults !== "object" || defaults === null) return "stale"
+  const build = (defaults as Record<string, unknown>)["build"]
+  if (typeof build !== "object" || build === null) return "stale"
+  return (build as Record<string, unknown>)["reuse"] === "never" ? "never" : "stale"
 }
 
 export async function runBuildFromArgs(

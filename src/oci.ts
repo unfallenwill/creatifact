@@ -29,6 +29,12 @@ export const LAYER_MEDIA_TYPE = "application/vnd.oci.image.layer.v1.tar+gzip"
 /** OCI annotation carrying the tag on an index entry. */
 export const REF_NAME_ANNOTATION = "org.opencontainers.image.ref.name"
 
+/** OCI annotation carrying a build stage's input fingerprint (incremental reuse). */
+export const BUILD_INPUTS_ANNOTATION = "org.creatifact.build.inputs"
+
+/** OCI annotation carrying the plan digest on a build's final store entry. */
+export const BUILD_PLAN_ANNOTATION = "org.creatifact.build.plan"
+
 export interface LoadedImage {
   manifestDescriptor: OCIDescriptor
   manifest: OCIManifest
@@ -140,6 +146,7 @@ export async function upsertStoreEntry(
   storeDir: string,
   manifestDescriptor: OCIDescriptor,
   ref: string,
+  annotations?: Record<string, string>,
 ): Promise<void> {
   const marker = join(storeDir, "oci-layout")
   await withIndexLock(storeDir, async () => {
@@ -152,7 +159,7 @@ export async function upsertStoreEntry(
       mediaType: manifestDescriptor.mediaType,
       digest: manifestDescriptor.digest,
       size: manifestDescriptor.size,
-      annotations: { [REF_NAME_ANNOTATION]: ref },
+      annotations: { [REF_NAME_ANNOTATION]: ref, ...annotations },
     }
     const others = (await readIndexEntries(storeDir)).filter(
       (m) => m.annotations?.[REF_NAME_ANNOTATION] !== ref,

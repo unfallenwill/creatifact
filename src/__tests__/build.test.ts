@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -16,6 +17,7 @@ import {
   runBuild,
   runBuildFromArgs,
 } from "../build"
+import { BUILD_INPUTS_ANNOTATION, REF_NAME_ANNOTATION, readIndexEntries } from "../oci"
 
 const CONFIG: OCIDescriptor = {
   mediaType: "application/vnd.oci.image.config.v1+json",
@@ -251,7 +253,7 @@ test("runBuild produces an empty image with no sources", async () => {
   await rm(tmp, { recursive: true })
 })
 
-test("runBuild --plan writes a gen recipe into the config blob without executing", async () => {
+test("runBuild --bake writes a gen recipe into the config blob without executing", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "build-test-"))
   const outputDir = join(tmp, "out")
 
@@ -262,7 +264,7 @@ test("runBuild --plan writes a gen recipe into the config blob without executing
     annotations: {},
     from: [],
     copy: [],
-    plan: true,
+    bake: true,
     gen: {
       task: "image2image",
       provider: "zhipu",
@@ -687,3 +689,283 @@ async function setupRealLayout(
   await writeFile(join(dir, "index.json"), JSON.stringify(index))
   await writeFile(join(dir, "oci-layout"), JSON.stringify({ imageLayoutVersion: "1.0.0" }))
 }
+
+// ---------------------------------------------------------------------------
+// Incremental reuse: fingerprints, store diffing, plan reports.
+
+/** A provider plugin that counts calls by appending to a file. */
+function counterPlugin(counterPath: string): string {
+  return `
+import { appendFileSync } from "node:fs"
+export default () => ({
+  id: "demo",
+  models: [{ id: "img", capabilities: { "image.generate": {} }, lastVerified: "2026-08" }],
+  defaultModels: { "image.generate": "img" },
+  imageGenerate: {
+    async create() {
+      appendFileSync(${JSON.stringify(counterPath)}, "x")
+      return { artifacts: [{ base64: Buffer.from("IMG").toString("base64"), mimeType: "image/png" }] }
+    },
+  },
+})
+`
+}
+
+interface ReuseEnv {
+  dir: string
+  configPath: string
+  counterPath: string
+  manifestPath: string
+  store: string
+}
+
+async function setupReuseEnv(): Promise<ReuseEnv> {
+  const dir = await mkdtemp(join(tmpdir(), "build-reuse-"))
+  const pluginPath = join(dir, "counter.mjs")
+  const counterPath = join(dir, "calls.log")
+  const configDir = join(dir, "cfg")
+  await mkdir(configDir, { recursive: true })
+  const configPath = join(configDir, "config.json")
+  await writeFile(configPath, JSON.stringify({ providers: { demo: { module: pluginPath } } }))
+  await writeFile(pluginPath, counterPlugin(counterPath))
+  return {
+    dir,
+    configPath,
+    counterPath,
+    manifestPath: join(dir, "creatifact-build.json"),
+    store: join(configDir, "store"),
+  }
+}
+
+async function callCount(counterPath: string): Promise<number> {
+  try {
+    return (await readFile(counterPath, "utf8")).length
+  } catch {
+    return 0
+  }
+}
+
+test("top-level build reuses an unchanged build (zero provider calls)", async () => {
+  const env = await setupReuseEnv()
+  await writeFile(
+    env.manifestPath,
+    JSON.stringify({ gen: { task: "text2image", provider: "demo", prompt: "a crane" } }),
+  )
+  try {
+    const first = await runBuildFromArgs(["-f", env.manifestPath, "-t", "org/crane:1"], {
+      configPath: env.configPath,
+    })
+    expect(first.reused).toBeUndefined()
+    expect(first.plan?.stages[0]?.status).toBe("executed")
+    expect(await callCount(env.counterPath)).toBe(1)
+
+    const second = await runBuildFromArgs(["-f", env.manifestPath, "-t", "org/crane:1"], {
+      configPath: env.configPath,
+    })
+    expect(second.reused).toBe(true)
+    expect(second.digest).toBe(first.digest)
+    expect(second.plan?.stages[0]?.status).toBe("reused")
+    expect(await callCount(env.counterPath)).toBe(1)
+
+    // The store entry carries the input fingerprint for the next diff.
+    const entries = await readIndexEntries(env.store)
+    const entry = entries.find((m) => m.annotations?.[REF_NAME_ANNOTATION] === "org/crane:1")
+    expect(entry?.annotations?.[BUILD_INPUTS_ANNOTATION]).toBe(first.plan?.stages[0]?.inputsDigest)
+  } finally {
+    await rm(env.dir, { recursive: true, force: true })
+  }
+})
+
+test("--force re-executes an unchanged top-level build", async () => {
+  const env = await setupReuseEnv()
+  await writeFile(
+    env.manifestPath,
+    JSON.stringify({ gen: { task: "text2image", provider: "demo", prompt: "a crane" } }),
+  )
+  try {
+    const args = (extra: string[]) =>
+      runBuildFromArgs(["-f", env.manifestPath, "-t", "org/crane:1", ...extra], {
+        configPath: env.configPath,
+      })
+    await args([])
+    const forced = await args(["--force"])
+    expect(forced.reused).toBeUndefined()
+    expect(forced.plan?.stages[0]?.status).toBe("executed")
+    expect(await callCount(env.counterPath)).toBe(2)
+  } finally {
+    await rm(env.dir, { recursive: true, force: true })
+  }
+})
+
+test("defaults.build.reuse never re-executes every time", async () => {
+  const env = await setupReuseEnv()
+  await writeFile(
+    env.configPath,
+    JSON.stringify({
+      providers: { demo: { module: join(env.dir, "counter.mjs") } },
+      defaults: { build: { reuse: "never" } },
+    }),
+  )
+  await writeFile(
+    env.manifestPath,
+    JSON.stringify({ gen: { task: "text2image", provider: "demo", prompt: "a crane" } }),
+  )
+  try {
+    const args = ["-f", env.manifestPath, "-t", "org/crane:1"]
+    await runBuildFromArgs(args, { configPath: env.configPath })
+    await runBuildFromArgs(args, { configPath: env.configPath })
+    expect(await callCount(env.counterPath)).toBe(2)
+  } finally {
+    await rm(env.dir, { recursive: true, force: true })
+  }
+})
+
+test("explicit --output has no diff base and never reuses", async () => {
+  const env = await setupReuseEnv()
+  await writeFile(
+    env.manifestPath,
+    JSON.stringify({ gen: { task: "text2image", provider: "demo", prompt: "a crane" } }),
+  )
+  try {
+    const o1 = ["-f", env.manifestPath, "-t", "org/crane:1", "-o", join(env.dir, "o1")]
+    const o2 = ["-f", env.manifestPath, "-t", "org/crane:1", "-o", join(env.dir, "o2")]
+    await runBuildFromArgs(o1, { configPath: env.configPath })
+    await runBuildFromArgs(o2, { configPath: env.configPath })
+    expect(await callCount(env.counterPath)).toBe(2)
+  } finally {
+    await rm(env.dir, { recursive: true, force: true })
+  }
+})
+
+test("--plan dry run prints the plan and writes nothing", async () => {
+  const env = await setupReuseEnv()
+  await writeFile(
+    env.manifestPath,
+    JSON.stringify({ gen: { task: "text2image", provider: "demo", prompt: "a crane" } }),
+  )
+  try {
+    const planned = await runBuildFromArgs(["--plan", "-f", env.manifestPath, "-t", "org/plan:1"], {
+      configPath: env.configPath,
+    })
+    expect(planned.executed).toBe(false)
+    expect(planned.plan?.stages[0]?.status).toBe("would-execute")
+    expect(await callCount(env.counterPath)).toBe(0)
+    expect(existsSync(env.store)).toBe(false)
+
+    await runBuildFromArgs(["-f", env.manifestPath, "-t", "org/plan:1"], {
+      configPath: env.configPath,
+    })
+    const replanned = await runBuildFromArgs(
+      ["--plan", "-f", env.manifestPath, "-t", "org/plan:1"],
+      { configPath: env.configPath },
+    )
+    expect(replanned.plan?.stages[0]?.status).toBe("would-reuse")
+    expect(await callCount(env.counterPath)).toBe(1)
+  } finally {
+    await rm(env.dir, { recursive: true, force: true })
+  }
+})
+
+test("stages: unchanged stages are reused and changes propagate downstream", async () => {
+  const env = await setupReuseEnv()
+  const manifest = (catPrompt: string): string =>
+    JSON.stringify({
+      stages: [
+        { name: "cat", gen: { task: "text2image", provider: "demo", prompt: catPrompt } },
+        { name: "dog", gen: { task: "text2image", provider: "demo", prompt: "a dog" } },
+        {
+          name: "combo",
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: fixture for the ${...} stage-ref syntax
+          annotations: { c: "${cat.digest}", d: "${dog.digest}" },
+        },
+      ],
+    })
+  await writeFile(env.manifestPath, manifest("a cat"))
+  try {
+    const build = () =>
+      runBuildFromArgs(["-f", env.manifestPath, "-t", "demo/stages:1"], {
+        configPath: env.configPath,
+      })
+    const first = await build()
+    expect(first.stages?.map((s) => s.name)).toEqual(["cat", "dog", "combo"])
+    expect(first.stages?.map((s) => s.reused)).toEqual([undefined, undefined, undefined])
+    expect(first.plan?.stages.map((s) => s.status)).toEqual(["executed", "executed", "executed"])
+    expect(await callCount(env.counterPath)).toBe(2)
+
+    const second = await build()
+    expect(second.stages?.map((s) => s.reused)).toEqual([true, true, true])
+    expect(second.plan?.stages.map((s) => s.status)).toEqual(["reused", "reused", "reused"])
+    expect(await callCount(env.counterPath)).toBe(2)
+
+    // Only cat's prompt changes: cat re-runs, combo (its downstream) re-runs,
+    // dog stays reused.
+    await writeFile(env.manifestPath, manifest("a bigger cat"))
+    const third = await build()
+    expect(third.stages?.map((s) => s.reused)).toEqual([undefined, true, undefined])
+    expect(third.plan?.stages.map((s) => s.status)).toEqual(["executed", "reused", "executed"])
+    expect(await callCount(env.counterPath)).toBe(3)
+
+    // The final product tag aliases the last stage and carries the plan digest.
+    const entries = await readIndexEntries(env.store)
+    const aliased = entries.find((m) => m.annotations?.[REF_NAME_ANNOTATION] === "demo/stages:1")
+    expect(aliased?.digest).toBe(third.digest)
+  } finally {
+    await rm(env.dir, { recursive: true, force: true })
+  }
+})
+
+test("stages --plan predicts would-execute/would-reuse without executing", async () => {
+  const env = await setupReuseEnv()
+  const manifest = (catPrompt: string): string =>
+    JSON.stringify({
+      stages: [
+        { name: "cat", gen: { task: "text2image", provider: "demo", prompt: catPrompt } },
+        { name: "dog", gen: { task: "text2image", provider: "demo", prompt: "a dog" } },
+        {
+          name: "combo",
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: fixture for the ${...} stage-ref syntax
+          annotations: { c: "${cat.digest}" },
+        },
+      ],
+    })
+  await writeFile(env.manifestPath, manifest("a cat"))
+  try {
+    const plan = (): ReturnType<typeof runBuildFromArgs> =>
+      runBuildFromArgs(["--plan", "-f", env.manifestPath, "-t", "demo/p:1"], {
+        configPath: env.configPath,
+      })
+
+    const fresh = await plan()
+    expect(fresh.executed).toBe(false)
+    expect(fresh.plan?.stages.map((s) => s.status)).toEqual([
+      "would-execute",
+      "would-execute",
+      "would-execute",
+    ])
+    expect(fresh.plan?.stages[2]?.dependencies).toEqual(["cat"])
+    expect(await callCount(env.counterPath)).toBe(0)
+
+    // After a real build, an unchanged plan predicts full reuse; changing
+    // cat's prompt predicts cat + combo re-executing, dog reused.
+    await runBuildFromArgs(["-f", env.manifestPath, "-t", "demo/p:1"], {
+      configPath: env.configPath,
+    })
+    const unchanged = await plan()
+    expect(unchanged.plan?.stages.map((s) => s.status)).toEqual([
+      "would-reuse",
+      "would-reuse",
+      "would-reuse",
+    ])
+
+    await writeFile(env.manifestPath, manifest("a bigger cat"))
+    const changed = await plan()
+    expect(changed.plan?.stages.map((s) => s.status)).toEqual([
+      "would-execute",
+      "would-reuse",
+      "would-execute",
+    ])
+    expect(await callCount(env.counterPath)).toBe(2)
+  } finally {
+    await rm(env.dir, { recursive: true, force: true })
+  }
+})

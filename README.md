@@ -59,6 +59,13 @@ Error codes and exit statuses:
 > **Breaking change (v0.1.3):** all output is JSON now; the legacy `--json`
 > flags (generate tasks, `models`, request-file `json` fields) were removed.
 > Scripts that parsed human text output or `--json` must switch to the envelope.
+>
+> **Breaking change (v0.1.4):** `build --plan` is now a dry run (prints the
+> plan, executes nothing); the previous recipe-baking behavior moved to
+> `build --bake`. Builds reuse unchanged stages by default
+> (`defaults.build.reuse: "stale"`); `--force` restores always-run. The
+> human `Built ...` line moved from stdout to stderr — stdout now carries
+> exactly the JSON envelope on every build.
 
 ## Install
 
@@ -193,7 +200,44 @@ concurrency width comes from config (`defaults.build.concurrency`;
 positive integer, `0` = unlimited, unset defaults to 4). A failed stage
 fails the run immediately: not-yet-started stages are skipped and
 reported in the envelope's `skipped` array; completed stages survive in
-`stages`. Generate stages are not idempotent: rerunning re-bills.
+`stages`.
+
+#### Incremental reuse (build plan)
+
+`build` resolves before it executes: every stage's **resolved inputs**
+are fingerprinted (sha256 over the canonical JSON of the gen spec,
+resolved `${name.field}` values, `from`/`copy` source digests, and the
+assets tree hash), and the fingerprint is recorded on the stage's store
+entry (`org.creatifact.build.inputs`). On the next build the plan is
+diffed against the store:
+
+- stages whose inputs fingerprint unchanged are **reused** — their
+  previous digest/tag/artifacts are taken from the store with zero
+  provider calls, so nothing is re-billed;
+- a stage whose upstream produces a new digest re-runs (the reference
+  value changed, so its own fingerprint changed) — changes propagate
+  exactly along dependency edges;
+- the whole plan is a value: the envelope carries `data.plan` (per-stage
+  `inputsDigest`, `status: executed | reused`, dependencies) plus its
+  `planDigest`, recorded on the final entry as
+  `org.creatifact.build.plan`.
+
+Reuse is best-effort and explicit:
+
+- `--plan` prints the plan **without executing anything** — a dry run
+  (`data.executed: false`, statuses `would-execute`/`would-reuse`) that
+  writes no files and calls no providers;
+- `--force` re-runs every stage for this invocation;
+- `defaults.build.reuse: "never"` disables reuse entirely (default:
+  `"stale"`). Because generation is stochastic, reuse is a policy
+  choice: unchanged inputs reuse yesterday's result instead of creating
+  a new one;
+- `--output` standalone exports have no diff base and always run fully.
+
+Not detected (documented limits): mutable registry tags moving remotely
+(a registry ref is fingerprinted as its string, not its current digest),
+changes to model defaults other than `defaults.gen.provider`, and
+silent provider-side model updates.
 
 `-f` request files carry a single command only (the JSON mirror of one
 command line); orchestration keys (`pipeline`/`parallel`) are rejected
@@ -272,7 +316,7 @@ executes it once during the build (provider call, billed), stages the
 artifacts as the top layer, and records the executed spec plus a result meta
 in the config blob — the package digest pins that exact run. `pkg://` refs
 in the spec resolve against the layers assembled above it (`from`/`copy`/
-`assets`). `--plan` bakes the recipe without executing it (recipe-only
+`assets`). `--bake` bakes the recipe without executing it (recipe-only
 package for publish-then-run flows), and `creatifact generate <ref>` runs
 the package — like `docker run`: execute the image, overlay parameters,
 get a fresh output:
@@ -385,6 +429,12 @@ Options:
       --password <pw>    Registry password (prefer --password-stdin)
       --password-stdin   Read password from stdin
       --plain-http       Use HTTP for registry sources (local registries)
+      --plan             Print the build plan (what would run, what would be
+                         reused) without executing anything
+      --bake             Bake the gen recipe without executing it (recipe-only
+                         package; creatifact generate <ref> runs it later)
+      --force            Run every stage, ignoring the store's previous
+                         fingerprints
   -h, --help             Show this help message
 ```
 
@@ -569,6 +619,8 @@ subcommand to use `<dir>/config.json` (takes precedence over the env var).
 ```
 
 - `defaults.gen.provider` — provider used when `creatifact generate <task>` omits `<provider>`; the task then picks a suitable default model.
+- `defaults.build.concurrency` — stages-mode parallel width (positive int, `0` = unlimited, default 4).
+- `defaults.build.reuse` — `"stale"` (default) reuses stages whose inputs fingerprint is unchanged since the store's previous run; `"never"` always re-executes. `build --force` overrides per invocation.
 - `auths.<registry>.auth` — base64(`user:password`), docker-config-compatible; managed by `creatifact auth login`/`logout`.
 - `auths.<registry>.insecure` — talk plain HTTP to this registry without `--plain-http` (per registry, not global).
 - `providers.*` — passthrough section for other Creatifact modules; preserved by every write.

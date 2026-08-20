@@ -43,6 +43,17 @@ interface ErrEnvelope {
   error: { code: string; message: string; details?: Record<string, unknown> }
 }
 
+/** The envelope is the last non-empty stdout line (status lines go to stderr). */
+function lastLine(stdout: string): string {
+  return (
+    stdout
+      .trimEnd()
+      .split("\n")
+      .filter((l) => l !== "")
+      .at(-1) ?? ""
+  )
+}
+
 /** Parse a command's stderr as the unified error envelope and assert its code.
  * Progress/status lines may precede it on stderr; the envelope is always the
  * last non-empty line. */
@@ -109,7 +120,7 @@ describe("cli build — integration", () => {
     writeFileSync(path.join(fixtureDir, "asset.txt"), "test asset content")
 
     try {
-      const { stdout, code } = await run([
+      const { stdout, stderr, code } = await run([
         "build",
         "--dir",
         fixtureDir,
@@ -120,7 +131,8 @@ describe("cli build — integration", () => {
       ])
 
       expect(code).toBe(0)
-      expect(stdout).toContain("Built")
+      expect(stdout.trimEnd()).toContain('"ok":true')
+      expect(stderr).toContain("built test/fixture:1.0.0")
       expect(existsSync(path.join(outputDir, "oci-layout"))).toBe(true)
       expect(existsSync(path.join(outputDir, "index.json"))).toBe(true)
       expect(existsSync(path.join(outputDir, "blobs", "sha256"))).toBe(true)
@@ -249,7 +261,10 @@ describe("cli build — integration", () => {
   it("build inherits from a local OCI layout", async () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-test-"))
     const sourceDir = path.join(tmp, "source")
+    const sourceLayout = path.join(tmp, "source-layout")
     const outputDir = path.join(tmp, "output")
+    mkdirSync(sourceDir, { recursive: true })
+    writeFileSync(path.join(sourceDir, "base.txt"), "base")
 
     try {
       const first = await run([
@@ -259,12 +274,12 @@ describe("cli build — integration", () => {
         "--dir",
         sourceDir,
         "-o",
-        sourceDir,
+        sourceLayout,
       ])
-      expect(first.code).toBe(0)
+      expect(first.code, first.stderr).toBe(0)
 
       const descPath = path.join(tmp, "creatifact-build.json")
-      writeFileSync(descPath, JSON.stringify({ from: sourceDir }))
+      writeFileSync(descPath, JSON.stringify({ from: sourceLayout }))
       const { code } = await run([
         "build",
         "-f",
@@ -1463,6 +1478,150 @@ export default (settings) => ({
     }
   })
 
+  it("build stages reuse unchanged stages across runs (incremental, no re-billing)", async () => {
+    const { env, dir, recordPath } = demoEnv()
+    const manifestPath = path.join(dir, "creatifact-build.json")
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        stages: [
+          { name: "cat", gen: { task: "text2image", provider: "demo", prompt: "a cat" } },
+          { name: "dog", gen: { task: "text2image", provider: "demo", prompt: "a dog" } },
+          {
+            name: "combo",
+            // biome-ignore lint/suspicious/noTemplateCurlyInString: fixture for the ${...} stage-ref syntax
+            annotations: { c: "${cat.digest}", d: "${dog.digest}" },
+          },
+        ],
+      }),
+    )
+    try {
+      const build = () => run(["build", "-f", manifestPath, "-t", "demo/stages:1"], undefined, env)
+      const first = await build()
+      expect(first.code, first.stderr).toBe(0)
+      const firstOut = JSON.parse(lastLine(first.stdout)) as {
+        data: { plan: { stages: Array<{ status: string }> } }
+      }
+      expect(firstOut.data.plan.stages.map((s) => s.status)).toEqual([
+        "executed",
+        "executed",
+        "executed",
+      ])
+      expect(readFileSync(recordPath, "utf8").trim().split("\n").filter(Boolean)).toHaveLength(2)
+
+      const second = await build()
+      expect(second.code, second.stderr).toBe(0)
+      expect(second.stderr).toContain("reusing")
+      const secondOut = JSON.parse(lastLine(second.stdout)) as {
+        data: {
+          stages: Array<{ name: string; reused?: boolean }>
+          plan: { stages: Array<{ status: string }> }
+        }
+      }
+      expect(secondOut.data.stages.map((s) => s.reused)).toEqual([true, true, true])
+      expect(secondOut.data.plan.stages.map((s) => s.status)).toEqual([
+        "reused",
+        "reused",
+        "reused",
+      ])
+      // Zero additional provider calls: nothing was re-billed.
+      expect(readFileSync(recordPath, "utf8").trim().split("\n").filter(Boolean)).toHaveLength(2)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("build --force re-runs every stage", async () => {
+    const { env, dir, recordPath } = demoEnv()
+    const manifestPath = path.join(dir, "creatifact-build.json")
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({ gen: { task: "text2image", provider: "demo", prompt: "a crane" } }),
+    )
+    try {
+      await run(["build", "-f", manifestPath, "-t", "demo/f:1"], undefined, env)
+      const forced = await run(
+        ["build", "--force", "-f", manifestPath, "-t", "demo/f:1"],
+        undefined,
+        env,
+      )
+      expect(forced.code, forced.stderr).toBe(0)
+      const out = JSON.parse(lastLine(forced.stdout)) as {
+        data: { plan: { stages: Array<{ status: string }> } }
+      }
+      expect(out.data.plan.stages[0]?.status).toBe("executed")
+      expect(readFileSync(recordPath, "utf8").trim().split("\n").filter(Boolean)).toHaveLength(2)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("build --plan prints the plan envelope without executing or writing", async () => {
+    const { env, dir, recordPath } = demoEnv()
+    const manifestPath = path.join(dir, "creatifact-build.json")
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({ gen: { task: "text2image", provider: "demo", prompt: "a crane" } }),
+    )
+    try {
+      const planned = await run(
+        ["build", "--plan", "-f", manifestPath, "-t", "demo/plan:1"],
+        undefined,
+        env,
+      )
+      expect(planned.code, planned.stderr).toBe(0)
+      const out = JSON.parse(lastLine(planned.stdout)) as {
+        data: {
+          executed: boolean
+          plan: { stages: Array<{ status: string; inputsDigest: string }> }
+        }
+      }
+      expect(out.data.executed).toBe(false)
+      expect(out.data.plan.stages[0]?.status).toBe("would-execute")
+      expect(out.data.plan.stages[0]?.inputsDigest).toMatch(/^sha256:/)
+      // No provider calls, no store writes.
+      expect(existsSync(recordPath) ? readFileSync(recordPath, "utf8").trim() : "").toBe("")
+      const store = path.join(env["CREATIFACT_CONFIG_DIR"] ?? "", "store")
+      expect(existsSync(store)).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("build stages resolve ${name.artifacts[0].url} references", async () => {
+    const { env, dir } = demoEnv()
+    const manifestPath = path.join(dir, "creatifact-build.json")
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        stages: [
+          { name: "cat", gen: { task: "text2image", provider: "demo", prompt: "a cat" } },
+          {
+            name: "combo",
+            // biome-ignore lint/suspicious/noTemplateCurlyInString: fixture for the ${...} stage-ref syntax
+            annotations: { u: "${cat.artifacts[0].url}" },
+          },
+        ],
+      }),
+    )
+    try {
+      const r = await run(["build", "-f", manifestPath, "-t", "demo/arts:1"], undefined, env)
+      expect(r.code, r.stderr).toBe(0)
+      const store = path.join(env["CREATIFACT_CONFIG_DIR"] ?? "", "store")
+      const index = JSON.parse(readFileSync(path.join(store, "index.json"), "utf8"))
+      const comboEntry = index.manifests.find(
+        (m: { annotations?: Record<string, string> }) =>
+          m.annotations?.["org.opencontainers.image.ref.name"] === "demo/arts/combo:1",
+      )
+      const manifest = JSON.parse(
+        readFileSync(path.join(store, "blobs", "sha256", comboEntry.digest.slice(7)), "utf8"),
+      )
+      expect(manifest.annotations.u).toBe("https://cdn.test/out.png")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it("build with gen + generate <ref> runs the recipe and packages results", async () => {
     const { env, dir, recordPath } = demoEnv()
     const recipeDir = path.join(dir, "recipe")
@@ -1482,7 +1641,7 @@ export default (settings) => ({
     try {
       const built = await run([
         "build",
-        "--plan",
+        "--bake",
         "-f",
         manifestPath,
         "-t",
@@ -1491,7 +1650,7 @@ export default (settings) => ({
         recipeDir,
       ])
       expect(built.code).toBe(0)
-      expect(built.stdout).toContain("Built example.com/xxxxxx:v1.0")
+      expect(built.stderr).toContain("built example.com/xxxxxx:v1.0")
 
       const gen = await run(
         [
@@ -1568,7 +1727,7 @@ export default (settings) => ({
     try {
       const built = await run([
         "build",
-        "--plan",
+        "--bake",
         "-f",
         manifestPath,
         "-t",
@@ -1633,7 +1792,7 @@ export default (settings) => ({
     try {
       const built = await run([
         "build",
-        "--plan",
+        "--bake",
         "-f",
         manifestPath,
         "-t",
@@ -1943,9 +2102,10 @@ describe("cli -f file-driven — integration", () => {
       }),
     )
     try {
-      const { stdout, code } = await run(["-f", reqPath])
+      const { stdout, stderr, code } = await run(["-f", reqPath])
       expect(code).toBe(0)
-      expect(stdout).toContain("Built file/test:1.0")
+      expect(stdout).toContain("file/test:1.0")
+      expect(stderr).toContain("built file/test:1.0")
       const index = JSON.parse(readFileSync(path.join(outputDir, "index.json"), "utf8"))
       const manifest = JSON.parse(
         readFileSync(
@@ -2109,7 +2269,7 @@ export default (settings) => ({
       )
       const built = await run([
         "build",
-        "--plan",
+        "--bake",
         "-f",
         manifestPath,
         "-t",
@@ -2171,7 +2331,7 @@ export default (settings) => ({
         }),
       )
       const bareBuilt = await run(
-        ["build", "--plan", "-f", bareManifest, "-t", "demo/bare:v1", "-o", bareDir],
+        ["build", "--bake", "-f", bareManifest, "-t", "demo/bare:v1", "-o", bareDir],
         undefined,
         env,
       )
