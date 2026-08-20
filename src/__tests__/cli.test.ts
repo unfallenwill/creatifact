@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os"
 import * as path from "node:path"
 import { pathToFileURL } from "node:url"
+import { gunzipSync } from "node:zlib"
 import { execa } from "execa"
 import { stripAnsi } from "../format"
 
@@ -1376,6 +1377,87 @@ describe("cli generate — integration", () => {
       const r = await run(["build", "-f", manifestPath, "-t", "x/y:1"])
       expect(r.code).toBe(1)
       expect(r.stderr).toContain("cannot combine 'stages'")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("build stages copy combines parallel gen outputs into one image (content composition)", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "creatifact-stages-copy-"))
+    const pluginPath = path.join(dir, "bytes.mjs")
+    writeFileSync(
+      pluginPath,
+      `
+export default (settings) => ({
+  id: "demo",
+  models: [{ id: "img", capabilities: { "image.generate": {} }, lastVerified: "2026-08" }],
+  defaultModels: { "image.generate": "img" },
+  imageGenerate: {
+    async create(req) {
+      const tag = req.prompt === "cat" ? "CATIMG" : "DOGIMG"
+      return { artifacts: [{ base64: Buffer.from(tag).toString("base64"), mimeType: "image/png" }] }
+    },
+  },
+})
+`,
+    )
+    const configDir = path.join(dir, "cfg")
+    mkdirSync(configDir, { recursive: true })
+    writeFileSync(
+      path.join(configDir, "config.json"),
+      JSON.stringify({ providers: { demo: { module: pluginPath } } }),
+    )
+    const env = { CREATIFACT_CONFIG_DIR: configDir }
+    const manifestPath = path.join(dir, "creatifact-build.json")
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        stages: [
+          { name: "cat", gen: { task: "text2image", provider: "demo", prompt: "cat" } },
+          { name: "dog", gen: { task: "text2image", provider: "demo", prompt: "dog" } },
+          {
+            name: "combo",
+            // biome-ignore lint/suspicious/noTemplateCurlyInString: fixture for the ${...} stage-ref syntax
+            copy: [
+              { from: "${cat.tag}", paths: ["artifact-1.png"] },
+              { from: "${dog.tag}", paths: ["artifact-1.png"] },
+            ],
+            annotations: { t: "${cat.digest}", b: "${dog.digest}" },
+          },
+        ],
+      }),
+    )
+    try {
+      const r = await run(["build", "-f", manifestPath, "-t", "org/st:1"], undefined, env)
+      expect(r.code, r.stderr).toBe(0)
+      const lastLine = r.stdout.trimEnd().split("\n").filter(Boolean).at(-1) ?? ""
+      const out = JSON.parse(lastLine) as { data: { stages: Array<{ name: string }> } }
+      expect(out.data.stages.map((s) => s.name)).toEqual(["cat", "dog", "combo"])
+
+      // The combo package combines both stages' artifact layers: two layers
+      // whose bytes are the two generated artifacts.
+      const store = path.join(configDir, "store")
+      const index = JSON.parse(readFileSync(path.join(store, "index.json"), "utf8"))
+      const comboEntry = index.manifests.find(
+        (m: { annotations?: Record<string, string> }) =>
+          m.annotations?.["org.opencontainers.image.ref.name"] === "org/st/combo:1",
+      )
+      const manifest = JSON.parse(
+        readFileSync(path.join(store, "blobs", "sha256", comboEntry.digest.slice(7)), "utf8"),
+      )
+      expect(manifest.layers).toHaveLength(2)
+      const blobs = manifest.layers.map((l: { digest: string }) =>
+        readFileSync(path.join(store, "blobs", "sha256", l.digest.slice(7))),
+      )
+      const layerTexts = blobs.map((b: Buffer) => gunzipSync(b).toString("latin1"))
+      const catLayer = layerTexts.find((t: string) => t.includes("CATIMG"))
+      const dogLayer = layerTexts.find((t: string) => t.includes("DOGIMG"))
+      expect(catLayer, "cat artifact layer copied in").toBeDefined()
+      expect(dogLayer, "dog artifact layer copied in").toBeDefined()
+      expect(manifest.annotations).toMatchObject({
+        t: expect.stringMatching(/^sha256:/),
+        b: expect.stringMatching(/^sha256:/),
+      })
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

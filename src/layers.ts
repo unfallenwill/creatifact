@@ -257,7 +257,12 @@ function emitEntry(tarPack: Pack, key: string, entry: FsEntry | undefined): void
 }
 
 async function writeLayerBlob(tarPack: Pack, blobsDir: string): Promise<OCIDescriptor> {
-  const tempPath = join(blobsDir, ".tmp-layer")
+  // Unique temp name per writer: concurrent layers (parallel build stages,
+  // multiple copy entries) must not collide on the same temp file.
+  const tempPath = join(
+    blobsDir,
+    `.tmp-layer-${process.pid}-${Math.random().toString(36).slice(2)}`,
+  )
   const fileStream = createWriteStream(tempPath)
   const hash = createHash("sha256")
   let totalSize = 0

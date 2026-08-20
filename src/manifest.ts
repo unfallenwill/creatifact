@@ -50,6 +50,8 @@ function warnUnknownKeys(raw: Record<string, unknown>, filePath: string): void {
     ...Object.keys(manifestSchema.shape),
     "gen",
     "stages",
+    // stage entries carry their reference name
+    ...(filePath.includes("#stages[") ? ["name"] : []),
     // standard JSON-Schema directive; editor tooling, not consumed here
     "$schema",
     ...LEGACY_FIELDS,

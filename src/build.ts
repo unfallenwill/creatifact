@@ -31,6 +31,8 @@ import {
   materializeBlob,
   type OCIDescriptor,
   type OCIManifest,
+  REF_NAME_ANNOTATION,
+  readIndexEntries,
   readOciLayout,
   upsertStoreEntry,
   writeBlob,
@@ -179,6 +181,7 @@ export async function resolveImageSource(
   spec: string,
   baseDir: string,
   auth: ImageFetchOptions,
+  configPath?: string | undefined,
 ): Promise<LoadedImage> {
   const localPath = isAbsolute(spec) ? spec : join(baseDir, spec)
   if (isLocalRef(spec) || (existsSync(localPath) && (await stat(localPath)).isDirectory())) {
@@ -187,6 +190,13 @@ export async function resolveImageSource(
     }
     return readOciLayout(localPath)
   }
+  // Docker-style local lookup: a tag in the shared store resolves before
+  // the registry — this is what lets build stages copy from ${stage.tag}.
+  const store = storeDir(envForConfigPath(configPath))
+  const inStore = (await readIndexEntries(store)).some(
+    (m) => m.annotations?.[REF_NAME_ANNOTATION] === spec,
+  )
+  if (inStore) return readOciLayout(store, spec)
 
   return fetchImage(spec, auth)
 }
@@ -226,8 +236,9 @@ async function inheritFromLayers(
   baseDir: string,
   blobsDir: string,
   auth: ImageFetchOptions,
+  configPath?: string | undefined,
 ): Promise<OCIDescriptor[]> {
-  const image = await resolveImageSource(spec, baseDir, auth)
+  const image = await resolveImageSource(spec, baseDir, auth, configPath)
   for (const layer of image.manifest.layers) {
     const blob = image.blobs.get(layer.digest)
     if (!blob) {
@@ -243,8 +254,9 @@ async function copyLayer(
   baseDir: string,
   blobsDir: string,
   auth: ImageFetchOptions,
+  configPath?: string | undefined,
 ): Promise<OCIDescriptor> {
-  const image = await resolveImageSource(entry.from, baseDir, auth)
+  const image = await resolveImageSource(entry.from, baseDir, auth, configPath)
   const layerBlobs: Buffer[] = []
   for (const layer of image.manifest.layers) {
     const blob = image.blobs.get(layer.digest)
@@ -288,10 +300,14 @@ export async function runBuild(options: BuildOptions): Promise<BuildResult> {
   }
 
   const inherited = await Promise.all(
-    options.from.map((spec) => inheritFromLayers(spec, process.cwd(), blobsDir, auth)),
+    options.from.map((spec) =>
+      inheritFromLayers(spec, process.cwd(), blobsDir, auth, options.configPath),
+    ),
   )
   const copied = await Promise.all(
-    options.copy.map((entry) => copyLayer(entry, process.cwd(), blobsDir, auth)),
+    options.copy.map((entry) =>
+      copyLayer(entry, process.cwd(), blobsDir, auth, options.configPath),
+    ),
   )
 
   const layers: OCIDescriptor[] = [...inherited.flat(), ...copied]
