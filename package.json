@@ -47,9 +47,10 @@
   "scripts": {
     "build": "tsdown",
     "dev": "tsx src/index.ts",
+    "gen:schemas": "tsx scripts/gen-schemas.ts",
     "clean": "rimraf dist",
-    "lint": "biome check src tsdown.config.ts vitest.config.ts",
-    "format": "biome format --write src tsdown.config.ts vitest.config.ts",
+    "lint": "biome check src scripts tsdown.config.ts vitest.config.ts",
+    "format": "biome format --write src scripts tsdown.config.ts vitest.config.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
@@ -63,7 +64,8 @@
     "@clack/prompts": "^0.9.1",
     "commander": "^15.0.0",
     "picocolors": "^1.1.1",
-    "tar-stream": "^3.2.0"
+    "tar-stream": "^3.2.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.8",

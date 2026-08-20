@@ -161,12 +161,19 @@ with `${name.field}` placeholders:
 }
 ```
 
-Referenceable fields per command: `build` → `tag`/`digest`/`outputDir`,
-`push` → `tag`/`digest`, `pull` → `outputDir`/`digest`, `generate` →
-`tag`/`digest`/`outputDir` plus the structured payload when present:
-`text` (text2text / image2text / video2text — chain a generated prompt into a
-text2image or image2video step), `vectors`/`dimensions` (embed), and
-`artifacts[N].url`/`artifacts[N].base64` (media). When a step's prompt is
+Referenceable fields per command (contract-tested against `src/contract.ts` —
+the single source of truth that also generates `schemas/`):
+
+- `build` → `tag`/`digest`/`outputDir`
+- `push` → `tag`/`digest`
+- `pull` → `outputDir`/`digest`
+- `generate` → `tag`/`digest`/`outputDir`/`text`/`vectors`/`dimensions` — the
+  structured payload is presence-filtered: `text` (text2text / image2text /
+  video2text — chain a generated prompt into a text2image or image2video
+  step), `vectors`/`dimensions` (embed) — plus `artifacts[N].url`/
+  `artifacts[N].base64` (media).
+
+When a step's prompt is
 exactly one earlier step's `${name.text}` reference, the result package's
 config records a `gen.promptRef` provenance pointer
 (`{name, digest?, tag?}` — digest present when the source step packed its

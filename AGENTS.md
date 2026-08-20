@@ -6,6 +6,7 @@ Creatifact is a TypeScript CLI project (bundled by tsdown, tested with Vitest; t
 
 - `npm run dev` - run src/index.ts directly via tsx, no build needed
 - `npm run typecheck` - strict type-checking with tsc (check only, no output)
+- `npm run gen:schemas` - regenerate `schemas/*.json` from `src/contract.ts` (the contract's single source of truth; drift is caught by schema.test.ts)
 - `npm test` - single Vitest run
 - `npm run coverage` - Vitest coverage report (v8)
 

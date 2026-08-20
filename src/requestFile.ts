@@ -1,5 +1,22 @@
 import { readFileSync } from "node:fs"
+import type { z } from "zod"
 import type { ParsedArgs as BuildRequest } from "./build"
+import {
+  buildRequestFields,
+  configGetFields,
+  configSetFields,
+  type Fields,
+  type GenerateFieldJson,
+  generateRequestFields,
+  loginRequestFields,
+  logoutRequestFields,
+  modelsRequestFields,
+  nonEmptyString,
+  normalizeBuildField,
+  normalizeGenerateField,
+  pullRequestFields,
+  pushRequestFields,
+} from "./contract"
 import { usageError } from "./errors"
 import type { CommandRequest } from "./execute"
 import type { GenRequest, GenTaskName } from "./generate"
@@ -9,59 +26,28 @@ import type { ParsedPullArgs } from "./pull"
 import type { ParsedPushArgs } from "./push"
 import { requestFieldsForTask, TASKS } from "./tasks"
 
-export type Fields = Record<string, unknown>
+export type { Fields }
 
-export function asString(value: unknown, field: string): string {
-  if (typeof value !== "string" || value === "") {
-    throw usageError(`field '${field}' must be a non-empty string`)
+/**
+ * Field-level validators and normalizers live in contract.ts (the single
+ * source of truth shared with the generated JSON Schemas); this module only
+ * orchestrates: it gates unknown fields per command, parses each present
+ * field through its contract schema, and maps failures to usage errors.
+ */
+
+/** Parse one field through its contract schema; failure becomes a usage error. */
+function parseField<T>(schema: z.ZodType<T>, value: unknown, field: string): T {
+  const result = schema.safeParse(value)
+  if (!result.success) {
+    const message = result.error.issues[0]?.message ?? "failed validation"
+    throw usageError(`field '${field}' ${message}`)
   }
-  return value
+  return result.data as T
 }
 
-export function asOptionalString(value: unknown, field: string): string | undefined {
-  if (value === undefined) return undefined
-  return asString(value, field)
-}
-
-export function asBool(value: unknown, field: string): boolean {
-  if (typeof value !== "boolean") {
-    throw usageError(`field '${field}' must be a boolean`)
-  }
-  return value
-}
-
-export function asOptionalBool(value: unknown, field: string): boolean | undefined {
-  if (value === undefined) return undefined
-  return asBool(value, field)
-}
-
-export function asRecord(value: unknown, field: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw usageError(`field '${field}' must be an object`)
-  }
-  return value as Record<string, unknown>
-}
-
-function asStringArray(value: unknown, field: string): string[] {
-  if (typeof value === "string") return [value]
-  if (Array.isArray(value) && value.every((v) => typeof v === "string" && v !== "")) {
-    return value as string[]
-  }
-  throw usageError(`field '${field}' must be a string or an array of non-empty strings`)
-}
-
-function asOptionalStringArray(value: unknown, field: string): string[] | undefined {
-  if (value === undefined) return undefined
-  return asStringArray(value, field)
-}
-
-/** Accept "5m" durations or numbers (milliseconds) for timeout/interval. */
-function durationArg(value: unknown, field: string): string {
-  if (typeof value === "string") return value
-  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-    return value % 1000 === 0 ? `${Math.round(value / 1000)}s` : `${Math.round(value)}ms`
-  }
-  throw usageError(`field '${field}' must be a duration string (e.g. "5m") or milliseconds`)
+/** Parse an optional field: absent input stays undefined. */
+function optField<T>(schema: z.ZodType<T>, value: unknown, field: string): T | undefined {
+  return value === undefined ? undefined : parseField(schema, value, field)
 }
 
 export function rejectUnknown(fields: Fields, allowed: ReadonlySet<string>, command: string): void {
@@ -74,121 +60,100 @@ export function rejectUnknown(fields: Fields, allowed: ReadonlySet<string>, comm
   }
 }
 
-/** String / string[] / bool / duration field readers for generate requests. */
-function readGenerateStringFields(fields: Fields, req: GenRequest): void {
-  for (const field of [
-    "provider",
-    "model",
-    "prompt",
-    "system",
-    "firstFrame",
-    "lastFrame",
-    "output",
-    "tag",
-  ] as const) {
-    const value = asOptionalString(fields[field], field)
-    if (value !== undefined) req[field] = value
-  }
-}
-
-function readGenerateListFields(fields: Fields, req: GenRequest): void {
-  for (const field of ["images", "inputs"] as const) {
-    const value = asOptionalStringArray(fields[field], field)
-    if (value !== undefined) req[field] = value
-  }
-}
-
-function readGenerateFlagFields(fields: Fields, req: GenRequest): void {
-  for (const field of ["noWait", "noPack"] as const) {
-    const value = asOptionalBool(fields[field], field)
-    if (value !== undefined) req[field] = value
-  }
-}
-
 /** Build a GenRequest from a generate.<task> file's fields. */
 export function generateRequest(task: GenTaskName, fields: Fields): GenRequest {
   rejectUnknown(fields, requestFieldsForTask(task), `generate.${task}`)
 
   const req: GenRequest = { task }
-  readGenerateStringFields(fields, req)
-  readGenerateListFields(fields, req)
-  readGenerateFlagFields(fields, req)
-
-  const options = fields["options"]
-  if (options !== undefined) req.options = asRecord(options, "options")
-  const timeout = fields["timeout"]
-  if (timeout !== undefined) req.timeout = durationArg(timeout, "timeout")
-  const interval = fields["interval"]
-  if (interval !== undefined) req.interval = durationArg(interval, "interval")
-  const handle = fields["handle"]
-  if (handle !== undefined) {
-    req.handle = typeof handle === "string" ? asString(handle, "handle") : JSON.stringify(handle)
+  for (const field of Object.keys(generateRequestFields) as GenerateJsonField[]) {
+    const value = fields[field]
+    if (value === undefined) continue
+    assignGenerateField(req, field, value)
   }
   return req
+}
+
+/** Generate-request fields that come from `-f` JSON (not task/internals). */
+type GenerateJsonField = Exclude<keyof GenRequest, "task" | "promptRef" | "inputRefs"> & string
+
+/** Parse + normalize one field and write it onto req, type-safely end to end. */
+function assignGenerateField<K extends keyof GenRequest & string>(
+  req: GenRequest,
+  field: K,
+  value: unknown,
+): void {
+  const table = generateRequestFields as Record<string, z.ZodType>
+  const schema = table[field]
+  // Unreachable in practice: field enumerates the table's own keys.
+  if (schema === undefined) return
+  const parsed: unknown = parseField(schema, value, field)
+  req[field] = normalizeGenerateField(field, parsed as GenerateFieldJson<K>)
 }
 
 export function buildRequest(fields: Fields): BuildRequest {
-  rejectUnknown(
-    fields,
-    new Set(["tag", "dir", "file", "output", "annotations", "username", "password", "plainHttp"]),
-    "build",
-  )
-  const annotations: Record<string, string> = {}
-  const rawAnnotations = fields["annotations"]
-  if (rawAnnotations !== undefined) {
-    for (const [key, value] of Object.entries(asRecord(rawAnnotations, "annotations"))) {
-      annotations[key] = String(value)
-    }
-  }
+  rejectUnknown(fields, new Set(Object.keys(buildRequestFields)), "build")
+  const annotations =
+    fields["annotations"] === undefined
+      ? {}
+      : (normalizeBuildField(
+          "annotations",
+          parseField(buildRequestFields.annotations, fields["annotations"], "annotations"),
+        ) as Record<string, string>)
   const req: BuildRequest = {
-    tag: asString(fields["tag"], "tag"),
+    tag: parseField(buildRequestFields.tag, fields["tag"], "tag"),
     annotations,
     passwordStdin: false,
-    plainHttp: asOptionalBool(fields["plainHttp"], "plainHttp") === true,
+    plainHttp: optField(buildRequestFields.plainHttp, fields["plainHttp"], "plainHttp") ?? false,
   }
-  const dir = asOptionalString(fields["dir"], "dir")
-  if (dir !== undefined) req.dir = dir
-  const file = asOptionalString(fields["file"], "file")
-  if (file !== undefined) req.file = file
-  const output = asOptionalString(fields["output"], "output")
-  if (output !== undefined) req.output = output
-  const username = asOptionalString(fields["username"], "username")
-  if (username !== undefined) req.username = username
-  const password = asOptionalString(fields["password"], "password")
-  if (password !== undefined) req.password = password
+  for (const field of BUILD_OPTIONAL_FIELDS) {
+    const parsed = optField(buildRequestFields[field], fields[field], field)
+    if (parsed !== undefined) assignBuildField(req, field, parsed)
+  }
   return req
 }
 
+/** build's optional -f fields (absent stays absent under exactOptionalPropertyTypes). */
+const BUILD_OPTIONAL_FIELDS = ["dir", "file", "output", "username", "password"] as const
+
+/** Write one optional build field onto req (generic-key write needs a helper). */
+function assignBuildField<K extends (typeof BUILD_OPTIONAL_FIELDS)[number]>(
+  req: BuildRequest,
+  field: K,
+  value: NonNullable<BuildRequest[K]>,
+): void {
+  req[field] = value
+}
+
 export function pushRequest(fields: Fields): ParsedPushArgs {
-  rejectUnknown(fields, new Set(["ref", "layout", "username", "password", "plainHttp"]), "push")
+  rejectUnknown(fields, new Set(Object.keys(pushRequestFields)), "push")
   return {
-    ref: asString(fields["ref"], "ref"),
-    layout: asOptionalString(fields["layout"], "layout"),
-    username: asOptionalString(fields["username"], "username"),
-    password: asOptionalString(fields["password"], "password"),
+    ref: parseField(pushRequestFields.ref, fields["ref"], "ref"),
+    layout: optField(pushRequestFields.layout, fields["layout"], "layout"),
+    username: optField(pushRequestFields.username, fields["username"], "username"),
+    password: optField(pushRequestFields.password, fields["password"], "password"),
     passwordStdin: false,
-    plainHttp: asOptionalBool(fields["plainHttp"], "plainHttp") === true,
+    plainHttp: optField(pushRequestFields.plainHttp, fields["plainHttp"], "plainHttp") ?? false,
   }
 }
 
 export function pullRequest(fields: Fields): ParsedPullArgs {
-  rejectUnknown(fields, new Set(["ref", "output", "username", "password", "plainHttp"]), "pull")
+  rejectUnknown(fields, new Set(Object.keys(pullRequestFields)), "pull")
   return {
-    ref: asString(fields["ref"], "ref"),
-    output: asOptionalString(fields["output"], "output"),
-    username: asOptionalString(fields["username"], "username"),
-    password: asOptionalString(fields["password"], "password"),
+    ref: parseField(pullRequestFields.ref, fields["ref"], "ref"),
+    output: optField(pullRequestFields.output, fields["output"], "output"),
+    username: optField(pullRequestFields.username, fields["username"], "username"),
+    password: optField(pullRequestFields.password, fields["password"], "password"),
     passwordStdin: false,
-    plainHttp: asOptionalBool(fields["plainHttp"], "plainHttp") === true,
+    plainHttp: optField(pullRequestFields.plainHttp, fields["plainHttp"], "plainHttp") ?? false,
   }
 }
 
 export function loginRequest(fields: Fields): ParsedLoginArgs {
-  rejectUnknown(fields, new Set(["registry", "username", "password"]), "auth.login")
+  rejectUnknown(fields, new Set(Object.keys(loginRequestFields)), "auth.login")
   return {
-    registry: asString(fields["registry"], "registry"),
-    username: asOptionalString(fields["username"], "username"),
-    password: asOptionalString(fields["password"], "password"),
+    registry: parseField(loginRequestFields.registry, fields["registry"], "registry"),
+    username: optField(loginRequestFields.username, fields["username"], "username"),
+    password: optField(loginRequestFields.password, fields["password"], "password"),
     passwordStdin: false,
   }
 }
@@ -227,17 +192,16 @@ export function readRequestFile(
         throw usageError(`steps[${i}] in '${file}' must be an object`)
       }
       const entry = { ...(raw as Fields) }
-      const command = asString(entry["command"], `steps[${i}].command`)
+      const command = parseField(nonEmptyString, entry["command"], `steps[${i}].command`)
       delete entry["command"]
-      const name =
-        entry["name"] === undefined ? undefined : asString(entry["name"], `steps[${i}].name`)
+      const name = optField(nonEmptyString, entry["name"], `steps[${i}].name`)
       if (name !== undefined) delete entry["name"]
       return name === undefined ? { command, fields: entry } : { command, fields: entry, name }
     })
     return { steps }
   }
 
-  const command = asString(root["command"], "command")
+  const command = parseField(nonEmptyString, root["command"], "command")
   delete root["command"]
   return { command, fields: root }
 }
@@ -264,8 +228,11 @@ export function commandRequestFromFields(command: string, fields: Fields): Comma
     case "auth.login":
       return { kind: "login", req: loginRequest(fields) }
     case "auth.logout": {
-      rejectUnknown(fields, new Set(["registry"]), command)
-      return { kind: "logout", req: { registry: asString(fields["registry"], "registry") } }
+      rejectUnknown(fields, new Set(Object.keys(logoutRequestFields)), command)
+      return {
+        kind: "logout",
+        req: { registry: parseField(logoutRequestFields.registry, fields["registry"], "registry") },
+      }
     }
     case "config.path":
     case "config.list":
@@ -274,22 +241,29 @@ export function commandRequestFromFields(command: string, fields: Fields): Comma
       return { kind: "config", action: command.slice("config.".length), rest: [] }
     }
     case "config.get": {
-      rejectUnknown(fields, new Set(["key"]), command)
-      return { kind: "config", action: "get", rest: [asString(fields["key"], "key")] }
+      rejectUnknown(fields, new Set(Object.keys(configGetFields)), command)
+      return {
+        kind: "config",
+        action: "get",
+        rest: [parseField(configGetFields.key, fields["key"], "key")],
+      }
     }
     case "config.set": {
-      rejectUnknown(fields, new Set(["key", "value"]), command)
-      const key = asString(fields["key"], "key")
-      if (fields["value"] === undefined) {
+      rejectUnknown(fields, new Set(Object.keys(configSetFields)), command)
+      const key = parseField(configSetFields.key, fields["key"], "key")
+      const value = fields["value"]
+      if (value === undefined) {
         throw usageError("command 'config.set' requires field 'value'")
       }
-      return { kind: "config", action: "set", rest: [key, JSON.stringify(fields["value"])] }
+      return { kind: "config", action: "set", rest: [key, JSON.stringify(value)] }
     }
     case "models": {
-      rejectUnknown(fields, new Set(["provider"]), command)
+      rejectUnknown(fields, new Set(Object.keys(modelsRequestFields)), command)
       return {
         kind: "models",
-        req: { provider: asOptionalString(fields["provider"], "provider") },
+        req: {
+          provider: optField(modelsRequestFields.provider, fields["provider"], "provider"),
+        },
       }
     }
     default:

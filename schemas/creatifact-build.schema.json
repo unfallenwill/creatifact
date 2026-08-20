@@ -1,59 +1,57 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-build.schema.json",
-  "title": "Creatifact build manifest",
-  "description": "Describes an OCI image: annotations, base images to inherit, paths to copy, and a local assets directory.",
   "type": "object",
   "properties": {
     "annotations": {
       "description": "Manifest annotations (image metadata).",
       "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
       "additionalProperties": {
         "type": "string"
       }
     },
     "from": {
       "description": "Registry reference(s) or local OCI layout path(s) whose layers are inherited in order.",
-      "oneOf": [
+      "anyOf": [
         {
           "type": "string",
           "minLength": 1
         },
         {
+          "minItems": 1,
           "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          },
-          "minItems": 1
+          "items": {}
         }
       ]
     },
     "copy": {
       "description": "Extract specific paths from a source image and add them as a new layer.",
+      "minItems": 1,
       "type": "array",
       "items": {
         "type": "object",
-        "required": [
-          "from",
-          "paths"
-        ],
         "properties": {
           "from": {
             "type": "string",
             "minLength": 1
           },
           "paths": {
+            "minItems": 1,
             "type": "array",
             "items": {
               "type": "string",
               "minLength": 1
-            },
-            "minItems": 1
+            }
           }
-        }
-      },
-      "minItems": 1
+        },
+        "required": [
+          "from",
+          "paths"
+        ],
+        "additionalProperties": false
+      }
     },
     "assets": {
       "description": "Local directory packed as the top layer (relative to this file).",
@@ -61,14 +59,10 @@
       "minLength": 1
     },
     "gen": {
-      "description": "Generation recipe: task, provider, model, and parameters. Baked into the image config blob so `creatifact generate <ref>` can run it. Never contains credentials.",
       "type": "object",
-      "required": [
-        "task"
-      ],
       "properties": {
         "task": {
-          "description": "Generation task.",
+          "type": "string",
           "enum": [
             "text2text",
             "image2text",
@@ -79,7 +73,8 @@
             "image2video",
             "frames2video",
             "embed"
-          ]
+          ],
+          "description": "Generation task."
         },
         "provider": {
           "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'.",
@@ -93,57 +88,88 @@
         },
         "prompt": {
           "description": "Default prompt (overridable via the positional prompt at generate time).",
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "promptRef": {
           "description": "Provenance for a prompt produced by an earlier pipeline step: {name?, digest?, tag?}. digest anchors the source package content-addressedly.",
           "type": "object",
           "properties": {
-            "name": { "type": "string", "minLength": 1 },
-            "digest": { "type": "string", "minLength": 1 },
-            "tag": { "type": "string", "minLength": 1 }
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "digest": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            }
           },
           "additionalProperties": false
         },
         "inputRefs": {
           "description": "Provenance for media inputs that referenced an earlier step's artifacts: the URL sent to the provider expires, the digest anchors the source package that still holds the bytes.",
-          "type": "array",
           "minItems": 1,
+          "type": "array",
           "items": {
             "type": "object",
-            "required": ["field", "name"],
             "properties": {
-              "field": { "enum": ["images", "firstFrame", "lastFrame", "inputs"] },
-              "index": { "type": "integer", "minimum": 0 },
-              "name": { "type": "string", "minLength": 1 },
-              "digest": { "type": "string", "minLength": 1 },
-              "tag": { "type": "string", "minLength": 1 }
+              "field": {
+                "type": "string",
+                "enum": [
+                  "images",
+                  "firstFrame",
+                  "lastFrame",
+                  "inputs"
+                ]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "index": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "digest": {
+                "type": "string",
+                "minLength": 1
+              },
+              "tag": {
+                "type": "string",
+                "minLength": 1
+              }
             },
+            "required": [
+              "field",
+              "name"
+            ],
             "additionalProperties": false
           }
         },
         "system": {
           "description": "System prompt (text2text only).",
-          "type": "string"
-        },
-        "options": {
-          "description": "Provider-specific generation options.",
-          "type": "object"
+          "type": "string",
+          "minLength": 1
         },
         "images": {
           "description": "Reference image(s): http(s)/data URL, local path, or pkg://path into this package's layers (packed via assets).",
-          "oneOf": [
+          "anyOf": [
             {
               "type": "string",
               "minLength": 1
             },
             {
+              "minItems": 1,
               "type": "array",
               "items": {
                 "type": "string",
                 "minLength": 1
-              },
-              "minItems": 1
+              }
             }
           ]
         },
@@ -159,23 +185,42 @@
         },
         "inputs": {
           "description": "Media attachments (image2text/video2text) or texts (embed): URL, local path, pkg://path, or plain text.",
-          "oneOf": [
+          "anyOf": [
             {
               "type": "string",
               "minLength": 1
             },
             {
+              "minItems": 1,
               "type": "array",
               "items": {
                 "type": "string",
                 "minLength": 1
-              },
-              "minItems": 1
+              }
             }
           ]
+        },
+        "options": {
+          "description": "Provider-specific generation options.",
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
         }
-      }
+      },
+      "required": [
+        "task"
+      ],
+      "additionalProperties": {},
+      "description": "Generation recipe: task, provider, model, and parameters. Baked into the image config blob so `creatifact generate <ref>` can run it. Never contains credentials."
     }
   },
-  "additionalProperties": true
+  "required": [
+    "gen"
+  ],
+  "additionalProperties": {},
+  "$id": "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-build.schema.json",
+  "title": "Creatifact build manifest",
+  "description": "Describes an OCI image: annotations, base images to inherit, paths to copy, and a local assets directory."
 }

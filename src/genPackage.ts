@@ -3,6 +3,14 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { envForConfigPath, loadConfig, storeDir } from "./config"
 import {
+  formatIssuePath,
+  type GenSpec,
+  genSpecSchema,
+  type InputProvenance,
+  type InputProvenanceField,
+  type StepProvenance,
+} from "./contract"
+import {
   type ArtifactFetcher,
   artifactBytes,
   artifactExtension,
@@ -24,71 +32,13 @@ import {
 import type { Artifact, Usage } from "./providers"
 import type { ImageFetchOptions } from "./pull"
 import { isLocalRef } from "./refs"
-import { type GenTaskName, TASKS } from "./tasks"
 import { ensureOutputDirEmpty } from "./util"
 
-export type { LoadedImage }
+export type { GenSpec, InputProvenance, InputProvenanceField, LoadedImage, StepProvenance }
 
 /** Media type of the OCI config blob that carries a gen recipe (or a result's provenance). */
 export const GEN_CONFIG_MEDIA_TYPE = "application/vnd.creatifact.gen.v1+json"
 export const GEN_SCHEMA_VERSION = 1
-
-/** Gen recipes cannot be the `resume` control command. */
-const GEN_TASKS = new Set(Object.keys(TASKS).filter((t) => t !== "resume"))
-
-/**
- * A generation recipe baked into a package by `creatifact package build`.
- * Task-oriented (X2Y); never contains credentials — only provider/model ids
- * and parameters. Media references are URLs, local paths, or pkg://paths into
- * the package's own layers.
- */
-export interface GenSpec {
-  task: GenTaskName
-  provider?: string
-  model?: string
-  prompt?: string
-  /**
-   * Provenance pointer for a prompt produced by an earlier pipeline step:
-   * names the source package (digest) so the chain is verifiable by
-   * content-addressing, not just textual coincidence.
-   */
-  promptRef?: StepProvenance
-  /**
-   * Provenance pointers for media inputs (images / frames / inputs) that came
-   * from an earlier step's artifacts. The URL recorded in the field itself
-   * expires; the digest anchors the source package that still holds the bytes.
-   */
-  inputRefs?: InputProvenance[]
-  system?: string
-  images?: string[]
-  firstFrame?: string
-  lastFrame?: string
-  inputs?: string[]
-  options?: Record<string, unknown>
-}
-
-/** Where a prompt came from: a packed result package, identified by digest. */
-export interface StepProvenance {
-  /** Pipeline step name that produced the prompt. */
-  name?: string
-  /** Manifest digest of the source package (content-addressed anchor). */
-  digest?: string
-  /** Store tag of the source package at pipeline run time. */
-  tag?: string
-}
-
-/** Which request field an input provenance entry describes. */
-export type InputProvenanceField = "images" | "firstFrame" | "lastFrame" | "inputs"
-
-/** Provenance for one media input entry that referenced an earlier step. */
-export interface InputProvenance {
-  field: InputProvenanceField
-  /** Array entry position (omitted for scalar firstFrame/lastFrame). */
-  index?: number
-  name: string
-  digest?: string
-  tag?: string
-}
 
 export interface GenConfigBlob {
   schemaVersion: number
@@ -112,195 +62,53 @@ export interface GenResultBlob {
   result: GenResultMeta
 }
 
-const KNOWN_SPEC_FIELDS = new Set([
-  "task",
-  "provider",
-  "model",
-  "prompt",
-  "promptRef",
-  "inputRefs",
-  "system",
-  "images",
-  "firstFrame",
-  "lastFrame",
-  "inputs",
-  "options",
-])
+const KNOWN_SPEC_FIELDS = new Set(Object.keys(genSpecSchema.shape))
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-function fail(path: string, field: string, message: string): never {
-  const where = field === "" ? "" : `.${field}`
-  throw new Error(`${path}: gen${where} ${message}`)
-}
-
-function optionalString(
-  raw: Record<string, unknown>,
-  path: string,
-  field: string,
-): string | undefined {
-  const value = raw[field]
-  if (value === undefined) return undefined
-  if (typeof value !== "string" || value === "") {
-    fail(path, field, "must be a non-empty string")
-  }
-  return value
-}
-
-function validateStringList(
-  raw: Record<string, unknown>,
-  path: string,
-  field: string,
-): string[] | undefined {
-  const value = raw[field]
-  if (value === undefined) return undefined
-  if (typeof value === "string" && value !== "") return [value]
-  if (
-    Array.isArray(value) &&
-    value.length > 0 &&
-    value.every((v) => typeof v === "string" && v !== "")
-  ) {
-    return value as string[]
-  }
-  fail(path, field, "must be a non-empty string or an array of non-empty strings")
-}
-
-/** Read one provenance anchor key (name/digest/tag): non-empty string or error. */
-function anchorString(
-  entry: Record<string, unknown>,
-  key: string,
-  where: string,
-): string | undefined {
-  const v = entry[key]
-  if (v === undefined || (typeof v === "string" && v !== "")) {
-    return v as string | undefined
-  }
-  fail("", where, "must be a non-empty string")
-}
-
-/** Validate a promptRef provenance object (all keys optional strings). */
-function optionalPromptRef(raw: Record<string, unknown>, path: string): StepProvenance | undefined {
-  const value = raw["promptRef"]
-  if (value === undefined) return undefined
-  if (!isRecord(value)) {
-    fail(path, "promptRef", "must be an object {name?, digest?, tag?}")
-  }
-  const out: StepProvenance = {}
-  for (const key of ["name", "digest", "tag"] as const) {
-    const v = anchorString(value, key, `gen.promptRef.${key}`)
-    if (v !== undefined) out[key] = v
-  }
-  return Object.keys(out).length > 0 ? out : undefined
-}
-
-const INPUT_PROVENANCE_FIELDS = new Set(["images", "firstFrame", "lastFrame", "inputs"])
-
-/** Validate one inputRefs entry (field/name/index/digest/tag). */
-function parseInputProvenance(entry: Record<string, unknown>, i: number): InputProvenance {
-  const field = entry["field"]
-  if (typeof field !== "string" || !INPUT_PROVENANCE_FIELDS.has(field)) {
-    fail(
-      "",
-      `gen.inputRefs[${i}].field`,
-      `must be one of ${[...INPUT_PROVENANCE_FIELDS].join(", ")}`,
-    )
-  }
-  const name = anchorString(entry, "name", `gen.inputRefs[${i}].name`)
-  if (name === undefined) {
-    fail("", `gen.inputRefs[${i}].name`, "must be a non-empty string")
-  }
-  const provenance: InputProvenance = { field: field as InputProvenanceField, name }
-  const index = entry["index"]
-  if (index !== undefined) {
-    if (typeof index !== "number" || !Number.isInteger(index) || index < 0) {
-      fail("", `gen.inputRefs[${i}].index`, "must be a non-negative integer")
-    }
-    provenance.index = index
-  }
-  for (const key of ["digest", "tag"] as const) {
-    const v = anchorString(entry, key, `gen.inputRefs[${i}].${key}`)
-    if (v !== undefined) provenance[key] = v
-  }
-  return provenance
-}
-
-/** Validate an inputRefs provenance array. */
-function optionalInputRefs(
-  raw: Record<string, unknown>,
-  path: string,
-): InputProvenance[] | undefined {
-  const value = raw["inputRefs"]
-  if (value === undefined) return undefined
-  if (!Array.isArray(value) || value.length === 0) {
-    fail(path, "inputRefs", "must be a non-empty array")
-  }
-  const out: InputProvenance[] = []
-  for (const [i, entry] of value.entries()) {
-    if (!isRecord(entry)) {
-      fail(path, `inputRefs[${i}]`, "must be an object")
-    }
-    out.push(parseInputProvenance(entry, i))
-  }
-  return out
-}
-
-/** Apply promptRef / inputRefs provenance parsing onto a spec. */
-function applyProvenance(spec: GenSpec, raw: Record<string, unknown>, path: string): void {
-  const promptRef = optionalPromptRef(raw, path)
-  if (promptRef !== undefined) spec.promptRef = promptRef
-  const inputRefs = optionalInputRefs(raw, path)
-  if (inputRefs !== undefined) spec.inputRefs = inputRefs
-}
-
-/** Validate the `gen` section of a build manifest or a package config blob. */
+/**
+ * Validate the `gen` section of a build manifest or a package config blob.
+ * Constraints live in contract.ts's genSpecSchema; this wrapper keeps the
+ * historical error format (`<path>: gen.<field> <message>`) and the two
+ * normalizations the schema stays silent about: a bare string list value
+ * wraps into an array, and an all-empty promptRef collapses to nothing.
+ */
 export function validateGenSpec(raw: unknown, path: string): GenSpec {
   if (!isRecord(raw)) {
-    fail(path, "", "must be an object")
+    throw new Error(`${path}: gen must be an object`)
   }
-
-  const task = raw["task"]
-  if (typeof task !== "string" || !GEN_TASKS.has(task)) {
-    fail(path, "task", `must be one of ${[...GEN_TASKS].join(", ")}`)
-  }
-
-  const spec: GenSpec = { task: task as GenTaskName }
-
-  for (const field of [
-    "provider",
-    "model",
-    "prompt",
-    "system",
-    "firstFrame",
-    "lastFrame",
-  ] as const) {
-    const value = optionalString(raw, path, field)
-    if (value !== undefined) spec[field] = value
-  }
-
-  const images = validateStringList(raw, path, "images")
-  if (images !== undefined) spec.images = images
-  const inputs = validateStringList(raw, path, "inputs")
-  if (inputs !== undefined) spec.inputs = inputs
-
-  applyProvenance(spec, raw, path)
-
-  const options = raw["options"]
-  if (options !== undefined) {
-    if (!isRecord(options)) {
-      fail(path, "options", "must be an object")
-    }
-    spec.options = options as Record<string, unknown>
-  }
-
   for (const key of Object.keys(raw)) {
     if (!KNOWN_SPEC_FIELDS.has(key)) {
       console.warn(`${path}: gen: unknown field '${key}' is ignored`)
     }
   }
-
-  return spec
+  const result = genSpecSchema.safeParse(raw)
+  if (!result.success) {
+    const issue = result.error.issues[0]
+    throw new Error(
+      issue === undefined
+        ? `${path}: gen failed validation`
+        : `${path}: gen.${formatIssuePath(issue.path)} ${issue.message}`,
+    )
+  }
+  // looseObject passthrough keeps unknown keys; the historical contract
+  // drops them (they were warned about above), so pick known keys only.
+  const parsed = result.data
+  const spec: Record<string, unknown> = {}
+  for (const key of KNOWN_SPEC_FIELDS) {
+    if (parsed[key] !== undefined) spec[key] = parsed[key]
+  }
+  if (typeof spec["images"] === "string") spec["images"] = [spec["images"]]
+  if (typeof spec["inputs"] === "string") spec["inputs"] = [spec["inputs"]]
+  const promptRef = spec["promptRef"]
+  if (typeof promptRef === "object" && promptRef !== null && Object.keys(promptRef).length === 0) {
+    delete spec["promptRef"]
+  }
+  // images/inputs are normalized above (string variants eliminated); the
+  // constraints themselves live in contract.ts's genSpecSchema.
+  return spec as GenSpec
 }
 
 /** Parse a package config blob produced by `build` (gen recipe). */

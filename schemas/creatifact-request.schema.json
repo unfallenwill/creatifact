@@ -3,172 +3,2395 @@
   "$id": "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-request.schema.json",
   "title": "Creatifact request file",
   "description": "Describes one Creatifact command (or a `steps` pipeline) to run via `creatifact -f <file>.json`. Single-command form: the 'command' field selects the command; the remaining fields map to its arguments, and command-line flags after the file override generate.* fields. Pipeline form: a `steps` array runs sequentially, fails fast, and resolves `${step.field}` references to earlier steps' results (tag/digest/outputDir/text/vectors/dimensions/artifacts[N].url).",
-  "type": "object",
-  "oneOf": [
-    { "required": ["command"] },
-    { "required": ["steps"] }
-  ],
-  "properties": {
-    "steps": {
-      "description": "Pipeline form: steps run sequentially; each step is a single-command object plus an optional `name` used in `${name.field}` references.",
-      "type": "array",
-      "minItems": 1,
-      "items": {
-        "type": "object",
-        "required": ["command"],
-        "properties": {
-          "name": {
-            "description": "Step name for ${name.field} references; must be unique.",
-            "type": "string",
-            "minLength": 1
-          }
+  "$defs": {
+    "step.generate.text2text": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "generate.text2text",
+          "description": "Which command to run."
         },
-        "additionalProperties": true
+        "name": {
+          "description": "Step name for ${name.field} references; must be unique.",
+          "type": "string",
+          "minLength": 1
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id (overrides any model in 'provider')."
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+        },
+        "system": {
+          "type": "string",
+          "minLength": 1,
+          "description": "System prompt (generate.text2text only)."
+        },
+        "options": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {},
+          "description": "Provider-specific options (passed as --opt k=v)."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "single.generate.text2text": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "generate.text2text",
+          "description": "Which command to run."
+        },
+        "$schema": {
+          "description": "Optional schema reference (ignored).",
+          "type": "string"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id (overrides any model in 'provider')."
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+        },
+        "system": {
+          "type": "string",
+          "minLength": 1,
+          "description": "System prompt (generate.text2text only)."
+        },
+        "options": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {},
+          "description": "Provider-specific options (passed as --opt k=v)."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "step.generate.image2text": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "generate.image2text",
+          "description": "Which command to run."
+        },
+        "name": {
+          "description": "Step name for ${name.field} references; must be unique.",
+          "type": "string",
+          "minLength": 1
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id (overrides any model in 'provider')."
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+        },
+        "inputs": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          ],
+          "description": "Media attachments (generate.image2text / video2text) or texts to embed (generate.embed). Repeatable as --input."
+        },
+        "options": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {},
+          "description": "Provider-specific options (passed as --opt k=v)."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "single.generate.image2text": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "generate.image2text",
+          "description": "Which command to run."
+        },
+        "$schema": {
+          "description": "Optional schema reference (ignored).",
+          "type": "string"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id (overrides any model in 'provider')."
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+        },
+        "inputs": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          ],
+          "description": "Media attachments (generate.image2text / video2text) or texts to embed (generate.embed). Repeatable as --input."
+        },
+        "options": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {},
+          "description": "Provider-specific options (passed as --opt k=v)."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "step.generate.video2text": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "generate.video2text",
+          "description": "Which command to run."
+        },
+        "name": {
+          "description": "Step name for ${name.field} references; must be unique.",
+          "type": "string",
+          "minLength": 1
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id (overrides any model in 'provider')."
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+        },
+        "inputs": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          ],
+          "description": "Media attachments (generate.image2text / video2text) or texts to embed (generate.embed). Repeatable as --input."
+        },
+        "options": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {},
+          "description": "Provider-specific options (passed as --opt k=v)."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "single.generate.video2text": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "generate.video2text",
+          "description": "Which command to run."
+        },
+        "$schema": {
+          "description": "Optional schema reference (ignored).",
+          "type": "string"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id (overrides any model in 'provider')."
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+        },
+        "inputs": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          ],
+          "description": "Media attachments (generate.image2text / video2text) or texts to embed (generate.embed). Repeatable as --input."
+        },
+        "options": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {},
+          "description": "Provider-specific options (passed as --opt k=v)."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "step.generate.text2image": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "generate.text2image",
+          "description": "Which command to run."
+        },
+        "name": {
+          "description": "Step name for ${name.field} references; must be unique.",
+          "type": "string",
+          "minLength": 1
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id (overrides any model in 'provider')."
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+        },
+        "options": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {},
+          "description": "Provider-specific options (passed as --opt k=v)."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+        },
+        "noPack": {
+          "type": "boolean",
+          "description": "Media tasks only: return artifacts without building a result package."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "single.generate.text2image": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "generate.text2image",
+          "description": "Which command to run."
+        },
+        "$schema": {
+          "description": "Optional schema reference (ignored).",
+          "type": "string"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id (overrides any model in 'provider')."
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+        },
+        "options": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {},
+          "description": "Provider-specific options (passed as --opt k=v)."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+        },
+        "noPack": {
+          "type": "boolean",
+          "description": "Media tasks only: return artifacts without building a result package."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "step.generate.image2image": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "generate.image2image",
+          "description": "Which command to run."
+        },
+        "name": {
+          "description": "Step name for ${name.field} references; must be unique.",
+          "type": "string",
+          "minLength": 1
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id (overrides any model in 'provider')."
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+        },
+        "images": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          ],
+          "description": "Reference image(s): http(s)/data URL, local path, or pkg://path into a recipe package. Repeatable as --image. Exactly one for image2image and image2video."
+        },
+        "options": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {},
+          "description": "Provider-specific options (passed as --opt k=v)."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+        },
+        "noPack": {
+          "type": "boolean",
+          "description": "Media tasks only: return artifacts without building a result package."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "single.generate.image2image": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "generate.image2image",
+          "description": "Which command to run."
+        },
+        "$schema": {
+          "description": "Optional schema reference (ignored).",
+          "type": "string"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id (overrides any model in 'provider')."
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+        },
+        "images": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          ],
+          "description": "Reference image(s): http(s)/data URL, local path, or pkg://path into a recipe package. Repeatable as --image. Exactly one for image2image and image2video."
+        },
+        "options": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {},
+          "description": "Provider-specific options (passed as --opt k=v)."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+        },
+        "noPack": {
+          "type": "boolean",
+          "description": "Media tasks only: return artifacts without building a result package."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "step.generate.text2video": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "generate.text2video",
+          "description": "Which command to run."
+        },
+        "name": {
+          "description": "Step name for ${name.field} references; must be unique.",
+          "type": "string",
+          "minLength": 1
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id (overrides any model in 'provider')."
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+        },
+        "options": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {},
+          "description": "Provider-specific options (passed as --opt k=v)."
+        },
+        "noWait": {
+          "type": "boolean",
+          "description": "Video tasks only: submit and print the task handle without polling."
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "Video tasks and resume: polling timeout, duration string (e.g. \"5m\") or milliseconds."
+        },
+        "interval": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "Video tasks and resume: polling interval, duration string (e.g. \"5s\") or milliseconds."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+        },
+        "noPack": {
+          "type": "boolean",
+          "description": "Media tasks only: return artifacts without building a result package."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "single.generate.text2video": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "generate.text2video",
+          "description": "Which command to run."
+        },
+        "$schema": {
+          "description": "Optional schema reference (ignored).",
+          "type": "string"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id (overrides any model in 'provider')."
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+        },
+        "options": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {},
+          "description": "Provider-specific options (passed as --opt k=v)."
+        },
+        "noWait": {
+          "type": "boolean",
+          "description": "Video tasks only: submit and print the task handle without polling."
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "Video tasks and resume: polling timeout, duration string (e.g. \"5m\") or milliseconds."
+        },
+        "interval": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "Video tasks and resume: polling interval, duration string (e.g. \"5s\") or milliseconds."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+        },
+        "noPack": {
+          "type": "boolean",
+          "description": "Media tasks only: return artifacts without building a result package."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "step.generate.image2video": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "generate.image2video",
+          "description": "Which command to run."
+        },
+        "name": {
+          "description": "Step name for ${name.field} references; must be unique.",
+          "type": "string",
+          "minLength": 1
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id (overrides any model in 'provider')."
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+        },
+        "images": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          ],
+          "description": "Reference image(s): http(s)/data URL, local path, or pkg://path into a recipe package. Repeatable as --image. Exactly one for image2image and image2video."
+        },
+        "options": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {},
+          "description": "Provider-specific options (passed as --opt k=v)."
+        },
+        "noWait": {
+          "type": "boolean",
+          "description": "Video tasks only: submit and print the task handle without polling."
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "Video tasks and resume: polling timeout, duration string (e.g. \"5m\") or milliseconds."
+        },
+        "interval": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "Video tasks and resume: polling interval, duration string (e.g. \"5s\") or milliseconds."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+        },
+        "noPack": {
+          "type": "boolean",
+          "description": "Media tasks only: return artifacts without building a result package."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "single.generate.image2video": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "generate.image2video",
+          "description": "Which command to run."
+        },
+        "$schema": {
+          "description": "Optional schema reference (ignored).",
+          "type": "string"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id (overrides any model in 'provider')."
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+        },
+        "images": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          ],
+          "description": "Reference image(s): http(s)/data URL, local path, or pkg://path into a recipe package. Repeatable as --image. Exactly one for image2image and image2video."
+        },
+        "options": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {},
+          "description": "Provider-specific options (passed as --opt k=v)."
+        },
+        "noWait": {
+          "type": "boolean",
+          "description": "Video tasks only: submit and print the task handle without polling."
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "Video tasks and resume: polling timeout, duration string (e.g. \"5m\") or milliseconds."
+        },
+        "interval": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "Video tasks and resume: polling interval, duration string (e.g. \"5s\") or milliseconds."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+        },
+        "noPack": {
+          "type": "boolean",
+          "description": "Media tasks only: return artifacts without building a result package."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "step.generate.frames2video": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "generate.frames2video",
+          "description": "Which command to run."
+        },
+        "name": {
+          "description": "Step name for ${name.field} references; must be unique.",
+          "type": "string",
+          "minLength": 1
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id (overrides any model in 'provider')."
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+        },
+        "firstFrame": {
+          "type": "string",
+          "minLength": 1,
+          "description": "generate.frames2video only: first frame image."
+        },
+        "lastFrame": {
+          "type": "string",
+          "minLength": 1,
+          "description": "generate.frames2video only: last frame image."
+        },
+        "options": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {},
+          "description": "Provider-specific options (passed as --opt k=v)."
+        },
+        "noWait": {
+          "type": "boolean",
+          "description": "Video tasks only: submit and print the task handle without polling."
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "Video tasks and resume: polling timeout, duration string (e.g. \"5m\") or milliseconds."
+        },
+        "interval": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "Video tasks and resume: polling interval, duration string (e.g. \"5s\") or milliseconds."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+        },
+        "noPack": {
+          "type": "boolean",
+          "description": "Media tasks only: return artifacts without building a result package."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "single.generate.frames2video": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "generate.frames2video",
+          "description": "Which command to run."
+        },
+        "$schema": {
+          "description": "Optional schema reference (ignored).",
+          "type": "string"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id (overrides any model in 'provider')."
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+        },
+        "firstFrame": {
+          "type": "string",
+          "minLength": 1,
+          "description": "generate.frames2video only: first frame image."
+        },
+        "lastFrame": {
+          "type": "string",
+          "minLength": 1,
+          "description": "generate.frames2video only: last frame image."
+        },
+        "options": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {},
+          "description": "Provider-specific options (passed as --opt k=v)."
+        },
+        "noWait": {
+          "type": "boolean",
+          "description": "Video tasks only: submit and print the task handle without polling."
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "Video tasks and resume: polling timeout, duration string (e.g. \"5m\") or milliseconds."
+        },
+        "interval": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "Video tasks and resume: polling interval, duration string (e.g. \"5s\") or milliseconds."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+        },
+        "noPack": {
+          "type": "boolean",
+          "description": "Media tasks only: return artifacts without building a result package."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "step.generate.embed": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "generate.embed",
+          "description": "Which command to run."
+        },
+        "name": {
+          "description": "Step name for ${name.field} references; must be unique.",
+          "type": "string",
+          "minLength": 1
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id (overrides any model in 'provider')."
+        },
+        "inputs": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          ],
+          "description": "Media attachments (generate.image2text / video2text) or texts to embed (generate.embed). Repeatable as --input."
+        },
+        "options": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {},
+          "description": "Provider-specific options (passed as --opt k=v)."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "single.generate.embed": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "generate.embed",
+          "description": "Which command to run."
+        },
+        "$schema": {
+          "description": "Optional schema reference (ignored).",
+          "type": "string"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id (overrides any model in 'provider')."
+        },
+        "inputs": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          ],
+          "description": "Media attachments (generate.image2text / video2text) or texts to embed (generate.embed). Repeatable as --input."
+        },
+        "options": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {},
+          "description": "Provider-specific options (passed as --opt k=v)."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "step.generate.resume": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "generate.resume",
+          "description": "Which command to run."
+        },
+        "name": {
+          "description": "Step name for ${name.field} references; must be unique.",
+          "type": "string",
+          "minLength": 1
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id (overrides any model in 'provider')."
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "Video tasks and resume: polling timeout, duration string (e.g. \"5m\") or milliseconds."
+        },
+        "interval": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "Video tasks and resume: polling interval, duration string (e.g. \"5s\") or milliseconds."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "handle": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          ],
+          "description": "generate.resume only: the saved task handle (object or inline JSON string)."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "single.generate.resume": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "generate.resume",
+          "description": "Which command to run."
+        },
+        "$schema": {
+          "description": "Optional schema reference (ignored).",
+          "type": "string"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id (overrides any model in 'provider')."
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "Video tasks and resume: polling timeout, duration string (e.g. \"5m\") or milliseconds."
+        },
+        "interval": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "Video tasks and resume: polling interval, duration string (e.g. \"5s\") or milliseconds."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "handle": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          ],
+          "description": "generate.resume only: the saved task handle (object or inline JSON string)."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "step.build": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "build",
+          "description": "Which command to run."
+        },
+        "name": {
+          "description": "Step name for ${name.field} references; must be unique.",
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+        },
+        "dir": {
+          "type": "string",
+          "minLength": 1,
+          "description": "build only: local directory packed as the top layer."
+        },
+        "file": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Build manifest path (build)."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "annotations": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {},
+          "description": "build only: manifest annotations (values are stringified)."
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Registry username (package.* / auth.login)."
+        },
+        "password": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Registry password (package.* / auth.login)."
+        },
+        "plainHttp": {
+          "type": "boolean",
+          "description": "Use HTTP instead of HTTPS for the registry."
+        }
+      },
+      "required": [
+        "command",
+        "tag"
+      ],
+      "additionalProperties": false
+    },
+    "single.build": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "build",
+          "description": "Which command to run."
+        },
+        "$schema": {
+          "description": "Optional schema reference (ignored).",
+          "type": "string"
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+        },
+        "dir": {
+          "type": "string",
+          "minLength": 1,
+          "description": "build only: local directory packed as the top layer."
+        },
+        "file": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Build manifest path (build)."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "annotations": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {},
+          "description": "build only: manifest annotations (values are stringified)."
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Registry username (package.* / auth.login)."
+        },
+        "password": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Registry password (package.* / auth.login)."
+        },
+        "plainHttp": {
+          "type": "boolean",
+          "description": "Use HTTP instead of HTTPS for the registry."
+        }
+      },
+      "required": [
+        "command",
+        "tag"
+      ],
+      "additionalProperties": false
+    },
+    "step.push": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "push",
+          "description": "Which command to run."
+        },
+        "name": {
+          "description": "Step name for ${name.field} references; must be unique.",
+          "type": "string",
+          "minLength": 1
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "push / pull only: registry reference, e.g. localhost:5000/myrepo:1.0."
+        },
+        "layout": {
+          "type": "string",
+          "minLength": 1,
+          "description": "push only: OCI layout directory (default ./oci-layout)."
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Registry username (package.* / auth.login)."
+        },
+        "password": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Registry password (package.* / auth.login)."
+        },
+        "plainHttp": {
+          "type": "boolean",
+          "description": "Use HTTP instead of HTTPS for the registry."
+        }
+      },
+      "required": [
+        "command",
+        "ref"
+      ],
+      "additionalProperties": false
+    },
+    "single.push": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "push",
+          "description": "Which command to run."
+        },
+        "$schema": {
+          "description": "Optional schema reference (ignored).",
+          "type": "string"
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "push / pull only: registry reference, e.g. localhost:5000/myrepo:1.0."
+        },
+        "layout": {
+          "type": "string",
+          "minLength": 1,
+          "description": "push only: OCI layout directory (default ./oci-layout)."
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Registry username (package.* / auth.login)."
+        },
+        "password": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Registry password (package.* / auth.login)."
+        },
+        "plainHttp": {
+          "type": "boolean",
+          "description": "Use HTTP instead of HTTPS for the registry."
+        }
+      },
+      "required": [
+        "command",
+        "ref"
+      ],
+      "additionalProperties": false
+    },
+    "step.pull": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "pull",
+          "description": "Which command to run."
+        },
+        "name": {
+          "description": "Step name for ${name.field} references; must be unique.",
+          "type": "string",
+          "minLength": 1
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "push / pull only: registry reference, e.g. localhost:5000/myrepo:1.0."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Registry username (package.* / auth.login)."
+        },
+        "password": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Registry password (package.* / auth.login)."
+        },
+        "plainHttp": {
+          "type": "boolean",
+          "description": "Use HTTP instead of HTTPS for the registry."
+        }
+      },
+      "required": [
+        "command",
+        "ref"
+      ],
+      "additionalProperties": false
+    },
+    "single.pull": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "pull",
+          "description": "Which command to run."
+        },
+        "$schema": {
+          "description": "Optional schema reference (ignored).",
+          "type": "string"
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "push / pull only: registry reference, e.g. localhost:5000/myrepo:1.0."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull."
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Registry username (package.* / auth.login)."
+        },
+        "password": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Registry password (package.* / auth.login)."
+        },
+        "plainHttp": {
+          "type": "boolean",
+          "description": "Use HTTP instead of HTTPS for the registry."
+        }
+      },
+      "required": [
+        "command",
+        "ref"
+      ],
+      "additionalProperties": false
+    },
+    "step.auth.login": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "auth.login",
+          "description": "Which command to run."
+        },
+        "name": {
+          "description": "Step name for ${name.field} references; must be unique.",
+          "type": "string",
+          "minLength": 1
+        },
+        "registry": {
+          "type": "string",
+          "minLength": 1,
+          "description": "auth.login / auth.logout only: registry host[:port]."
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Registry username (package.* / auth.login)."
+        },
+        "password": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Registry password (package.* / auth.login)."
+        }
+      },
+      "required": [
+        "command",
+        "registry"
+      ],
+      "additionalProperties": false
+    },
+    "single.auth.login": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "auth.login",
+          "description": "Which command to run."
+        },
+        "$schema": {
+          "description": "Optional schema reference (ignored).",
+          "type": "string"
+        },
+        "registry": {
+          "type": "string",
+          "minLength": 1,
+          "description": "auth.login / auth.logout only: registry host[:port]."
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Registry username (package.* / auth.login)."
+        },
+        "password": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Registry password (package.* / auth.login)."
+        }
+      },
+      "required": [
+        "command",
+        "registry"
+      ],
+      "additionalProperties": false
+    },
+    "step.auth.logout": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "auth.logout",
+          "description": "Which command to run."
+        },
+        "name": {
+          "description": "Step name for ${name.field} references; must be unique.",
+          "type": "string",
+          "minLength": 1
+        },
+        "registry": {
+          "type": "string",
+          "minLength": 1,
+          "description": "auth.login / auth.logout only: registry host[:port]."
+        }
+      },
+      "required": [
+        "command",
+        "registry"
+      ],
+      "additionalProperties": false
+    },
+    "single.auth.logout": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "auth.logout",
+          "description": "Which command to run."
+        },
+        "$schema": {
+          "description": "Optional schema reference (ignored).",
+          "type": "string"
+        },
+        "registry": {
+          "type": "string",
+          "minLength": 1,
+          "description": "auth.login / auth.logout only: registry host[:port]."
+        }
+      },
+      "required": [
+        "command",
+        "registry"
+      ],
+      "additionalProperties": false
+    },
+    "step.config.get": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "config.get",
+          "description": "Which command to run."
+        },
+        "name": {
+          "description": "Step name for ${name.field} references; must be unique.",
+          "type": "string",
+          "minLength": 1
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "description": "config.get / config.set only: dotted config key."
+        }
+      },
+      "required": [
+        "command",
+        "key"
+      ],
+      "additionalProperties": false
+    },
+    "single.config.get": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "config.get",
+          "description": "Which command to run."
+        },
+        "$schema": {
+          "description": "Optional schema reference (ignored).",
+          "type": "string"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "description": "config.get / config.set only: dotted config key."
+        }
+      },
+      "required": [
+        "command",
+        "key"
+      ],
+      "additionalProperties": false
+    },
+    "step.config.set": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "config.set",
+          "description": "Which command to run."
+        },
+        "name": {
+          "description": "Step name for ${name.field} references; must be unique.",
+          "type": "string",
+          "minLength": 1
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "description": "config.get / config.set only: dotted config key."
+        },
+        "value": {
+          "description": "config.set only: the value to store (typed JSON).",
+          "$ref": "#/$defs/__schema0"
+        }
+      },
+      "required": [
+        "command",
+        "key",
+        "value"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "__schema0": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/__schema0"
+              }
+            },
+            {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/__schema0"
+              }
+            }
+          ]
+        }
       }
     },
-    "command": {
-      "description": "Which command to run.",
-      "enum": [
-        "generate.text2text",
-        "generate.image2text",
-        "generate.video2text",
-        "generate.text2image",
-        "generate.image2image",
-        "generate.text2video",
-        "generate.image2video",
-        "generate.frames2video",
-        "generate.embed",
-        "generate.resume",
-        "build",
-        "push",
-        "pull",
-        "auth.login",
-        "auth.logout",
-        "config.path",
-        "config.list",
-        "config.get",
-        "config.set",
-        "config.reset",
-        "models"
-      ]
-    },
-    "provider": {
-      "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider).",
-      "type": "string",
-      "minLength": 1
-    },
-    "model": {
-      "description": "Model id (overrides any model in 'provider').",
-      "type": "string",
-      "minLength": 1
-    },
-    "prompt": {
-      "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text).",
-      "type": "string",
-      "minLength": 1
-    },
-    "system": {
-      "description": "System prompt (generate.text2text only).",
-      "type": "string"
-    },
-    "images": {
-      "description": "Reference image(s): http(s)/data URL, local path, or pkg://path into a recipe package. Repeatable as --image. Exactly one for image2image and image2video.",
-      "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }]
-    },
-    "firstFrame": {
-      "description": "generate.frames2video only: first frame image.",
-      "type": "string",
-      "minLength": 1
-    },
-    "lastFrame": {
-      "description": "generate.frames2video only: last frame image.",
-      "type": "string",
-      "minLength": 1
-    },
-    "inputs": {
-      "description": "Media attachments (generate.image2text / video2text) or texts to embed (generate.embed). Repeatable as --input.",
-      "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }]
-    },
-    "options": {
-      "description": "Provider-specific options (passed as --opt k=v).",
-      "type": "object"
-    },
-    "noWait": {
-      "description": "Video tasks only: submit and print the task handle without polling.",
-      "type": "boolean"
-    },
-    "timeout": {
-      "description": "Video tasks and resume: polling timeout, duration string (e.g. \"5m\") or milliseconds.",
-      "oneOf": [{ "type": "string" }, { "type": "number", "exclusiveMinimum": 0 }]
-    },
-    "interval": {
-      "description": "Video tasks and resume: polling interval, duration string (e.g. \"5s\") or milliseconds.",
-      "oneOf": [{ "type": "string" }, { "type": "number", "exclusiveMinimum": 0 }]
-    },
-    "output": {
-      "description": "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull.",
-      "type": "string"
-    },
-    "tag": {
-      "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference.",
-      "type": "string"
-    },
-    "noPack": {
-      "description": "Media tasks only: return artifacts without building a result package.",
-      "type": "boolean"
-    },
-    "handle": {
-      "description": "generate.resume only: the saved task handle (object or inline JSON string).",
-      "oneOf": [{ "type": "object" }, { "type": "string" }]
-    },
-    "file": {
-      "description": "Build manifest path (build).",
-      "type": "string"
-    },
-    "dir": {
-      "description": "build only: local directory packed as the top layer.",
-      "type": "string"
-    },
-    "annotations": {
-      "description": "build only: manifest annotations.",
+    "single.config.set": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
-      "additionalProperties": { "type": "string" }
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "config.set",
+          "description": "Which command to run."
+        },
+        "$schema": {
+          "description": "Optional schema reference (ignored).",
+          "type": "string"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "description": "config.get / config.set only: dotted config key."
+        },
+        "value": {
+          "description": "config.set only: the value to store (typed JSON).",
+          "$ref": "#/$defs/__schema0"
+        }
+      },
+      "required": [
+        "command",
+        "key",
+        "value"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "__schema0": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/__schema0"
+              }
+            },
+            {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/__schema0"
+              }
+            }
+          ]
+        }
+      }
     },
-    "ref": {
-      "description": "push / pull only: registry reference, e.g. localhost:5000/myrepo:1.0.",
-      "type": "string"
+    "step.models": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "models",
+          "description": "Which command to run."
+        },
+        "name": {
+          "description": "Step name for ${name.field} references; must be unique.",
+          "type": "string",
+          "minLength": 1
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
     },
-    "layout": {
-      "description": "push only: OCI layout directory (default ./oci-layout).",
-      "type": "string"
+    "single.models": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "models",
+          "description": "Which command to run."
+        },
+        "$schema": {
+          "description": "Optional schema reference (ignored).",
+          "type": "string"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
     },
-    "registry": {
-      "description": "auth.login / auth.logout only: registry host[:port].",
-      "type": "string"
+    "step.config.path": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "config.path",
+          "description": "Which command to run."
+        },
+        "name": {
+          "description": "Step name for ${name.field} references; must be unique.",
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
     },
-    "username": {
-      "description": "Registry username (package.* / auth.login).",
-      "type": "string"
+    "single.config.path": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "config.path",
+          "description": "Which command to run."
+        },
+        "$schema": {
+          "description": "Optional schema reference (ignored).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
     },
-    "password": {
-      "description": "Registry password (package.* / auth.login).",
-      "type": "string"
+    "step.config.list": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "config.list",
+          "description": "Which command to run."
+        },
+        "name": {
+          "description": "Step name for ${name.field} references; must be unique.",
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
     },
-    "plainHttp": {
-      "description": "Use HTTP instead of HTTPS for the registry.",
-      "type": "boolean"
+    "single.config.list": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "config.list",
+          "description": "Which command to run."
+        },
+        "$schema": {
+          "description": "Optional schema reference (ignored).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
     },
-    "key": {
-      "description": "config.get / config.set only: dotted config key.",
-      "type": "string"
+    "step.config.reset": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "config.reset",
+          "description": "Which command to run."
+        },
+        "name": {
+          "description": "Step name for ${name.field} references; must be unique.",
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
     },
-    "value": {
-      "description": "config.set only: the value to store (typed JSON)."
-    },
-    "$schema": {
-      "description": "Optional schema reference (ignored).",
-      "type": "string"
+    "single.config.reset": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "config.reset",
+          "description": "Which command to run."
+        },
+        "$schema": {
+          "description": "Optional schema reference (ignored).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
     }
   },
-  "additionalProperties": true
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/step.generate.text2text"
+              },
+              {
+                "$ref": "#/$defs/step.generate.image2text"
+              },
+              {
+                "$ref": "#/$defs/step.generate.video2text"
+              },
+              {
+                "$ref": "#/$defs/step.generate.text2image"
+              },
+              {
+                "$ref": "#/$defs/step.generate.image2image"
+              },
+              {
+                "$ref": "#/$defs/step.generate.text2video"
+              },
+              {
+                "$ref": "#/$defs/step.generate.image2video"
+              },
+              {
+                "$ref": "#/$defs/step.generate.frames2video"
+              },
+              {
+                "$ref": "#/$defs/step.generate.embed"
+              },
+              {
+                "$ref": "#/$defs/step.generate.resume"
+              },
+              {
+                "$ref": "#/$defs/step.build"
+              },
+              {
+                "$ref": "#/$defs/step.push"
+              },
+              {
+                "$ref": "#/$defs/step.pull"
+              },
+              {
+                "$ref": "#/$defs/step.auth.login"
+              },
+              {
+                "$ref": "#/$defs/step.auth.logout"
+              },
+              {
+                "$ref": "#/$defs/step.config.get"
+              },
+              {
+                "$ref": "#/$defs/step.config.set"
+              },
+              {
+                "$ref": "#/$defs/step.models"
+              },
+              {
+                "$ref": "#/$defs/step.config.path"
+              },
+              {
+                "$ref": "#/$defs/step.config.list"
+              },
+              {
+                "$ref": "#/$defs/step.config.reset"
+              }
+            ]
+          },
+          "description": "Pipeline form: steps run sequentially, fail fast, and resolve `${step.field}` references to earlier steps' results."
+        },
+        "$schema": {
+          "type": "string",
+          "description": "Optional schema reference (ignored)."
+        }
+      },
+      "required": [
+        "steps"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/single.generate.text2text"
+        },
+        {
+          "$ref": "#/$defs/single.generate.image2text"
+        },
+        {
+          "$ref": "#/$defs/single.generate.video2text"
+        },
+        {
+          "$ref": "#/$defs/single.generate.text2image"
+        },
+        {
+          "$ref": "#/$defs/single.generate.image2image"
+        },
+        {
+          "$ref": "#/$defs/single.generate.text2video"
+        },
+        {
+          "$ref": "#/$defs/single.generate.image2video"
+        },
+        {
+          "$ref": "#/$defs/single.generate.frames2video"
+        },
+        {
+          "$ref": "#/$defs/single.generate.embed"
+        },
+        {
+          "$ref": "#/$defs/single.generate.resume"
+        },
+        {
+          "$ref": "#/$defs/single.build"
+        },
+        {
+          "$ref": "#/$defs/single.push"
+        },
+        {
+          "$ref": "#/$defs/single.pull"
+        },
+        {
+          "$ref": "#/$defs/single.auth.login"
+        },
+        {
+          "$ref": "#/$defs/single.auth.logout"
+        },
+        {
+          "$ref": "#/$defs/single.config.get"
+        },
+        {
+          "$ref": "#/$defs/single.config.set"
+        },
+        {
+          "$ref": "#/$defs/single.models"
+        },
+        {
+          "$ref": "#/$defs/single.config.path"
+        },
+        {
+          "$ref": "#/$defs/single.config.list"
+        },
+        {
+          "$ref": "#/$defs/single.config.reset"
+        }
+      ]
+    }
+  ]
 }

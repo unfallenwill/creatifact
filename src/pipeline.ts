@@ -1,3 +1,4 @@
+import { REFERENCEABLE } from "./contract"
 import { CliError, usageError } from "./errors"
 import type { CommandResult } from "./execute"
 import { executeCommand } from "./execute"
@@ -24,16 +25,18 @@ const PLACEHOLDER_RE =
 function referencableFields(result: CommandResult): string[] {
   switch (result.kind) {
     case "build":
-      return ["tag", "digest", "outputDir"]
+      return [...REFERENCEABLE.build]
     case "push":
-      return ["tag", "digest"]
+      return [...REFERENCEABLE.push]
     case "pull":
-      return ["outputDir", "digest"]
+      return [...REFERENCEABLE.pull]
     case "generate": {
       // Structured payloads are referenceable when present: a text2text step
       // exposes `${writer.text}`, embed exposes `${e.vectors}` — so a
       // text2image / image2video step can chain on a generated prompt.
-      const scalar = ["tag", "digest", "outputDir", "text", "vectors", "dimensions"].filter(
+      // The field list lives in contract.ts (compile-time locked to the
+      // result types); here we only presence-filter at runtime.
+      const scalar: string[] = REFERENCEABLE.generate.filter(
         (field) => (result as unknown as Record<string, unknown>)[field] !== undefined,
       )
       if (result.artifacts !== undefined) scalar.push("artifacts[N].url", "artifacts[N].base64")
