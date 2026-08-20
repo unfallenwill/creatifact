@@ -1816,13 +1816,13 @@ describe("cli -f file-driven — integration", () => {
     }
   })
 
-  it("runs a steps pipeline: text2image → image2image with artifact refs", async () => {
+  it("runs a pipeline: text2image → image2image with artifact refs", async () => {
     const { env, dir, recordPath } = demoEnv()
     const pipelinePath = path.join(dir, "pipeline.json")
     writeFileSync(
       pipelinePath,
       JSON.stringify({
-        steps: [
+        pipeline: [
           {
             name: "s1",
             command: "generate.text2image",
@@ -1865,14 +1865,14 @@ describe("cli -f file-driven — integration", () => {
     }
   })
 
-  it("runs a steps pipeline: text2text → text2image chained on the writer's text", async () => {
+  it("runs a pipeline: text2text → text2image chained on the writer's text", async () => {
     const { env, dir, recordPath } = demoEnv()
     const pipelinePath = path.join(dir, "pipeline.json")
     const resultDir = path.join(dir, "result")
     writeFileSync(
       pipelinePath,
       JSON.stringify({
-        steps: [
+        pipeline: [
           {
             name: "writer",
             command: "generate.text2text",
@@ -1941,7 +1941,7 @@ describe("cli -f file-driven — integration", () => {
     writeFileSync(
       pipelinePath,
       JSON.stringify({
-        steps: [
+        pipeline: [
           {
             name: "writer",
             command: "generate.text2text",
@@ -1989,7 +1989,7 @@ describe("cli -f file-driven — integration", () => {
     writeFileSync(
       pipelinePath,
       JSON.stringify({
-        steps: [
+        pipeline: [
           {
             name: "img",
             command: "generate.text2image",
@@ -2198,26 +2198,93 @@ export default (settings) => ({
     }
   })
 
-  it("rejects steps files: command+steps mix, flag overlay, forward refs", async () => {
+  it("runs a parallel file: independent entries run concurrently, references order them", async () => {
+    const { env, dir } = demoEnv()
+    const parallelPath = path.join(dir, "parallel.json")
+    writeFileSync(
+      parallelPath,
+      JSON.stringify({
+        parallel: [
+          {
+            name: "img1",
+            command: "generate.text2image",
+            provider: "demo/demo-image-t2i",
+            prompt: "a cat",
+            tag: "par/cat:1",
+          },
+          {
+            name: "img2",
+            command: "generate.text2image",
+            provider: "demo/demo-image-t2i",
+            prompt: "a dog",
+            tag: "par/dog:1",
+          },
+          {
+            name: "combo",
+            command: "build",
+            tag: "par/combo:1",
+            // biome-ignore lint/suspicious/noTemplateCurlyInString: fixture for the ${...} reference syntax
+            annotations: { cat: "${img1.tag}", dog: "${img2.tag}" },
+          },
+        ],
+      }),
+    )
+    try {
+      const r = await run(["-f", parallelPath], undefined, env)
+      expect(r.code).toBe(0)
+      // Human logs (Built ...) share stdout by legacy contract; the JSON
+      // envelope is the last line.
+      const lastLine = r.stdout.trimEnd().split("\n").filter(Boolean).at(-1) ?? ""
+      const out = JSON.parse(lastLine) as { data: { steps: Array<{ name?: string }> } }
+      expect(out.data.steps.map((s) => s.name)).toEqual(["img1", "img2", "combo"])
+      const combo = out.data.steps.find((s) => s.name === "combo")
+      expect(combo).toBeDefined()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("parallel failure skips not-yet-started entries and reports them", async () => {
+    const { env, dir } = demoEnv()
+    const parallelPath = path.join(dir, "parallel-fail.json")
+    writeFileSync(
+      parallelPath,
+      JSON.stringify({
+        parallel: [
+          { name: "boom", command: "generate.text2image", provider: "nope", prompt: "x" },
+          { name: "after", command: "models", provider: "demo" },
+        ],
+      }),
+    )
+    try {
+      const r = await run(["-f", parallelPath], undefined, env)
+      expect(r.code).toBeGreaterThan(0)
+      expect(r.stderr).toContain("step 'boom'")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects pipeline files: command+pipeline mix, flag overlay, forward refs", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "creatifact-steps-err-"))
     try {
       const mixed = path.join(dir, "mixed.json")
-      writeFileSync(mixed, JSON.stringify({ command: "models", steps: [{ command: "models" }] }))
+      writeFileSync(mixed, JSON.stringify({ command: "models", pipeline: [{ command: "models" }] }))
       const r1 = await run(["-f", mixed])
       expect(r1.code).toBe(2)
-      expectErr(r1, "E_USAGE", "cannot have both 'command' and 'steps'")
+      expectErr(r1, "E_USAGE", "cannot have both 'command' and 'pipeline'")
 
       const overlay = path.join(dir, "overlay.json")
-      writeFileSync(overlay, JSON.stringify({ steps: [{ command: "models" }] }))
+      writeFileSync(overlay, JSON.stringify({ pipeline: [{ command: "models" }] }))
       const r2 = await run(["-f", overlay, "--provider", "demo"])
       expect(r2.code).toBe(2)
-      expectErr(r2, "E_USAGE", "flags are not supported with a steps file")
+      expectErr(r2, "E_USAGE", "flags are not supported with a pipeline file")
 
       const forward = path.join(dir, "forward.json")
       writeFileSync(
         forward,
         JSON.stringify({
-          steps: [
+          pipeline: [
             { name: "a", command: "models" },
             { command: "models", fields: { v: `\${later.x}` } },
           ],

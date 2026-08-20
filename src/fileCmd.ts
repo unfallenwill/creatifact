@@ -1,4 +1,4 @@
-import { defaultGenProvider, loadConfig } from "./config"
+import { defaultGenProvider, loadConfig, parallelConcurrency } from "./config"
 import { usageError } from "./errors"
 import { type CommandResult, executeCommand, resultData } from "./execute"
 import {
@@ -10,7 +10,7 @@ import {
   TASKS,
 } from "./generate"
 import { interruptSignal } from "./interrupt"
-import { runPipeline } from "./pipeline"
+import { type PipelineRunResult, runParallel, runPipeline } from "./pipeline"
 import { listConfiguredProviderIds } from "./providers"
 import {
   commandRequestFromFields,
@@ -19,10 +19,34 @@ import {
   readRequestFile,
 } from "./requestFile"
 
-/** A pipeline summary: per-step kind + data (the envelope's data). */
+/** A pipeline summary: per-step kind + data (the envelope's data), plus
+ * steps that never ran when a failure skips the rest. */
 export interface PipelineSummary {
   kind: "pipeline"
   steps: Array<{ name?: string; command: string; kind: string; data: Record<string, unknown> }>
+  skipped?: Array<{ name?: string; command: string; reason: string }>
+}
+
+/** Render a steps/parallel run as the pipeline summary envelope. */
+function pipelineSummary(run: PipelineRunResult): PipelineSummary {
+  return {
+    kind: "pipeline",
+    steps: run.steps.map((s) => ({
+      ...(s.name === undefined ? {} : { name: s.name }),
+      command: s.command,
+      kind: s.result.kind,
+      data: resultData(s.result),
+    })),
+    ...(run.skipped.length === 0
+      ? {}
+      : {
+          skipped: run.skipped.map((s) => ({
+            ...(s.name === undefined ? {} : { name: s.name }),
+            command: s.command,
+            reason: s.reason,
+          })),
+        }),
+  }
 }
 
 export type FileRunResult = CommandResult | PipelineSummary
@@ -67,23 +91,27 @@ export async function runFileFromArgs(
   }
   const parsed = readRequestFile(file)
 
-  if ("steps" in parsed) {
+  if ("parallel" in parsed) {
     if (args.length > 1) {
-      throw usageError("command-line flags are not supported with a steps file")
+      throw usageError("command-line flags are not supported with a parallel file")
     }
-    const run = await runPipeline(parsed.steps, {
+    const run = await runParallel(parsed.parallel, {
+      configPath: opts.configPath,
+      signal: interruptSignal(),
+      concurrency: parallelConcurrency(loadConfig(opts.configPath)),
+    })
+    return pipelineSummary(run)
+  }
+
+  if ("pipeline" in parsed) {
+    if (args.length > 1) {
+      throw usageError("command-line flags are not supported with a pipeline file")
+    }
+    const run = await runPipeline(parsed.pipeline, {
       configPath: opts.configPath,
       signal: interruptSignal(),
     })
-    return {
-      kind: "pipeline",
-      steps: run.steps.map((s) => ({
-        ...(s.name === undefined ? {} : { name: s.name }),
-        command: s.command,
-        kind: s.result.kind,
-        data: resultData(s.result),
-      })),
-    }
+    return pipelineSummary(run)
   }
 
   const { command, fields } = parsed

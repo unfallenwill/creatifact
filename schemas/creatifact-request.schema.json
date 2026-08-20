@@ -2,9 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-request.schema.json",
   "title": "Creatifact request file",
-  "description": "Describes one Creatifact command (or a `steps` pipeline) to run via `creatifact -f <file>.json`. Single-command form: the 'command' field selects the command; the remaining fields map to its arguments, and command-line flags after the file override generate.* fields. Pipeline form: a `steps` array runs sequentially, fails fast, and resolves `${step.field}` references to earlier steps' results (tag/digest/outputDir/text/vectors/dimensions/artifacts[N].url).",
+  "description": "Describes one Creatifact command (or a pipeline/parallel run) to run via `creatifact -f <file>.json`. Single-command form: the 'command' field selects the command; the remaining fields map to its arguments, and command-line flags after the file override generate.* fields. Pipeline form: a `pipeline` array runs sequentially, fails fast, and resolves `${name.field}` references to earlier steps' results (tag/digest/outputDir/text/vectors/dimensions/artifacts[N].url). Parallel form: a `parallel` array runs entries as a dependency graph with concurrent independent steps.",
   "$defs": {
-    "step.generate.text2text": {
+    "entry.generate.text2text": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
@@ -119,7 +119,7 @@
       ],
       "additionalProperties": false
     },
-    "step.generate.image2text": {
+    "entry.generate.image2text": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
@@ -256,7 +256,7 @@
       ],
       "additionalProperties": false
     },
-    "step.generate.video2text": {
+    "entry.generate.video2text": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
@@ -393,7 +393,7 @@
       ],
       "additionalProperties": false
     },
-    "step.generate.text2image": {
+    "entry.generate.text2image": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
@@ -506,7 +506,7 @@
       ],
       "additionalProperties": false
     },
-    "step.generate.image2image": {
+    "entry.generate.image2image": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
@@ -651,7 +651,7 @@
       ],
       "additionalProperties": false
     },
-    "step.generate.text2video": {
+    "entry.generate.text2video": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
@@ -816,7 +816,7 @@
       ],
       "additionalProperties": false
     },
-    "step.generate.image2video": {
+    "entry.generate.image2video": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
@@ -1013,7 +1013,7 @@
       ],
       "additionalProperties": false
     },
-    "step.generate.frames2video": {
+    "entry.generate.frames2video": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
@@ -1198,7 +1198,7 @@
       ],
       "additionalProperties": false
     },
-    "step.generate.embed": {
+    "entry.generate.embed": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
@@ -1325,7 +1325,7 @@
       ],
       "additionalProperties": false
     },
-    "step.generate.resume": {
+    "entry.generate.resume": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
@@ -1470,7 +1470,7 @@
       ],
       "additionalProperties": false
     },
-    "step.build": {
+    "entry.build": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
@@ -1595,7 +1595,7 @@
       ],
       "additionalProperties": false
     },
-    "step.push": {
+    "entry.push": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
@@ -1684,7 +1684,7 @@
       ],
       "additionalProperties": false
     },
-    "step.pull": {
+    "entry.pull": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
@@ -1773,7 +1773,7 @@
       ],
       "additionalProperties": false
     },
-    "step.auth.login": {
+    "entry.auth.login": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
@@ -1844,7 +1844,7 @@
       ],
       "additionalProperties": false
     },
-    "step.auth.logout": {
+    "entry.auth.logout": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
@@ -1895,7 +1895,7 @@
       ],
       "additionalProperties": false
     },
-    "step.config.get": {
+    "entry.config.get": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
@@ -1946,7 +1946,7 @@
       ],
       "additionalProperties": false
     },
-    "step.config.set": {
+    "entry.config.set": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
@@ -2073,7 +2073,7 @@
         }
       }
     },
-    "step.models": {
+    "entry.models": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
@@ -2122,7 +2122,7 @@
       ],
       "additionalProperties": false
     },
-    "step.config.path": {
+    "entry.config.path": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
@@ -2161,7 +2161,7 @@
       ],
       "additionalProperties": false
     },
-    "step.config.list": {
+    "entry.config.list": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
@@ -2200,7 +2200,7 @@
       ],
       "additionalProperties": false
     },
-    "step.config.reset": {
+    "entry.config.reset": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
@@ -2244,77 +2244,77 @@
     {
       "type": "object",
       "properties": {
-        "steps": {
+        "pipeline": {
           "type": "array",
           "minItems": 1,
           "items": {
             "anyOf": [
               {
-                "$ref": "#/$defs/step.generate.text2text"
+                "$ref": "#/$defs/entry.generate.text2text"
               },
               {
-                "$ref": "#/$defs/step.generate.image2text"
+                "$ref": "#/$defs/entry.generate.image2text"
               },
               {
-                "$ref": "#/$defs/step.generate.video2text"
+                "$ref": "#/$defs/entry.generate.video2text"
               },
               {
-                "$ref": "#/$defs/step.generate.text2image"
+                "$ref": "#/$defs/entry.generate.text2image"
               },
               {
-                "$ref": "#/$defs/step.generate.image2image"
+                "$ref": "#/$defs/entry.generate.image2image"
               },
               {
-                "$ref": "#/$defs/step.generate.text2video"
+                "$ref": "#/$defs/entry.generate.text2video"
               },
               {
-                "$ref": "#/$defs/step.generate.image2video"
+                "$ref": "#/$defs/entry.generate.image2video"
               },
               {
-                "$ref": "#/$defs/step.generate.frames2video"
+                "$ref": "#/$defs/entry.generate.frames2video"
               },
               {
-                "$ref": "#/$defs/step.generate.embed"
+                "$ref": "#/$defs/entry.generate.embed"
               },
               {
-                "$ref": "#/$defs/step.generate.resume"
+                "$ref": "#/$defs/entry.generate.resume"
               },
               {
-                "$ref": "#/$defs/step.build"
+                "$ref": "#/$defs/entry.build"
               },
               {
-                "$ref": "#/$defs/step.push"
+                "$ref": "#/$defs/entry.push"
               },
               {
-                "$ref": "#/$defs/step.pull"
+                "$ref": "#/$defs/entry.pull"
               },
               {
-                "$ref": "#/$defs/step.auth.login"
+                "$ref": "#/$defs/entry.auth.login"
               },
               {
-                "$ref": "#/$defs/step.auth.logout"
+                "$ref": "#/$defs/entry.auth.logout"
               },
               {
-                "$ref": "#/$defs/step.config.get"
+                "$ref": "#/$defs/entry.config.get"
               },
               {
-                "$ref": "#/$defs/step.config.set"
+                "$ref": "#/$defs/entry.config.set"
               },
               {
-                "$ref": "#/$defs/step.models"
+                "$ref": "#/$defs/entry.models"
               },
               {
-                "$ref": "#/$defs/step.config.path"
+                "$ref": "#/$defs/entry.config.path"
               },
               {
-                "$ref": "#/$defs/step.config.list"
+                "$ref": "#/$defs/entry.config.list"
               },
               {
-                "$ref": "#/$defs/step.config.reset"
+                "$ref": "#/$defs/entry.config.reset"
               }
             ]
           },
-          "description": "Pipeline form: steps run sequentially, fail fast, and resolve `${step.field}` references to earlier steps' results."
+          "description": "Pipeline form: entries run sequentially, fail fast, and resolve `${name.field}` references to earlier steps' results."
         },
         "$schema": {
           "type": "string",
@@ -2322,7 +2322,92 @@
         }
       },
       "required": [
-        "steps"
+        "pipeline"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "parallel": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/entry.generate.text2text"
+              },
+              {
+                "$ref": "#/$defs/entry.generate.image2text"
+              },
+              {
+                "$ref": "#/$defs/entry.generate.video2text"
+              },
+              {
+                "$ref": "#/$defs/entry.generate.text2image"
+              },
+              {
+                "$ref": "#/$defs/entry.generate.image2image"
+              },
+              {
+                "$ref": "#/$defs/entry.generate.text2video"
+              },
+              {
+                "$ref": "#/$defs/entry.generate.image2video"
+              },
+              {
+                "$ref": "#/$defs/entry.generate.frames2video"
+              },
+              {
+                "$ref": "#/$defs/entry.generate.embed"
+              },
+              {
+                "$ref": "#/$defs/entry.generate.resume"
+              },
+              {
+                "$ref": "#/$defs/entry.build"
+              },
+              {
+                "$ref": "#/$defs/entry.push"
+              },
+              {
+                "$ref": "#/$defs/entry.pull"
+              },
+              {
+                "$ref": "#/$defs/entry.auth.login"
+              },
+              {
+                "$ref": "#/$defs/entry.auth.logout"
+              },
+              {
+                "$ref": "#/$defs/entry.config.get"
+              },
+              {
+                "$ref": "#/$defs/entry.config.set"
+              },
+              {
+                "$ref": "#/$defs/entry.models"
+              },
+              {
+                "$ref": "#/$defs/entry.config.path"
+              },
+              {
+                "$ref": "#/$defs/entry.config.list"
+              },
+              {
+                "$ref": "#/$defs/entry.config.reset"
+              }
+            ]
+          },
+          "description": "Parallel form: entries run as a dependency graph — every `${name.field}` reference is a scheduling edge, independent entries run concurrently (width: config defaults.pipeline.concurrency), and a failure skips the not-yet-started."
+        },
+        "$schema": {
+          "type": "string",
+          "description": "Optional schema reference (ignored)."
+        }
+      },
+      "required": [
+        "parallel"
       ],
       "additionalProperties": false
     },

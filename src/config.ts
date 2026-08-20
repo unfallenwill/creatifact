@@ -197,6 +197,18 @@ export function defaultGenProvider(config: CreatifactConfig): string | undefined
   return typeof provider === "string" && provider !== "" ? provider : undefined
 }
 
+/** Default parallel-pipeline width: config key `defaults.pipeline.concurrency`.
+ * Positive integer; 0 = unlimited. Falls back to 4 when unset or invalid. */
+export function parallelConcurrency(config: CreatifactConfig): number {
+  const defaults = config["defaults"]
+  if (typeof defaults !== "object" || defaults === null) return 4
+  const pipeline = (defaults as Record<string, unknown>)["pipeline"]
+  if (typeof pipeline !== "object" || pipeline === null) return 4
+  const value = (pipeline as Record<string, unknown>)["concurrency"]
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) return 4
+  return value
+}
+
 /**
  * Credential resolution order:
  *   1. complete CLI pair (--username AND --password/--password-stdin)

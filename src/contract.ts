@@ -654,19 +654,19 @@ const buildManifestFileSchema = z.looseObject({
 
 /**
  * schemas/creatifact-request.schema.json, assembled from the contract: one
- * named def per command (step and single variants), then a tiny root union
- * of the two request-file forms. The variants differ exactly as the runtime
- * treats them — steps take `name`, the single form takes `$schema` — and
- * neither form ever nests the other's keys (strictObject), so
- * command/steps exclusivity falls out of the closed shapes. Built lazily;
- * the CLI only pays for this when the schema is actually requested.
+ * named def per command (pipeline and single variants), then a tiny root
+ * union of the three request-file forms. The variants differ exactly as the
+ * runtime treats them — pipeline/parallel entries take `name`, the single
+ * form takes `$schema` — and no form ever nests another's keys
+ * (strictObject), so their exclusivity falls out of the closed shapes. Built
+ * lazily; the CLI only pays for this when the schema is actually requested.
  */
 export function requestFileSchemaJson(): JsonSchema {
   const defs: Record<string, JsonSchema> = {}
-  const stepItems: JsonSchema[] = []
+  const entryItems: JsonSchema[] = []
   const singles: JsonSchema[] = []
   for (const [command, fields, required] of commandBranchSpecs()) {
-    defs[`step.${command}`] = z.toJSONSchema(
+    defs[`entry.${command}`] = z.toJSONSchema(
       commandBranch(command, fields, required, { name: stepNameField }),
       SCHEMA_TARGET,
     ) as JsonSchema
@@ -674,32 +674,45 @@ export function requestFileSchemaJson(): JsonSchema {
       commandBranch(command, fields, required, { $schema: schemaRefField }),
       SCHEMA_TARGET,
     ) as JsonSchema
-    stepItems.push({ $ref: `#/$defs/step.${command}` })
+    entryItems.push({ $ref: `#/$defs/entry.${command}` })
     singles.push({ $ref: `#/$defs/single.${command}` })
   }
+  const entryArray = (kind: "pipeline" | "parallel"): JsonSchema => ({
+    type: "array",
+    minItems: 1,
+    items: { anyOf: entryItems },
+    description:
+      kind === "pipeline"
+        ? // biome-ignore lint/suspicious/noTemplateCurlyInString: documents the ${...} placeholder syntax
+          "Pipeline form: entries run sequentially, fail fast, and resolve `${name.field}` references to earlier steps' results."
+        : // biome-ignore lint/suspicious/noTemplateCurlyInString: documents the ${...} placeholder syntax
+          "Parallel form: entries run as a dependency graph — every `${name.field}` reference is a scheduling edge, independent entries run concurrently (width: config defaults.pipeline.concurrency), and a failure skips the not-yet-started.",
+  })
   return {
     $schema: "https://json-schema.org/draft/2020-12/schema",
     $id: "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-request.schema.json",
     title: "Creatifact request file",
     description:
       // biome-ignore lint/suspicious/noTemplateCurlyInString: documents the ${...} placeholder syntax
-      "Describes one Creatifact command (or a `steps` pipeline) to run via `creatifact -f <file>.json`. Single-command form: the 'command' field selects the command; the remaining fields map to its arguments, and command-line flags after the file override generate.* fields. Pipeline form: a `steps` array runs sequentially, fails fast, and resolves `${step.field}` references to earlier steps' results (tag/digest/outputDir/text/vectors/dimensions/artifacts[N].url).",
+      "Describes one Creatifact command (or a pipeline/parallel run) to run via `creatifact -f <file>.json`. Single-command form: the 'command' field selects the command; the remaining fields map to its arguments, and command-line flags after the file override generate.* fields. Pipeline form: a `pipeline` array runs sequentially, fails fast, and resolves `${name.field}` references to earlier steps' results (tag/digest/outputDir/text/vectors/dimensions/artifacts[N].url). Parallel form: a `parallel` array runs entries as a dependency graph with concurrent independent steps.",
     $defs: defs,
     anyOf: [
       {
         type: "object",
         properties: {
-          steps: {
-            type: "array",
-            minItems: 1,
-            items: { anyOf: stepItems },
-            description:
-              // biome-ignore lint/suspicious/noTemplateCurlyInString: documents the ${...} placeholder syntax
-              "Pipeline form: steps run sequentially, fail fast, and resolve `${step.field}` references to earlier steps' results.",
-          },
+          pipeline: entryArray("pipeline"),
           $schema: { type: "string", description: "Optional schema reference (ignored)." },
         },
-        required: ["steps"],
+        required: ["pipeline"],
+        additionalProperties: false,
+      },
+      {
+        type: "object",
+        properties: {
+          parallel: entryArray("parallel"),
+          $schema: { type: "string", description: "Optional schema reference (ignored)." },
+        },
+        required: ["parallel"],
         additionalProperties: false,
       },
       { anyOf: singles },

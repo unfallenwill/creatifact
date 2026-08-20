@@ -37,7 +37,8 @@ Failure:
 
 - `kind` is the command: `build` · `push` · `pull` · `generate` · `login` ·
   `logout` · `models` · `config` · `package.list` · `package.rm` · `pipeline`
-  (a `-f` steps file). Parse-time errors (unknown command/option) omit `kind`.
+  (a `-f` pipeline/parallel file). Parse-time errors (unknown command/option)
+  omit `kind`.
 - `--pretty` (global flag) switches stdout to indented JSON, colorized on
   interactive terminals; piped `--pretty` stays byte-identical plain JSON.
 - `--help` / `--version` / bare invocation stay human text (meta output).
@@ -141,15 +142,15 @@ commands, flags after the file override the file's fields (CLI wins):
 creatifact -f request.json --prompt "a red crane" --opt size=2048x2048
 ```
 
-### Pipelines (`steps`)
+### Pipelines (`pipeline` and `parallel`)
 
-A request file may instead carry a `steps` array: steps run sequentially, the
-run stops at the first failure, and each step may reference earlier results
-with `${name.field}` placeholders:
+A request file may instead carry a `pipeline` array: entries run strictly
+sequentially, the run stops at the first failure, and each entry may
+reference earlier results with `${name.field}` placeholders:
 
 ```json
 {
-  "steps": [
+  "pipeline": [
     { "name": "writer", "command": "generate.text2text", "provider": "zhipu",
       "prompt": "write a one-sentence image prompt about a crane" },
     { "name": "gen", "command": "generate.text2image", "provider": "zhipu",
@@ -173,10 +174,10 @@ the single source of truth that also generates `schemas/`):
   step), `vectors`/`dimensions` (embed) — plus `artifacts[N].url`/
   `artifacts[N].base64` (media).
 
-When a step's prompt is
-exactly one earlier step's `${name.text}` reference, the result package's
+When an entry's prompt is
+exactly one earlier entry's `${name.text}` reference, the result package's
 config records a `gen.promptRef` provenance pointer
-(`{name, digest?, tag?}` — digest present when the source step packed its
+(`{name, digest?, tag?}` — digest present when the source entry packed its
 result with `tag`/`output`), so the prompt's origin is verifiable by
 content-addressing instead of textual coincidence. Media inputs chained the
 same way (`images` / `firstFrame` / `lastFrame` / `inputs` set to exactly
@@ -188,12 +189,40 @@ when a provider rejects an input url, `generate <ref>` retries once with the
 bytes extracted from the store via those digests (warned on stderr); without
 `inputRefs` the provider error propagates unchanged. A whole
 string like `"${gen.tag}"` keeps the referenced value; references inside a
-larger string interpolate. `steps` and `command` are mutually exclusive; CLI
-flags after the file are not supported in pipeline mode; `generate` steps may
-not use `noWait`. Media steps without an explicit `output` write to the shared
-store under their own tag. A pipeline run returns
+larger string interpolate. `pipeline`/`parallel` and `command` are mutually
+exclusive; CLI flags after the file are not supported in either mode;
+`generate` entries may not use `noWait`. Media entries without an explicit
+`output` write to the shared store under their own tag. A pipeline run
+returns
 `{"ok":true,"kind":"pipeline","data":{"steps":[{name?,command,kind,data}...]}}`
-— every step's full result. Progress lines go to stderr.
+— every entry's full result. Progress lines go to stderr.
+
+### Parallel runs (`parallel`)
+
+A request file may instead carry a `parallel` array: entries run as a
+dependency graph. Every `${name.field}` reference is a scheduling edge — an
+entry runs once every entry it references has completed — and independent
+entries run concurrently. Any acyclic reference order is legal (unlike
+`pipeline`, forward references are fine as long as no cycle exists). The
+concurrency width comes from config (`defaults.pipeline.concurrency`;
+positive integer, `0` = unlimited, unset defaults to 4) — not from the file.
+A failed entry fails the run immediately: entries not yet started are
+skipped and reported in the output envelope's `skipped` array with a reason
+(`not-started`, or `aborted` after Ctrl-C); completed entries survive in
+`steps`. Generate steps are not idempotent: rerunning re-bills.
+
+```json
+{
+  "parallel": [
+    { "name": "img1", "command": "generate.text2image", "provider": "zhipu",
+      "prompt": "a cat" },
+    { "name": "img2", "command": "generate.text2image", "provider": "zhipu",
+      "prompt": "a dog" },
+    { "name": "final", "command": "build", "tag": "combo:1",
+      "annotations": { "a": "${img1.tag}", "b": "${img2.tag}" } }
+  ]
+}
+```
 
 ## Commands
 

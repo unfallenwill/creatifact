@@ -85,21 +85,18 @@ test("request schema branches are closed and as strong as the runtime", () => {
   const commands = requestFileCommands()
   for (const command of commands) {
     const single = asBranch(defs[`single.${command}`])
-    const step = asBranch(defs[`step.${command}`])
-    // Closed branches: no key outside the contract's field set validates.
+    const step = asBranch(defs[`entry.${command}`])
     expect(single.additionalProperties, `${command}: single is closed`).toBe(false)
     expect(step.additionalProperties, `${command}: step is closed`).toBe(false)
-    // Requiredness mirrors the runtime: exactly `command` plus whatever the
-    // minimal-executable fields are (nothing for generate.* — the CLI
-    // overlay may complete the request).
     const expected = [
       "command",
       ...Object.keys(MINIMAL_FIELDS[command] ?? {}).filter((k) => k !== "command"),
     ].sort()
     expect([...(single.required ?? [])].sort(), `${command}: single required`).toEqual(expected)
-    // Same requiredness in pipeline steps: steps run the very same parsers.
+    // Same requiredness in pipeline/parallel entries: they run the very same
+    // parsers.
     expect([...(step.required ?? [])].sort(), `${command}: step required`).toEqual(expected)
-    // Form-specific keys: `name` belongs to steps, `$schema` to the root.
+    // Form-specific keys: `name` belongs to entries, `$schema` to the root.
     expect(Object.keys(single.properties ?? {}), `${command}: single has no name`).not.toContain(
       "name",
     )
@@ -107,12 +104,19 @@ test("request schema branches are closed and as strong as the runtime", () => {
       "$schema",
     )
   }
-  const stepsForm = asBranch(root.anyOf?.[0])
-  expect(stepsForm.additionalProperties, "steps form is closed").toBe(false)
-  expect(stepsForm.required, "steps form requires steps").toEqual(["steps"])
-  const stepsProp = asBranch(stepsForm.properties?.["steps"])
-  const items = asBranch(stepsProp.items)
-  expect(items.anyOf?.length, "steps items cover every command").toBe(commands.length)
+  const pipelineForm = asBranch(root.anyOf?.[0])
+  expect(pipelineForm.additionalProperties, "pipeline form is closed").toBe(false)
+  expect(pipelineForm.required, "pipeline form requires pipeline").toEqual(["pipeline"])
+  const pipelineProp = asBranch(pipelineForm.properties?.["pipeline"])
+  const pipelineItems = asBranch(pipelineProp.items)
+  expect(pipelineItems.anyOf?.length, "pipeline entries cover every command").toBe(commands.length)
+  const parallelForm = asBranch(root.anyOf?.[1])
+  expect(parallelForm.additionalProperties, "parallel form is closed").toBe(false)
+  expect(parallelForm.required, "parallel form requires parallel").toEqual(["parallel"])
+  const parallelProp = asBranch(parallelForm.properties?.["parallel"])
+  const parallelItems = asBranch(parallelProp.items)
+  expect(parallelItems.anyOf?.length, "parallel entries cover every command").toBe(commands.length)
+  expect(root.anyOf?.length, "three request-file forms").toBe(3)
 })
 
 test("README's referenceable-fields section matches the contract", () => {

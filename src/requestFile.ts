@@ -159,9 +159,27 @@ export function loginRequest(fields: Fields): ParsedLoginArgs {
 }
 
 /** Parse a request file's contents into either a single command or steps. */
+/** Parse one steps/parallel entry array into PipelineSteps. */
+function parseStepArray(raw: unknown[], file: string): PipelineStep[] {
+  return raw.map((entry0, i) => {
+    if (typeof entry0 !== "object" || entry0 === null || Array.isArray(entry0)) {
+      throw usageError(`steps[${i}] in '${file}' must be an object`)
+    }
+    const entry = { ...(entry0 as Fields) }
+    const command = parseField(nonEmptyString, entry["command"], `steps[${i}].command`)
+    delete entry["command"]
+    const name = optField(nonEmptyString, entry["name"], `steps[${i}].name`)
+    if (name !== undefined) delete entry["name"]
+    return name === undefined ? { command, fields: entry } : { command, fields: entry, name }
+  })
+}
+
 export function readRequestFile(
   file: string,
-): { command: string; fields: Fields } | { steps: PipelineStep[] } {
+):
+  | { command: string; fields: Fields }
+  | { pipeline: PipelineStep[] }
+  | { parallel: PipelineStep[] } {
   let raw: string
   try {
     raw = readFileSync(file, "utf8")
@@ -180,25 +198,24 @@ export function readRequestFile(
   const root = { ...(parsed as Fields) }
   delete root["$schema"]
 
-  if (root["steps"] !== undefined) {
+  if (root["parallel"] !== undefined) {
+    if (root["command"] !== undefined || root["pipeline"] !== undefined) {
+      throw usageError(`'${file}' cannot combine 'command', 'pipeline', and 'parallel'`)
+    }
+    if (!Array.isArray(root["parallel"])) {
+      throw usageError(`'parallel' in '${file}' must be an array`)
+    }
+    return { parallel: parseStepArray(root["parallel"], file) }
+  }
+
+  if (root["pipeline"] !== undefined) {
     if (root["command"] !== undefined) {
-      throw usageError(`'${file}' cannot have both 'command' and 'steps'`)
+      throw usageError(`'${file}' cannot have both 'command' and 'pipeline'`)
     }
-    if (!Array.isArray(root["steps"])) {
-      throw usageError(`'steps' in '${file}' must be an array`)
+    if (!Array.isArray(root["pipeline"])) {
+      throw usageError(`'pipeline' in '${file}' must be an array`)
     }
-    const steps: PipelineStep[] = root["steps"].map((raw, i) => {
-      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-        throw usageError(`steps[${i}] in '${file}' must be an object`)
-      }
-      const entry = { ...(raw as Fields) }
-      const command = parseField(nonEmptyString, entry["command"], `steps[${i}].command`)
-      delete entry["command"]
-      const name = optField(nonEmptyString, entry["name"], `steps[${i}].name`)
-      if (name !== undefined) delete entry["name"]
-      return name === undefined ? { command, fields: entry } : { command, fields: entry, name }
-    })
-    return { steps }
+    return { pipeline: parseStepArray(root["pipeline"], file) }
   }
 
   const command = parseField(nonEmptyString, root["command"], "command")
