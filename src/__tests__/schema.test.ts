@@ -97,26 +97,25 @@ test("request schema branches are closed and as strong as the runtime", () => {
   }
   expect(root.anyOf?.length, "one branch per command").toBe(commands.length)
 })
-test("README's referenceable-fields section matches the contract", () => {
+test("README's referenceable-outputs bullets match the contract", () => {
   const readme = readFileSync("README.md", "utf8")
-  // Bullets like "- `build` → `tag`/`digest`/`outputDir`" (the arrow is a
-  // Unicode →); trailing prose after the field list is allowed.
-  const documented = new Map<string, string[]>()
-  for (const line of readme.split("\n")) {
-    const m = /^- `([a-z]+)` \u2192 (.+)$/.exec(line)
-    if (m === null) continue
-    const kind = (m[1] ?? "") as string
-    const rest = m[2] ?? ""
-    // Plain scalar fields only; `artifacts[N].…` expression forms are
-    // pipeline syntax, not referenceable-field names.
-    const fields = [...rest.matchAll(/`([^`]+)`/g)]
-      .map((x) => x[1] as string)
-      .filter((f) => !f.includes("["))
-    if (fields.length > 0 && !documented.has(kind)) documented.set(kind, fields)
+  // The "A stage may reference these outputs from an earlier stage:" paragraph,
+  // followed by bullets like "- `tag`, `digest`, and `outputDir`". Backticked
+  // `artifacts[N].…` forms are pipeline syntax, not referenceable-field names.
+  const lines = readme.split("\n")
+  const sentinel = "A stage may reference these outputs from an earlier stage:"
+  const start = lines.findIndex((line) => line.endsWith(sentinel))
+  expect(start, "README must keep the referenceable-outputs paragraph").toBeGreaterThan(-1)
+  const documented: string[] = []
+  for (const line of lines.slice(start + 1)) {
+    if (line.trim() === "") continue // blank line between the paragraph and its bullets
+    if (!line.startsWith("- ")) break
+    documented.push(
+      ...[...line.matchAll(/`([^`]+)`/g)]
+        .map((x) => x[1] as string)
+        .filter((f) => !f.includes("[")),
+    )
   }
-  expect([...documented.keys()].sort()).toEqual(["build", "generate"])
-  const table = REFERENCEABLE as Record<string, readonly string[] | undefined>
-  for (const [kind, fields] of documented) {
-    expect(fields.sort(), kind).toEqual([...(table[kind] ?? [])].sort())
-  }
+  const expected = new Set(Object.values(REFERENCEABLE).flat())
+  expect([...new Set(documented)].sort()).toEqual([...expected].sort())
 })

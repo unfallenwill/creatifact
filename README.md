@@ -1,482 +1,385 @@
 # Creatifact
 
-**An agent-native multimodal creation runtime, powered by portable OCI artifacts.**
+**Build, version, and distribute AI generation workflows as portable OCI artifacts.**
 
-Creatifact gives AI agents a composable CLI and JSON interface for generating,
-understanding, and transforming text, images, and video across model providers.
-Creation recipes, assets, results, and provenance can travel as
-[OCI artifacts](https://github.com/opencontainers/image-spec/blob/main/image-layout.md)
-through any OCI-compatible registry. No Docker daemon is required.
+Creatifact turns model calls into durable artifacts. It gives agents and CI a
+stable CLI and JSON interface for generating text, images, and video, then
+packages the recipe, inputs, outputs, and provenance into content-addressed
+[OCI artifacts](https://github.com/opencontainers/image-spec/blob/main/image-layout.md).
+Push them to any OCI-compatible registry. No Docker daemon is required.
 
-Agents handle creative planning and iteration; Creatifact handles task
-execution, provider integration, artifact packaging, and delivery.
-
-- **Agent-native** — CLI commands, JSON request files, build orchestration, and structured output
-- **Multimodal** — text, image, video, understanding, transformation, and embeddings
-- **Portable** — move recipes and results through existing OCI registries
-- **Extensible** — built-in model providers plus runtime-loaded provider plugins
-
-## Output contract
-
-**Every command prints exactly one JSON document to stdout** — the envelope —
-regardless of terminal or pipe. Progress and warnings go to stderr; a failing
-command prints its error envelope as the **last non-empty line of stderr** and
-exits non-zero.
-
-Success (compact by default):
-
-```json
-{"ok":true,"kind":"generate","data":{"task":"text2image","provider":"zhipu","model":"cogview-4","capability":"image.generate","artifacts":[{"url":"https://..."}],"usage":{},"tag":"ghcr.io/acme/crane:v1","outputDir":"...","digest":"sha256:..."}}
+```mermaid
+flowchart LR
+  A[Agent or CI] -->|CLI or JSON| C[Creatifact]
+  C -->|generate or understand| P[Model providers]
+  P -->|text, images, video| C
+  C -->|recipe + result + provenance| S[OCI store]
+  S <--> R[OCI registry]
 ```
 
-Failure:
+Creatifact is useful when a generated asset must outlive the model call that
+created it:
 
-```json
-{"ok":false,"kind":"generate","error":{"code":"E_PROVIDER","message":"...","details":{"category":"quota","status":429}}}
-```
-
-- `kind` is the command: `build` · `push` · `pull` · `generate` · `login` ·
-  `logout` · `models` · `config` · `package.list` · `package.rm`
-  Parse-time errors (unknown command/option)
-  omit `kind`.
-- `--pretty` (global flag) switches stdout to indented JSON, colorized on
-  interactive terminals; piped `--pretty` stays byte-identical plain JSON.
-- `--help` / `--version` / bare invocation stay human text (meta output).
-
-Error codes and exit statuses:
-
-| code | exit | meaning |
-|---|---|---|
-| `E_USAGE` | 2 | bad arguments, unknown command/option/task, invalid request-file fields, missing input files |
-| `E_CONFIG` | 3 | config read/write/validation, unknown configured provider key |
-| `E_AUTH` | 4 | missing/invalid credentials, not logged in |
-| `E_NETWORK` | 5 | fetch/connection failures |
-| `E_PROVIDER` | 6 | provider API errors (`details.category`/`status` when known) |
-| `E_IO` | 7 | filesystem errors (`details.errno`) |
-| `E_TIMEOUT` | 8 | polling timeouts (`details.handle` carries the resume handle) |
-| `E_INTERNAL` | 1 | anything unclassified — a bug |
-
-> **Breaking change (v0.1.3):** all output is JSON now; the legacy `--json`
-> flags (generate tasks, `models`, request-file `json` fields) were removed.
-> Scripts that parsed human text output or `--json` must switch to the envelope.
->
-> **Breaking change (v0.1.4):** `build --plan` is now a dry run (prints the
-> plan, executes nothing); the previous recipe-baking behavior moved to
-> `build --bake`. Builds reuse unchanged stages by default
-> (`defaults.build.reuse: "stale"`); `--force` restores always-run. The
-> human `Built ...` line moved from stdout to stderr — stdout now carries
-> exactly the JSON envelope on every build.
+- **Durable results** — download expiring provider URLs into self-contained packages.
+- **Traceable provenance** — retain effective prompts, model settings, usage, timestamps, and source references.
+- **Reusable workflows** — package a generation recipe once and run it with new inputs anywhere.
+- **Cost-aware orchestration** — execute DAG stages concurrently and reuse stages whose resolved inputs have not changed.
+- **Provider independence** — use one task-oriented contract across built-in and third-party providers.
 
 ## Install
+
+Creatifact requires Node.js 20 or Node.js 22+.
 
 ```bash
 npm install -g creatifact
 ```
 
-Or use directly without installing:
+Or run it without installing:
 
 ```bash
 npx creatifact --version
 ```
 
-## Quick Start
+## Quick start
+
+Set credentials for a built-in provider and choose it as the default:
 
 ```bash
-# 1. Give Creatifact a creative task
-creatifact generate text2image zhipu "a paper crane in the rain" \
-  --tag ghcr.io/acme/crane:v1
+export ZHIPU_API_KEY="..."
+creatifact config set defaults.gen.provider zhipu
+```
 
-# 2. Publish the resulting OCI package
+Generate an image and store it as an OCI package:
+
+```bash
+creatifact generate text2image "a paper crane in the rain" \
+  --tag demo/crane:v1
+```
+
+The command returns one machine-readable JSON document on stdout:
+
+```json
+{"ok":true,"kind":"generate","data":{"task":"text2image","provider":"zhipu","model":"cogview-4","capability":"image.generate","artifacts":[{"url":"https://..."}],"tag":"demo/crane:v1","outputDir":"...","digest":"sha256:..."}}
+```
+
+Inspect the local store:
+
+```bash
+creatifact package ls
+```
+
+To publish the same package, give it a registry-qualified tag and push it:
+
+```bash
+creatifact tag demo/crane:v1 ghcr.io/acme/crane:v1
 creatifact auth login ghcr.io
 creatifact push ghcr.io/acme/crane:v1
-
-# 3. Another agent can pull the package from the same registry
-creatifact pull ghcr.io/acme/crane:v1 -o ./pulled-crane
 ```
 
-Agents can invoke the same workflow through a JSON request file, making the
-execution contract explicit and reproducible:
+Another machine or agent can retrieve the exact package:
 
-```json
+```bash
+creatifact pull ghcr.io/acme/crane:v1
+creatifact package ls
+```
+
+## Core workflows
+
+### Generate directly
+
+Creatifact exposes model capabilities as tasks instead of provider-specific API
+shapes. `gen` is an alias for `generate`.
+
+| Task | Input | Output | Common options |
+|---|---|---|---|
+| `text2text` | prompt | text | `--system`, `--opt` |
+| `image2text` | image and question | text | `--input` |
+| `video2text` | video and question | text | `--input` |
+| `text2image` | prompt | image | `--opt` |
+| `image2image` | image and prompt | image | `--image`, `--opt` |
+| `text2video` | prompt | video | `--no-wait`, `--timeout`, `--interval` |
+| `image2video` | image and prompt | video | `--image` |
+| `frames2video` | first frame, last frame, prompt | video | `--first-frame`, `--last-frame` |
+| `embed` | text | vectors | positional inputs or `--input` |
+| `resume` | saved video job handle | video | `--timeout`, `--interval` |
+
+Examples:
+
+```bash
+# Select a provider explicitly
+creatifact generate text2image zhipu "a paper crane"
+
+# Select a provider and model
+creatifact generate image2video kling/kling-3.0-turbo "animate" \
+  --image first.png
+
+# Let the configured default provider choose a suitable model
+creatifact generate text2text "explain content-addressed storage"
+
+# Submit an asynchronous video job and resume it later
+creatifact generate text2video ark "a paper crane taking flight" --no-wait
+creatifact generate resume '{"providerId":"ark","id":"..."}'
+```
+
+Run `creatifact models` to list providers and `creatifact models <provider>` to
+see verified models and their supported tasks. Model discovery does not require
+credentials.
+
+Generation options use `--opt key=value`. Values are parsed as JSON when
+possible, so `--opt steps=30` produces a number and `--opt watermark=false`
+produces a boolean.
+
+### Package a reusable recipe
+
+A build manifest can contain a `gen` instruction. This packages model defaults,
+prompts, and input assets into a portable recipe; credentials are never stored
+in the package.
+
+```jsonc
+// creatifact-build.json
 {
-  "$schema": "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-request.schema.json",
-  "command": "generate.text2image",
-  "provider": "zhipu",
-  "prompt": "a paper crane in the rain",
-  "tag": "ghcr.io/acme/crane:v1"
+  "$schema": "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-build.schema.json",
+  "assets": "./assets",
+  "gen": {
+    "task": "image2image",
+    "provider": "zhipu",
+    "model": "cogview-4",
+    "prompt": "editorial illustration",
+    "images": ["pkg://references/source.png"],
+    "options": { "size": "1024x1024" }
+  }
 }
 ```
 
-```bash
-creatifact -f request.json
-```
-
-## Command forms
-
-Every command supports two forms — a subcommand tree and a JSON request file:
+Build the recipe without calling the provider, then run it with an override:
 
 ```bash
-# Form 1: subcommand tree
-creatifact generate text2image zhipu "a crane" --opt size=1024x1024
-creatifact generate image2image "paint it" --model demo/my-model --image cat.png  # provider/model shorthand
-creatifact build -t org/myapp:1.0.0
+creatifact build --bake -t ghcr.io/acme/editorial:v1
+creatifact push ghcr.io/acme/editorial:v1
 
-# Form 2: JSON request file (creatifact -f <file>.json)
-creatifact -f request.json
+creatifact generate ghcr.io/acme/editorial:v1 \
+  "editorial illustration in red and black"
 ```
 
-```json
-{
-  "$schema": "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-request.schema.json",
-  "command": "generate.text2image",
-  "provider": "zhipu",
-  "prompt": "a crane",
-  "options": { "size": "1024x1024" },
-  "output": "./artifacts"
-}
-```
+Without `--bake`, `build` executes the `gen` instruction once and packages the
+result. Running `creatifact generate <ref>` behaves more like running an image:
+it reads the packaged recipe, applies CLI overrides, calls the provider, and
+creates a fresh result.
 
-The request file must be a JSON object with a `command` field; the remaining
-fields map to that command's arguments. `command` mirrors the subcommand tree:
-`generate.text2text` / `generate.image2text` / `generate.video2text` /
-`generate.text2image` / `generate.image2image` / `generate.text2video` /
-`generate.image2video` / `generate.frames2video` / `generate.embed` /
-`generate.resume`, `build` / `push` / `pull`,
-`auth.login` / `auth.logout`, `config.*`, and `models`. For `generate.*`
-commands, flags after the file override the file's fields (CLI wins):
+`generate <ref>` accepts a registry reference, a local store tag, or a local OCI
+layout. Scalar CLI values replace recipe values, arrays replace arrays, and
+`--opt` merges individual keys.
 
-```bash
-creatifact -f request.json --prompt "a red crane" --opt size=2048x2048
-```
+### Orchestrate a build DAG
 
-### Orchestration (build `stages`)
-
-Multi-step orchestration lives in the build manifest, not the request
-file: a manifest may carry `stages` — an array of named mini-builds —
-instead of top-level sections (the two are mutually exclusive). You
-declare stages and `${name.field}` references; the scheduler derives
-the execution plan: every reference is a dependency edge, independent
-stages run concurrently, and any acyclic reference order is legal.
-There is no pipeline/parallel keyword — strictly sequential is just the
-all-chained plan.
-
-Referenceable fields per completed stage (contract-tested against
-`src/contract.ts` — the single source of truth that also generates
-`schemas/`):
-
-- `build` → `tag`/`digest`/`outputDir`
-- `generate` → `tag`/`digest`/`outputDir`/`text`/`vectors`/`dimensions` — the
-  structured payload is presence-filtered: `text` (text2text / image2text /
-  video2text — chain a generated prompt into a text2image or image2video
-  stage), `vectors`/`dimensions` (embed) — plus `artifacts[N].url`/
-  `artifacts[N].base64` (media).
-
-(In the pre-stages -f era, `push`/`pull` results were referenceable too;
-with stages being build sections, the referenceable surface is build +
-generate.)
+Use named `stages` for multi-step workflows. References such as
+`${cat.tag}` and `${cat.digest}` create dependency edges automatically;
+independent stages run concurrently.
 
 ```jsonc
 // creatifact-build.json
 {
   "stages": [
-    { "name": "cat", "gen": { "task": "text2image", "provider": "zhipu",
-      "prompt": "a cat" } },
-    { "name": "dog", "gen": { "task": "text2image", "provider": "zhipu",
-      "prompt": "a dog" } },
-    // cat and dog are independent → concurrent
-    { "name": "combo", "assets": "./combo",
-      "annotations": { "c": "${cat.digest}", "d: "${dog.digest}" } }
-    // combo waits for both (fan-in)
+    {
+      "name": "cat",
+      "gen": { "task": "text2image", "provider": "zhipu", "prompt": "a cat" }
+    },
+    {
+      "name": "dog",
+      "gen": { "task": "text2image", "provider": "zhipu", "prompt": "a dog" }
+    },
+    {
+      "name": "gallery",
+      "copy": [
+        { "from": "${cat.tag}", "paths": ["artifact-1.png"] },
+        { "from": "${dog.tag}", "paths": ["artifact-1.png"] }
+      ],
+      "annotations": {
+        "org.example.cat.digest": "${cat.digest}",
+        "org.example.dog.digest": "${dog.digest}"
+      }
+    }
   ]
 }
 ```
 
-Each stage is a mini build (`from`/`copy`/`assets`/`gen`/`annotations`,
-all optional) whose package lands in the shared store under a derived
-tag (`<repo>/<stage>:<version>` from the build's `-t`), so later stages
-reference earlier results by `tag`/`digest`/`outputDir`. The final
-product is the last stage's package, aliased under the `-t` tag. The
-concurrency width comes from config (`defaults.build.concurrency`;
-positive integer, `0` = unlimited, unset defaults to 4). A failed stage
-fails the run immediately: not-yet-started stages are skipped and
-reported in the envelope's `skipped` array; completed stages survive in
-`stages`.
-
-#### Incremental reuse (build plan)
-
-`build` resolves before it executes: every stage's **resolved inputs**
-are fingerprinted (sha256 over the canonical JSON of the gen spec,
-resolved `${name.field}` values, `from`/`copy` source digests, and the
-assets tree hash), and the fingerprint is recorded on the stage's store
-entry (`org.creatifact.build.inputs`). On the next build the plan is
-diffed against the store:
-
-- stages whose inputs fingerprint unchanged are **reused** — their
-  previous digest/tag/artifacts are taken from the store with zero
-  provider calls, so nothing is re-billed;
-- a stage whose upstream produces a new digest re-runs (the reference
-  value changed, so its own fingerprint changed) — changes propagate
-  exactly along dependency edges;
-- the whole plan is a value: the envelope carries `data.plan` (per-stage
-  `inputsDigest`, `status: executed | reused`, dependencies) plus its
-  `planDigest`, recorded on the final entry as
-  `org.creatifact.build.plan`.
-
-Reuse is best-effort and explicit:
-
-- `--plan` prints the plan **without executing anything** — a dry run
-  (`data.executed: false`, statuses `would-execute`/`would-reuse`) that
-  writes no files and calls no providers;
-- `--force` re-runs every stage for this invocation;
-- `defaults.build.reuse: "never"` disables reuse entirely (default:
-  `"stale"`). Because generation is stochastic, reuse is a policy
-  choice: unchanged inputs reuse yesterday's result instead of creating
-  a new one;
-- `--output` standalone exports have no diff base and always run fully.
-
-Not detected (documented limits): mutable registry tags moving remotely
-(a registry ref is fingerprinted as its string, not its current digest),
-changes to model defaults other than `defaults.gen.provider`, and
-silent provider-side model updates.
-
-`-f` request files carry a single command only (the JSON mirror of one
-command line); orchestration keys (`pipeline`/`parallel`) are rejected
-with a pointer to build stages.
-
-## Commands
-
-### `generate`
-
-Task-oriented generation (`gen` is an alias). CLI flags, `-f` request files,
-and recipe packages are equivalent; when both apply, command-line flags win.
-Progress and notes go to stderr; results go to stdout.
-
-| Task | Description | In → out | Key options |
-|------|-------------|----------|-------------|
-| `text2text` | Text chat | text → text | positional prompt, `--system`, `--opt` |
-| `image2text` | Image understanding | image + question → text | `--input` (repeatable), optional prompt |
-| `video2text` | Video understanding | video + question → text | `--input` (repeatable), optional prompt |
-| `text2image` | Text-to-image | text → image | `--opt`, result packaging |
-| `image2image` | Image-to-image | image + text → image | `--image` (exactly one), `--opt` |
-| `text2video` | Text-to-video | text → video | `--no-wait`, `--timeout`, `--interval` |
-| `image2video` | Image-to-video | image + text → video | `--image` (becomes the first frame) |
-| `frames2video` | First/last-frame-to-video | first+last frame + text → video | `--first-frame`, `--last-frame` |
-| `embed` | Vectorization | text → vectors | positional inputs or `--input` |
-| `resume` | Resume | resume a saved video task | `<handle\|file>`, `--timeout`, `--interval` |
-
-```
-# text chat
-creatifact generate text2text zhipu "explain ECC memory in one paragraph"
-creatifact generate text2text ark/doubao-seed-1-6-250615 "hi" --system "be brief"
-creatifact generate text2text minimax "explain the Raft consensus" --opt temperature=0.5
-
-# text-to-image / image-to-image
-creatifact generate text2image zhipu "a crane" --opt size=1024x1024
-creatifact generate image2image ark "oil painting style" --image cat.png
-
-# video: text / image / first+last frames
-creatifact generate text2video ark "a paper crane" --no-wait
-creatifact generate image2video kling/kling-3.0-turbo "animate" --image first.png
-creatifact generate frames2video zhipu/viduq1-start-end "morph" \
-  --first-frame a.png --last-frame b.png
-
-# understanding and embeddings
-creatifact generate image2text ark/doubao-1.5-vision-pro-32k-250115 "what is this" --input cat.png
-creatifact generate embed ark "hello" "world"
+```bash
+creatifact build -t demo/gallery:v1
 ```
 
-With no `<provider>`, the default provider from the config is used; with no
-`/model`, the task picks a default model: the provider's declared default
-when it satisfies the task (e.g. `imageInput` for image2image, `firstFrame` +
-`lastFrame` for frames2video), else the first verified model that does, else
-a fallback with a warning (frames2video is strict and errors instead):
+Each stage is a mini build with optional `from`, `copy`, `assets`, `gen`, and
+`annotations` fields. The last stage is also tagged with the build's `-t`
+reference. A stage may reference these outputs from an earlier stage:
+
+- `tag`, `digest`, and `outputDir`
+- `text` for text generation and understanding tasks
+- `vectors` and `dimensions` for embeddings
+- `artifacts[N].url` and `artifacts[N].base64` for media
+
+The default concurrency is 4. Set `defaults.build.concurrency` to a positive
+integer, or to `0` for unlimited concurrency.
+
+### Reuse unchanged stages
+
+Before execution, Creatifact fingerprints each stage's resolved inputs: its
+generation spec, referenced values, source digests, and asset tree. On the next
+build, unchanged stages are loaded from the content store without another model
+call.
 
 ```bash
-creatifact config set defaults.gen.provider zhipu
-creatifact generate text2image "a crane"   # zhipu + its default image model
+# See what would execute or be reused; writes nothing and calls no provider
+creatifact build -t demo/gallery:v1 --plan
+
+# Ignore previous fingerprints for this run
+creatifact build -t demo/gallery:v1 --force
 ```
 
-Wrong flag/task combinations are rejected with guidance instead of failing at
-the provider:
+Reuse defaults to `"stale"`. Set `defaults.build.reuse` to `"never"` to always
+execute. Standalone `--output` builds have no previous store entry to compare
+and therefore run fully.
 
-```
-$ creatifact generate text2video demo x --first-frame a.png
-{"ok":false,"error":{"code":"E_USAGE","message":"text2video does not take --first-frame; use `generate image2video --image <img>`"}}
-```
+Incremental reuse is deliberately a policy, not a claim of deterministic model
+output. Creatifact does not detect silent provider-side model changes, model
+default changes, or a mutable remote tag moving to a new digest.
 
-`--opt k=v` values are JSON-parsed when valid (`5` → 5, `true` → true), else
-kept as strings. Credentials come from the config file (`providers.<id>.apiKey`)
-or the provider's env vars (`ZHIPU_API_KEY`, `ARK_API_KEY`, ...). See
-[Provider plugins](#provider-plugins) for third-party providers.
+## Agent and CI interface
 
-### Gen packages
+### JSON request files
 
-The build manifest's `gen` section is a RUN instruction: `creatifact build`
-executes it once during the build (provider call, billed), stages the
-artifacts as the top layer, and records the executed spec plus a result meta
-in the config blob — the package digest pins that exact run. `pkg://` refs
-in the spec resolve against the layers assembled above it (`from`/`copy`/
-`assets`). `--bake` bakes the recipe without executing it (recipe-only
-package for publish-then-run flows), and `creatifact generate <ref>` runs
-the package — like `docker run`: execute the image, overlay parameters,
-get a fresh output:
+Primary execution and configuration commands also have a JSON form. The
+`command` value mirrors the subcommand tree and the remaining fields mirror its
+arguments. Supported values include `generate.*`, `build`, `push`, `pull`,
+`auth.*`, `config.*`, and `models`.
 
-```jsonc
-// creatifact-build.json
+```json
 {
-  "gen": {
-    "task": "image2image",
-    "provider": "zhipu",
-    "model": "cogview-4",
-    "prompt": "a crane",          // optional default
-    "images": ["pkg://refs/cat.png"],
-    "options": { "size": "1024x1024" }
-  },
-  "assets": "./assets"             // contains refs/cat.png
+  "$schema": "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-request.schema.json",
+  "command": "generate.text2image",
+  "provider": "zhipu",
+  "prompt": "a paper crane",
+  "options": { "size": "1024x1024" },
+  "tag": "demo/crane:v1"
 }
 ```
 
 ```bash
-# 1. Build and push the recipe package
-creatifact build -t example.com/xxxxxx:v1.0
-creatifact push example.com/xxxxxx:v1.0
-
-# 2. Run it from anywhere: the task comes from the package
-creatifact generate example.com/xxxxxx:v1.0 "a red crane" --opt size=2048x2048
-creatifact generate org/myresult:1.0 "a crane"  # a tag in the local store also works
+creatifact -f request.json
 ```
 
-`generate <ref>` accepts a registry reference, a tag from the local store, or a
-local OCI layout path. CLI
-flags (positional prompt, `--prompt`/`--opt`/`--image`/frames/`--input`,
-`--provider`/`--model`) override the package: scalars override, arrays replace,
-`--opt` merges per key.
-
-Media references (`images` / `firstFrame` / `lastFrame` / `inputs`) accept an
-http(s)/data URL, a local path, or a `pkg://path` into the package's layers
-(packed via the `assets` dir). At generate time the file is extracted and sent
-to the provider; the result package records the original `pkg://` reference for
-provenance. A `prompt` that is exactly one `pkg://path` ref is read inline as
-utf8 — long instructions ship as layer files (e.g. a packed `text.txt` from a
-text2text result) instead of giant JSON strings.
-
-Media tasks write their **result as an OCI package** into the shared store
-under `--tag` (default `gen-output:latest`); pass `--output` to export a
-standalone layout dir instead. Artifacts become a layer — URL results are
-downloaded at packaging time so the package is **self-contained** (the config
-blob keeps the original url for provenance; if the CDN link is already
-unreachable, the build degrades to a url-only record and emits a warning
-instead of losing the paid-for result). The config blob records the
-*effective* generation parameters plus result metadata
-(usage, timestamp, source ref) — so anyone can see exactly how the
-image/video was produced:
+For `generate.*` requests, trailing CLI flags override file values:
 
 ```bash
-creatifact generate example.com/xxxxxx:v1.0 "a red crane" --tag org/myresult:1.0
-# → store tag org/myresult:1.0 (index.json + blobs + a config blob with provenance)
+creatifact -f request.json --prompt "a red paper crane" --opt size=2048x2048
 ```
 
-Pass `--no-pack` to return artifacts without building a result package.
-Text and embed tasks return their payload (`data.text` / `data.vectors`) in
-the envelope by default — pass `--tag` (or `--output`) to also pack it as a
-referenceable OCI package: the payload becomes a layer file (`text.txt` /
-`vectors.json`, usable as `pkg://` refs inside recipe packages) and the
-config blob inlines `result.text` for readability. `generate ... --no-wait`
-returns `data.handle`; `generate resume <handle>` returns `data.artifacts`
-(+ `savedFiles` with `--output`; URL artifacts are downloaded so the files
-outlive the expiring CDN link).
+A request file represents one command. Multi-step orchestration belongs in a
+build manifest under `stages`.
 
-### `models`
+### Output contract
 
-```
-# List available providers (built-ins + config-declared plugins);
-# task-language coverage per provider, works without credentials
-creatifact models
+Every non-meta command emits exactly one JSON document:
 
-# List a provider's verified models with the tasks they support (★ = default)
-creatifact models zhipu
+- Success envelopes go to stdout.
+- Progress and warnings go to stderr.
+- On failure, the last non-empty stderr line is the error envelope and the
+  process exits non-zero.
+- `--pretty` indents JSON; piped output remains plain JSON.
+- `--help`, `--version`, and a bare invocation remain human-readable.
 
-# Discover models for one task right where you invoke it
-creatifact generate image2text --list-models
-creatifact generate text2video zhipu --list-models   # scoped to a provider
+```json
+{"ok":false,"kind":"generate","error":{"code":"E_PROVIDER","message":"...","details":{"category":"quota","status":429}}}
 ```
 
-`models` always returns JSON: `creatifact models` →
-`{"providers":[{provider, defaults, models:[{id, tasks, ...}]}]}` (unavailable
-providers carry an `error` field); `creatifact models <id>` → the single
-provider's catalog with per-model derived `tasks`. `--list-models` returns
-`data.models.entries` with a `default` flag per model.
+| Code | Exit | Meaning |
+|---|---:|---|
+| `E_INTERNAL` | 1 | unclassified internal error |
+| `E_USAGE` | 2 | invalid command, arguments, request fields, or local inputs |
+| `E_CONFIG` | 3 | invalid or unreadable configuration |
+| `E_AUTH` | 4 | missing or invalid credentials |
+| `E_NETWORK` | 5 | connection or transport failure |
+| `E_PROVIDER` | 6 | provider rejection or failure |
+| `E_IO` | 7 | filesystem failure |
+| `E_TIMEOUT` | 8 | polling timeout; details include the resumable handle |
 
-Model discovery never requires API keys (registries are static; credentials
-are only consumed when a task actually runs). Model-selection errors inline
-the models that DO support the task, so a failed call self-corrects.
+## Packages and registries
 
-### `build`
+Creatifact keeps built, pulled, and generated packages in one shared OCI layout
+at `~/.creatifact/store`. Blobs are deduplicated by digest and tags are movable
+pointers, similar to a local container image store.
 
-Build an OCI image layout from a build manifest (`creatifact-build.json` by default; `pkg` is an alias for `package`). The manifest describes the image *content*; everything else (tag, output dir, assets override) is passed via CLI flags.
-
-```
-Usage: creatifact build [options]
-
-Options:
-  -t, --tag <repo:tag>   Image reference, e.g. org/myapp:1.0.0 (required)
-      --dir <path>       Local directory to pack as the top layer
-                         (overrides "assets" in the manifest)
-  -f, --file <path>      Build manifest path (default: ./creatifact-build.json)
-  -o, --output <dir>     Export a standalone layout dir (default: shared store)
-      --annotation k=v   Add manifest annotation (repeatable, overrides manifest)
-      --username <user>  Registry username for from/copy sources
-      --password <pw>    Registry password (prefer --password-stdin)
-      --password-stdin   Read password from stdin
-      --plain-http       Use HTTP for registry sources (local registries)
-      --plan             Print the build plan (what would run, what would be
-                         reused) without executing anything
-      --bake             Bake the gen recipe without executing it (recipe-only
-                         package; creatifact generate <ref> runs it later)
-      --force            Run every stage, ignoring the store's previous
-                         fingerprints
-  -h, --help             Show this help message
+```bash
+creatifact package ls
+creatifact tag demo/crane:v1 demo/crane:latest
+creatifact package rm demo/crane:v1
 ```
 
-#### Build manifest
+Removing a tag deletes blobs only when no other tag references them.
 
-The manifest is a plain JSON file. All fields are optional; an empty manifest builds an empty image.
+Registry commands operate on the shared store by default:
+
+```bash
+creatifact auth login registry.example.com
+creatifact push registry.example.com/team/crane:v1
+creatifact pull registry.example.com/team/crane:v1
+```
+
+Use `--output <dir>` to export a standalone OCI layout and `--layout <dir>` to
+push one. Registry credentials resolve in this order:
+
+1. A complete CLI username/password pair
+2. Credentials saved by `creatifact auth login`
+3. Anonymous access
+
+Use `--password-stdin` instead of putting secrets in shell history. Saved
+credentials use the Docker-compatible `auths` shape in the Creatifact config.
+`--plain-http` enables HTTP for a command; loopback registries use HTTP by
+default, and `auths.<registry>.insecure` persists that choice per registry.
+
+Bare references use `defaults.registry`, which defaults to `localhost:5000`.
+
+## Build manifest reference
+
+`creatifact build` reads `creatifact-build.json` by default. A single-package
+manifest supports these fields:
+
+| Field | Description |
+|---|---|
+| `annotations` | OCI manifest annotations |
+| `from` | One or more registry refs or local OCI layouts whose layers are inherited |
+| `copy` | Selected files or subtrees extracted from source packages into new layers |
+| `assets` | Local directory packed as the top layer, relative to the manifest |
+| `gen` | Generation recipe or build-time generation instruction |
 
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-build.schema.json",
-  "annotations": {
-    "org.creatifact.name": "my-package",
-    "org.creatifact.description": "cuda runtime + custom assets"
-  },
-  "from": [
-    "localhost:5000/runtime:1.0.0",
-    "localhost:5000/cuda:12.0"
-  ],
+  "annotations": { "org.opencontainers.image.title": "creative-runtime" },
+  "from": ["registry.example.com/base/assets:v1"],
   "copy": [
-    { "from": "localhost:5000/cuda:12.0", "paths": ["cuda-libs", "drivers"] }
+    { "from": "registry.example.com/team/fonts:v2", "paths": ["fonts"] }
   ],
-  "assets": "./app"
+  "assets": "./project"
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `annotations` | object | Manifest annotations (image metadata) |
-| `from` | string \| string[] | Inherit all layers from a registry reference or a local OCI layout path. Order = layer order |
-| `copy` | array | Extract specific paths from a source image into a new layer. `paths` match exact files or directory subtrees |
-| `assets` | string | Local directory packed as the top layer (relative to the manifest file) |
-| `gen` | object | Generation recipe (`task` required, plus `provider`, `model`, `prompt`, `system`, `options`, `images`, `firstFrame`, `lastFrame`, `inputs`). Baked into the config blob so `creatifact generate <ref>` can run it. Never includes credentials |
+Layer order is `from` → `copy` → `assets`. Relative paths are resolved from the
+manifest directory. Copy operations preserve OCI whiteout semantics.
 
-- `from` / `copy.from` accept a registry reference (e.g. `localhost:5000/pkg:1.0`) or a local OCI layout directory. A string starting with `.`, `/`, or an existing directory is treated as a local path.
-- Relative paths in the manifest (`assets`, local `from`/`copy.from`) are resolved relative to the manifest file. CLI `--dir` is resolved relative to the current directory.
-- Layers stack as: `from[0]` → `from[1]` → … → `copy[0]` → … → `assets` (top).
-- Legacy fields `tag`, `dir`, `output` were removed from the manifest — pass them via CLI (`-t`, `--dir`, `-o`). The CLI prints a migration hint if it sees them.
-- Copy extraction respects overlay whiteout semantics (`.wh.` deletions and `.wh..wh..opq` opaque directories) so the extracted subtree behaves exactly as it did in the source image.
+Useful build options:
 
-#### Editor support
+```text
+-t, --tag <ref>        Required output tag
+-f, --file <path>      Manifest path
+    --dir <path>       Override the manifest's assets directory
+-o, --output <dir>     Export a standalone OCI layout
+    --annotation k=v   Add or override an annotation
+    --plan             Print the dry-run execution plan
+    --bake             Package a recipe without executing it
+    --force            Disable incremental reuse for this run
+```
 
-Reference the JSON Schema in your manifest (as in the example above), or associate it in VS Code:
+For editor completion, keep the `$schema` property shown above or associate the
+local schema in VS Code:
 
 ```json
 {
@@ -489,156 +392,37 @@ Reference the JSON Schema in your manifest (as in the example above), or associa
 }
 ```
 
-### `push`
+## Providers and models
 
-Push an OCI image layout to a registry.
+Built-in providers:
 
-```
-Usage: creatifact push <registry>/<repo>:<tag> [options]
+| Provider | Credentials |
+|---|---|
+| Ark | `ARK_API_KEY` |
+| Kling | `KLING_API_KEY`, or `KLING_ACCESS_KEY` and `KLING_SECRET_KEY` |
+| MiniMax | `MINIMAX_API_KEY` |
+| Zhipu | `ZHIPU_API_KEY` or `BIGMODEL_API_KEY` |
 
-Arguments:
-  <registry>/<repo>:<tag>  Destination reference (e.g. localhost:5000/myrepo:1.0)
-                           If omitted, uses ref from index.json
-
-Options:
-  --layout <dir>        OCI layout dir (default: the tag's entry in the shared store)
-  --username <user>     Registry username
-  --password <pw>       Registry password (prefer --password-stdin)
-  --password-stdin      Read password from stdin
-  --plain-http          Use HTTP instead of HTTPS (for local registries)
-  -h, --help            Show this help message
-```
-
-### `pull`
-
-Pull an OCI image layout from a registry.
-
-```
-Usage: creatifact pull <registry>/<repo>:<tag> [options]
-
-Arguments:
-  <registry>/<repo>:<tag>  Source reference (e.g. localhost:5000/myrepo:1.0)
-
-Options:
-  -o, --output <dir>     Export a standalone layout dir (default: shared store)
-  --username <user>      Registry username
-  --password <pw>        Registry password (prefer --password-stdin)
-  --password-stdin       Read password from stdin
-  --plain-http           Use HTTP instead of HTTPS (for local registries)
-  -h, --help             Show this help message
-```
-
-### `package ls` / `package rm`
-
-List tags in the shared store (like `docker image ls`):
+Credentials may also be stored under `providers.<id>` in the config. Whole
+string environment references are resolved at call time, so this keeps the
+secret outside the file:
 
 ```bash
-$ creatifact package ls
-{"ok":true,"kind":"package.list","data":{"entries":[{"ref":"gen-output:latest","digest":"sha256:b196...","size":363,"kind":"gen"}]}}
+creatifact config set providers.zhipu.apiKey '${ZHIPU_API_KEY}'
 ```
 
-`gen` marks generation result packages; `image` marks regular image layouts.
-
-Remove tags with `package rm`; blobs shared with other tags survive, and the
-last reference deletes the underlying blobs (docker rmi semantics):
+Use the model catalog before constructing a command:
 
 ```bash
-$ creatifact package rm gen-output:latest
-{"ok":true,"kind":"package.rm","data":{"untagged":["gen-output:latest"],"deletedBlobs":["sha256:3f2a..."]}}
+creatifact models
+creatifact models zhipu
+creatifact generate frames2video zhipu --list-models
 ```
-
-### `auth login` / `auth logout`
-
-Save and remove registry credentials. Credentials are stored base64-encoded in
-`auths` inside the config file (the same format as `~/.docker/config.json`),
-never in shell history.
-
-```
-Usage: creatifact auth login <registry> [options]
-
-Arguments:
-  <registry>             Registry host[:port] (e.g. localhost:5000, registry.example.com)
-
-Options:
-  -u, --username <user>  Registry username (prompted if omitted and interactive)
-  -p, --password <pw>    Registry password (prefer --password-stdin)
-      --password-stdin   Read password from stdin
-  -h, --help             Show this help message
-```
-
-`push`, `pull`, and `build` fall back to the saved credentials automatically
-when `--username`/`--password` are not passed. A complete CLI credential pair
-always wins over the config file.
-
-### `config`
-
-```
-Usage: creatifact config <action> [args]
-
-Actions:
-  path                  Print the config file path
-  list                  Print the config with secret values masked
-  get <key>             Print a value (dotted key, e.g. auths.localhost:5000.username)
-  set <key> <value>     Set a value (value parsed as JSON if valid, else string)
-  reset                 Delete the config file
-```
-
-Each action returns its payload in the envelope: `config path` →
-`data.path`, `config get` → `data.value` (secret keys come back as `"***"`
-with `data.secret: true`), `config set` → `data.value`, `config reset` →
-`data.removed`.
-
-## Configuration
-
-The config file lives at `~/.creatifact/config.json` (override with the
-`CREATIFACT_CONFIG_DIR` environment variable). It is shared by all commands and
-by other Creatifact modules (e.g. provider API keys under `providers`).
-Built/pulled/generated images live in a **shared content store** at
-`~/.creatifact/store` — one OCI layout where blobs are deduplicated by digest
-and tags are pointers in `index.json` (docker-style). Rebuilding the same tag
-repoints it and never touches other tags; `creatifact package ls` lists them, and
-`--output`/`--layout` still pin/export an explicit standalone directory.
-A per-invocation override is also available: pass `--config-dir <dir>` to any
-subcommand to use `<dir>/config.json` (takes precedence over the env var).
-
-```json
-{
-  "defaults": {
-    "gen": { "provider": "zhipu" }
-  },
-  "auths": {
-    "localhost:5000": {
-      "auth": "dXNlcjpwYXNz",
-      "insecure": true
-    }
-  },
-  "providers": {
-    "ark": { "apiKey": "..." }
-  }
-}
-```
-
-- `defaults.gen.provider` — provider used when `creatifact generate <task>` omits `<provider>`; the task then picks a suitable default model.
-- `defaults.build.concurrency` — stages-mode parallel width (positive int, `0` = unlimited, default 4).
-- `defaults.build.reuse` — `"stale"` (default) reuses stages whose inputs fingerprint is unchanged since the store's previous run; `"never"` always re-executes. `build --force` overrides per invocation.
-- `auths.<registry>.auth` — base64(`user:password`), docker-config-compatible; managed by `creatifact auth login`/`logout`.
-- `auths.<registry>.insecure` — talk plain HTTP to this registry without `--plain-http` (per registry, not global).
-- `providers.*` — passthrough section for other Creatifact modules; preserved by every write.
-
-Credential resolution order: **CLI flags (complete pair) → config file → anonymous**.
-If the config file is corrupt, commands fail loudly with the file path and a
-`creatifact config reset` hint instead of silently ignoring your settings.
-
-String values under `providers` support whole-value environment references:
-`"apiKey": "${MINIMAX_API_KEY}"` resolves at call time; the file keeps the
-literal, and an unset variable behaves as if the key were absent.
 
 ### Custom models
 
-The built-in model lists are code (video APIs have no shared spec), but same-
-provider new models are data: declare them under `models.<providerId>` in the
-config. Unknown ids append (marked `(custom)` by `creatifact models`); known
-ids override (shallow merge).
+Add or override provider models under `models.<providerId>`. This is useful when
+a provider releases a model before Creatifact's verified registry is updated.
 
 ```json
 {
@@ -647,66 +431,42 @@ ids override (shallow merge).
       {
         "id": "MiniMax-H4",
         "mode": "v2",
-        "capabilities": { "video.generate": { "textOnly": false, "firstFrame": true } },
-        "note": "duration 4-15 (hint only; the provider enforces)"
-      },
-      { "id": "MiniMax-H3", "note": "routed via internal gateway" }
+        "capabilities": {
+          "video.generate": { "textOnly": false, "firstFrame": true }
+        }
+      }
     ]
   }
 }
 ```
 
-Rules:
-
-- `models` keys must name a known provider (built-in or plugin); `creatifact models` rejects unknown keys.
-- Providers with protocol modes (`minimax`: `v2|t2v|i2v|fl2v|s2v`; `zhipu`:
-  `cogvideox3|cogvideox|vidu-text|vidu-image|vidu-frames|vidu-reference`)
-  require `mode` on custom entries declaring `video.generate`, and accept it
-  on overrides to retarget the protocol.
-- `kling` / `ark` pass model ids straight through; they have no modes and
-  reject a `mode` field.
-- Numeric constraints in `note` are hints — the provider's API is the
-  authority.
+Unknown model IDs are appended and known IDs are shallowly overridden. Numeric
+constraints in model notes are hints; the provider API remains authoritative.
 
 ### Provider plugins
 
-Third-party providers are declared in the config under `providers.<id>.module`
-and loaded at runtime via dynamic `import()`. A non-empty `module` string plus
-any settings you need:
+Declare a third-party provider module under `providers.<id>.module`:
 
 ```json
 {
   "providers": {
-    "my-provider": { "module": "creatifact-my-provider", "apiKey": "..." }
+    "my-provider": {
+      "module": "creatifact-my-provider",
+      "apiKey": "${MY_PROVIDER_API_KEY}"
+    }
   }
 }
 ```
 
-`module` accepts four specifier forms:
-
-| Form | Example | Resolution |
-|------|---------|------------|
-| Bare package name | `creatifact-my-provider` | Resolved from Creatifact's own module tree first (same-project or both-global installs), then falls back to the current working directory (global CLI + project-local plugin) |
-| Relative path | `./plugins/my-provider.mjs` | Resolved against the caller's `cwd` |
-| Absolute path | `/opt/plugins/my-provider.mjs` | Used as-is |
-| Home path | `~/plugins/my-provider.mjs` | `~` expanded via the home directory |
-
-A plugin module must default-export a `(settings, env) => Provider` factory.
-`module` itself is stripped before the factory is called, so the factory only
-sees its business settings. The returned provider must:
-
-- declare a non-empty `id` **equal to** the config section key,
-- expose `models` as an array whose entries each have a non-empty `id`,
-- implement at least one capability API (`textGenerate`, `videoGenerate`,
-  `videoUnderstand`, `imageGenerate`, `imageUnderstand`, `embed`),
-- optionally declare `defaultModels` — a `{ capability: modelId }` map used
-  when the CLI omits the model (e.g. `creatifact gen image my-provider`).
-
-ESM (`"type": "module"`) is recommended; CommonJS (`module.exports = factory`)
-is also supported. Minimal plugin:
+The module must default-export a factory that returns a `Provider`. Bare package
+names, relative paths, absolute paths, and `~/...` paths are supported.
 
 ```ts
-import { createJsonClient, defineProvider, type Provider } from "creatifact/providers"
+import {
+  createJsonClient,
+  defineProvider,
+  type Provider,
+} from "creatifact/providers"
 
 interface Settings {
   apiKey?: string
@@ -714,56 +474,99 @@ interface Settings {
 
 export default defineProvider((settings: Settings, env) => {
   const apiKey = settings.apiKey ?? env["MY_PROVIDER_API_KEY"]
-  if (!apiKey) throw new Error("missing API key: set MY_PROVIDER_API_KEY or providers.my-provider.apiKey")
-  const client = createJsonClient({ baseUrl: "https://api.example.com", headers: { authorization: `Bearer ${apiKey}` } })
+  if (!apiKey) throw new Error("missing MY_PROVIDER_API_KEY")
+
+  const client = createJsonClient({
+    baseUrl: "https://api.example.com",
+    headers: { authorization: `Bearer ${apiKey}` },
+  })
+
   const provider: Provider = {
     id: "my-provider",
-    models: [{ id: "my-model", capabilities: { "image.generate": "supported" }, lastVerified: "2026-08" }],
-    defaultModels: { "image.generate": "my-model" },
+    models: [
+      {
+        id: "my-image-model",
+        capabilities: { "image.generate": {} },
+        lastVerified: "2026-08",
+      },
+    ],
+    defaultModels: { "image.generate": "my-image-model" },
     imageGenerate: {
       async create(req) {
-        const res = await client.requestJson("/v1/images", { method: "POST", body: req })
-        return { images: [{ url: res["url"] as string }] }
+        const result = await client.post<{ url: string }>("/v1/images", req)
+        if (result.isErr()) throw result.error
+        return { artifacts: [{ url: result.value.url }] }
       },
     },
   }
+
   return provider
 })
 ```
 
-Types and helpers (`Provider`, `defineProvider`, `createJsonClient`,
-`pollUntil`, `ProviderError`, …) are importable from `creatifact/providers`;
-add `creatifact` as a devDependency for compile-time types. No runtime
-peerDependency is required.
+Plugin types and helpers are exported from `creatifact/providers`. Add
+`creatifact` as a development dependency to compile a plugin; the CLI loads the
+module at runtime.
 
-Load failures (module not found, bad export shape, `id` mismatch, no capability
-APIs) throw a `PluginError` with the provider id — they are configuration or
-programming errors and are never retried. `module` cannot be set on built-in
-provider ids (`ark`, `kling`, `minimax`, `zhipu`).
+## Configuration
 
-Programmatic use:
+The default config path is `~/.creatifact/config.json`. Override its directory
+with `CREATIFACT_CONFIG_DIR` or pass `--config-dir <dir>` to any command.
 
-```ts
-import {
-  createProvider,
-  listConfiguredProviderIds,
-  listProviderIds,
-} from "creatifact/providers"
-
-const provider = await createProvider("my-provider") // async since plugins load via import()
-listProviderIds()            // built-ins only, sync
-listConfiguredProviderIds()  // built-ins + config-declared plugins, sync
+```json
+{
+  "defaults": {
+    "registry": "ghcr.io",
+    "gen": { "provider": "zhipu" },
+    "build": { "concurrency": 4, "reuse": "stale" }
+  },
+  "providers": {
+    "zhipu": { "apiKey": "${ZHIPU_API_KEY}" }
+  }
+}
 ```
+
+Manage it through the CLI:
+
+```bash
+creatifact config path
+creatifact config list
+creatifact config get defaults.gen.provider
+creatifact config set defaults.gen.provider zhipu
+creatifact config reset
+```
+
+Secret-looking values are masked by `config list` and `config get`. Config
+writes are atomic, and a corrupt file fails loudly instead of being ignored.
+
+## Artifact semantics
+
+A generated package contains the effective generation spec and result metadata.
+Media artifacts are downloaded into a layer when possible so the package does
+not depend on an expiring CDN URL; the original URL remains in metadata for
+provenance. If the URL is already unavailable, Creatifact preserves a URL-only
+record and emits a warning.
+
+Text and embedding tasks return `data.text` or `data.vectors` directly. Pass
+`--tag` or `--output` to package them as `text.txt` or `vectors.json`, which can
+then be consumed through `pkg://` references in another recipe.
+
+Creatifact provides immutable bytes, recorded inputs, and traceable lineage. It
+does not promise that rerunning a stochastic or silently updated model will
+produce identical bytes.
 
 ## Development
 
 ```bash
-npm run dev          # Run directly via tsx
-npm run typecheck    # TypeScript type checking
-npm run build        # Build to dist/
-npm test             # Run tests
-npm run qa           # Full gate: typecheck + build + test + lint + smoke
+npm run dev          # Run src/index.ts directly
+npm run typecheck    # Strict TypeScript check
+npm run gen:schemas  # Regenerate schemas from src/contract.ts
+npm run build        # Bundle the CLI
+npm test             # Run Vitest once
+npm run qa           # Typecheck, build, test, lint, dependency check, smoke test
 ```
+
+`src/contract.ts` is the single source of truth for request and build schemas.
 
 ## License
 
