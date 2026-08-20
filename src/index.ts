@@ -16,7 +16,7 @@ import { buildModelsCommand, type ModelsCommandOptions, modelsArgsFromOptions } 
 import { emitError, emitResult } from "./output"
 import { buildPullCommand, type PullCommandOptions, pullArgsFromOptions } from "./pull"
 import { buildPushCommand, type PushCommandOptions, pushArgsFromOptions } from "./push"
-import { buildPackageCommand } from "./store"
+import { buildPackageCommand, buildTagCommand } from "./store"
 import { addGlobalOptions, configOpts, prettyOpts } from "./util"
 
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
@@ -119,6 +119,9 @@ program.addCommand(buildGenerateCommand().alias("gen"))
 
 // --- package: store management (list / ls, rm) ---
 program.addCommand(buildPackageCommand())
+
+// --- tag: point a new store ref at an existing one (docker tag semantics) ---
+program.addCommand(addGlobalOptions(buildTagCommand()))
 
 // --- bare invocation / unknown top-level command ---
 program.action((_options, command) => {

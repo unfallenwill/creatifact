@@ -22,6 +22,7 @@ export type EnvelopeKind =
   | "config"
   | "package.list"
   | "package.rm"
+  | "package.tag"
   | "pipeline"
 
 export interface OutputOptions {

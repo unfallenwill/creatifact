@@ -62,6 +62,41 @@ async function reachableBlobs(dir: string, entry: IndexEntry): Promise<Set<strin
   return set
 }
 
+export interface TagResult {
+  source: string
+  target: string
+}
+
+/**
+ * Point a second store ref at an existing tag's manifest (docker tag
+ * semantics): one more index entry, no blob copies; removeStoreRefs GCs.
+ */
+export async function tagStoreRef(
+  source: string,
+  target: string,
+  configPath?: string,
+): Promise<TagResult> {
+  const dir = storeDir(envForConfigPath(configPath))
+  await withIndexLock(dir, async () => {
+    const entries = await readIndexEntries(dir)
+    const src = entries.find((e) => e.annotations?.[REF_NAME_ANNOTATION] === source)
+    if (src === undefined) {
+      throw usageError(`tag '${source}' not found in store`)
+    }
+    const exists = entries.some((e) => e.annotations?.[REF_NAME_ANNOTATION] === target)
+    if (exists) {
+      throw usageError(`tag '${target}' already exists in store`)
+    }
+    const { [REF_NAME_ANNOTATION]: _ref, ...annotations } = src.annotations ?? {}
+    void _ref
+    await writeIndexAtomic(dir, [
+      ...entries,
+      { ...src, annotations: { [REF_NAME_ANNOTATION]: target, ...annotations } },
+    ])
+  })
+  return { source, target }
+}
+
 export interface RemoveResult {
   untagged: string[]
   deletedBlobs: string[]
@@ -115,6 +150,20 @@ export async function removeStoreRefs(refs: string[], configPath?: string): Prom
   })
 }
 
+export function buildTagCommand(): Command {
+  return new Command("tag")
+    .description("Create a store tag pointing at an existing tag (docker tag semantics)")
+    .argument("<source>", "Existing store tag")
+    .argument("<target>", "New store tag")
+    .action(
+      async (source: string, target: string, options: { configDir?: string }, command: Command) => {
+        const { configPath } = configOpts(command, options.configDir)
+        const result = await tagStoreRef(source, target, configPath)
+        emitResult("package.tag", result, prettyOpts(command))
+      },
+    )
+}
+
 export function buildPackageCommand(): Command {
   const pkg = new Command("package")
     .usage("<action>")
@@ -147,7 +196,7 @@ export function buildPackageCommand(): Command {
       command.help()
       return
     }
-    throw usageError(`unknown package action '${action}' (expected list, rm)`)
+    throw usageError(`unknown package action '${action}' (expected list, rm, tag)`)
   })
   return pkg
 }
