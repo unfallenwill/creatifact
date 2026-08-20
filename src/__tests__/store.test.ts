@@ -11,6 +11,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, expect, test } from "vitest"
 import { runBuild } from "../build"
+import { MANIFEST_MEDIA_TYPE, readIndexEntries, upsertStoreEntry, withIndexLock } from "../oci"
 import { listStoreEntries, removeStoreRefs } from "../store"
 
 let dir: string
@@ -102,4 +103,43 @@ test("rm of an unknown tag fails without touching the store", async () => {
 test("listStoreEntries is empty for a fresh store", async () => {
   expect(await listStoreEntries(configPath)).toEqual([])
   expect(readFileSync(configPath, "utf8")).toContain("version")
+})
+
+test("concurrent store upserts do not lose index entries", async () => {
+  // Eight parallel upserts into one shared store: every tag must survive.
+  // Before the index lock this raced read-modify-write and dropped entries.
+  const store = join(configDir, "store")
+  const N = 8
+  await Promise.all(
+    Array.from({ length: N }, (_, i) =>
+      upsertStoreEntry(
+        store,
+        {
+          mediaType: MANIFEST_MEDIA_TYPE,
+          digest: `sha256:${String(i).padStart(64, "0")}`,
+          size: 1,
+        },
+        `race:${i}`,
+      ),
+    ),
+  )
+  const entries = await readIndexEntries(store)
+  const tags = entries.map((e) => e.annotations?.["org.opencontainers.image.ref.name"])
+  expect(entries).toHaveLength(N)
+  for (let i = 0; i < N; i++) expect(tags).toContain(`race:${i}`)
+})
+
+test("store lock releases on failure", async () => {
+  // A throwing critical section must release the lock (finally), or every
+  // later store write would block until the lock goes stale.
+  const store = join(configDir, "store")
+  await expect(
+    withIndexLock(store, async () => {
+      throw new Error("boom")
+    }),
+  ).rejects.toThrow("boom")
+  // Still lockable immediately afterwards.
+  await withIndexLock(store, async () => {
+    expect(true).toBe(true)
+  })
 })

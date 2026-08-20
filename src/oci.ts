@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import { join } from "node:path"
+
+import { lock } from "proper-lockfile"
 
 import { usageError } from "./errors"
 
@@ -140,26 +142,58 @@ export async function upsertStoreEntry(
   ref: string,
 ): Promise<void> {
   const marker = join(storeDir, "oci-layout")
-  if (!existsSync(marker)) {
-    await mkdir(storeDir, { recursive: true })
-    await writeFile(marker, JSON.stringify({ imageLayoutVersion: "1.0.0" }))
-  }
+  await withIndexLock(storeDir, async () => {
+    if (!existsSync(marker)) {
+      await mkdir(storeDir, { recursive: true })
+      await writeFile(marker, JSON.stringify({ imageLayoutVersion: "1.0.0" }))
+    }
 
-  const entry: IndexEntry = {
-    mediaType: manifestDescriptor.mediaType,
-    digest: manifestDescriptor.digest,
-    size: manifestDescriptor.size,
-    annotations: { [REF_NAME_ANNOTATION]: ref },
+    const entry: IndexEntry = {
+      mediaType: manifestDescriptor.mediaType,
+      digest: manifestDescriptor.digest,
+      size: manifestDescriptor.size,
+      annotations: { [REF_NAME_ANNOTATION]: ref },
+    }
+    const others = (await readIndexEntries(storeDir)).filter(
+      (m) => m.annotations?.[REF_NAME_ANNOTATION] !== ref,
+    )
+    await writeIndexAtomic(storeDir, [...others, entry])
+  })
+}
+
+/**
+ * Serialize shared-store index mutations across processes. The lock lives
+ * at `<store>/index.json.lock` (proper-lockfile, mkdir-atomic): concurrent
+ * writers retry until the holder releases; a crashed holder's lock goes
+ * stale after 10s and is claimable. Readers stay lock-free — writers
+ * publish via write-temp-then-rename, so readers always see a whole index.
+ */
+export async function withIndexLock<T>(storeDir: string, fn: () => Promise<T>): Promise<T> {
+  // The lockfile's parent must exist; a fresh store may not yet.
+  await mkdir(storeDir, { recursive: true })
+  const release = await lock(join(storeDir, "index.json"), {
+    realpath: false,
+    stale: 10_000,
+    retries: { retries: 30, factor: 1.5, minTimeout: 50, maxTimeout: 500 },
+  })
+  try {
+    return await fn()
+  } finally {
+    await release()
   }
-  const others = (await readIndexEntries(storeDir)).filter(
-    (m) => m.annotations?.[REF_NAME_ANNOTATION] !== ref,
-  )
+}
+
+/** Publish the store index atomically (write temp + rename). */
+export async function writeIndexAtomic(storeDir: string, manifests: IndexEntry[]): Promise<void> {
   const index = {
     schemaVersion: 2,
     mediaType: INDEX_MEDIA_TYPE,
-    manifests: [...others, entry],
+    manifests,
   }
-  await writeFile(join(storeDir, "index.json"), JSON.stringify(index, null, 2))
+  const final = join(storeDir, "index.json")
+  const tmp = join(storeDir, `index.json.${process.pid}.tmp`)
+  await writeFile(tmp, JSON.stringify(index, null, 2))
+  await rename(tmp, final)
 }
 
 export async function readOciLayout(

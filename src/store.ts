@@ -1,4 +1,4 @@
-import { readdir, readFile, rm, writeFile } from "node:fs/promises"
+import { readdir, readFile, rm } from "node:fs/promises"
 import { join } from "node:path"
 
 import { Command } from "commander"
@@ -8,10 +8,11 @@ import { usageError } from "./errors"
 import { GEN_CONFIG_MEDIA_TYPE } from "./genPackage"
 import {
   digestHex,
-  INDEX_MEDIA_TYPE,
   type IndexEntry,
   REF_NAME_ANNOTATION,
   readIndexEntries,
+  withIndexLock,
+  writeIndexAtomic,
 } from "./oci"
 import { emitResult } from "./output"
 import { addGlobalOptions, configOpts, prettyOpts } from "./util"
@@ -72,49 +73,46 @@ export interface RemoveResult {
  */
 export async function removeStoreRefs(refs: string[], configPath?: string): Promise<RemoveResult> {
   const dir = storeDir(envForConfigPath(configPath))
-  const entries = await readIndexEntries(dir)
-  const wanted = new Set(refs)
-  const removed: IndexEntry[] = []
-  const kept: IndexEntry[] = []
-  for (const e of entries) {
-    const ref = e.annotations?.[REF_NAME_ANNOTATION]
-    if (ref !== undefined && wanted.has(ref)) removed.push(e)
-    else kept.push(e)
-  }
-  const missing = refs.filter(
-    (r) => !removed.some((e) => e.annotations?.[REF_NAME_ANNOTATION] === r),
-  )
-  if (missing.length > 0) {
-    throw usageError(`tag(s) not found in store: ${missing.join(", ")}`)
-  }
-
-  // GC: delete blobs unreachable from the remaining entries
-  const reachable = new Set<string>()
-  for (const e of kept) {
-    for (const d of await reachableBlobs(dir, e)) reachable.add(d)
-  }
-  const blobsDir = join(dir, "blobs", "sha256")
-  const deletedBlobs: string[] = []
-  try {
-    for (const name of await readdir(blobsDir)) {
-      const digest = `sha256:${name}`
-      if (!reachable.has(digest)) {
-        await rm(join(blobsDir, name))
-        deletedBlobs.push(digest)
-      }
+  return withIndexLock(dir, async () => {
+    const entries = await readIndexEntries(dir)
+    const wanted = new Set(refs)
+    const removed: IndexEntry[] = []
+    const kept: IndexEntry[] = []
+    for (const e of entries) {
+      const ref = e.annotations?.[REF_NAME_ANNOTATION]
+      if (ref !== undefined && wanted.has(ref)) removed.push(e)
+      else kept.push(e)
     }
-  } catch {
-    // no blobs dir yet — nothing to collect
-  }
+    const missing = refs.filter(
+      (r) => !removed.some((e) => e.annotations?.[REF_NAME_ANNOTATION] === r),
+    )
+    if (missing.length > 0) {
+      throw usageError(`tag(s) not found in store: ${missing.join(", ")}`)
+    }
 
-  const index = {
-    schemaVersion: 2,
-    mediaType: INDEX_MEDIA_TYPE,
-    manifests: kept,
-  }
-  await writeFile(join(dir, "index.json"), JSON.stringify(index, null, 2))
+    // GC: delete blobs unreachable from the remaining entries
+    const reachable = new Set<string>()
+    for (const e of kept) {
+      for (const d of await reachableBlobs(dir, e)) reachable.add(d)
+    }
+    const blobsDir = join(dir, "blobs", "sha256")
+    const deletedBlobs: string[] = []
+    try {
+      for (const name of await readdir(blobsDir)) {
+        const digest = `sha256:${name}`
+        if (!reachable.has(digest)) {
+          await rm(join(blobsDir, name))
+          deletedBlobs.push(digest)
+        }
+      }
+    } catch {
+      // no blobs dir yet — nothing to collect
+    }
 
-  return { untagged: refs, deletedBlobs }
+    await writeIndexAtomic(dir, kept)
+
+    return { untagged: refs, deletedBlobs }
+  })
 }
 
 export function buildPackageCommand(): Command {
