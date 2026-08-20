@@ -3,6 +3,7 @@ import { readdir } from "node:fs/promises"
 import { join } from "node:path"
 
 import { type Command, CommanderError } from "commander"
+import ms from "ms"
 
 import { CliError } from "./errors"
 import { pc } from "./format"
@@ -35,20 +36,19 @@ export async function resolvePassword(
   return password
 }
 
-const DURATION_UNITS: Record<string, number> = {
-  ms: 1,
-  s: 1000,
-  m: 60_000,
-  h: 3_600_000,
-}
-
-/** "90s" / "5m" / "600" (bare number = seconds) → ms; throws on invalid input. */
+/** "90s" / "5m" / "600" (bare number = seconds) → ms; throws on invalid input.
+ * Unit math is delegated to the `ms` package (the de-facto standard);
+ * this wrapper keeps the stricter contract the CLI documents: integer
+ * values only, ms/s/m/h units only, and bare numbers mean seconds (ms()
+ * itself would read a bare number as milliseconds). */
 export function parseDurationMs(raw: string, flag: string): number {
   const m = /^(\d+)(ms|s|m|h)?$/.exec(raw)
   if (!m || m[1] === undefined) {
     throw new Error(`invalid ${flag} '${raw}' (expected e.g. 90s, 5m, or bare seconds)`)
   }
-  return Number(m[1]) * (DURATION_UNITS[m[2] ?? "s"] ?? 1000)
+  if (m[2] === undefined) return Number(m[1]) * 1000
+  // Regex-guaranteed "<digits><unit>" — a valid ms() StringValue.
+  return ms(`${m[1]}${m[2]}` as ms.StringValue)
 }
 
 /** JSON.parse when valid, else the literal string (same semantics as `config set`). */
