@@ -184,7 +184,13 @@ test("validateRequest: task-scoped flags", () => {
       req("text2video", { prompt: "x", noWait: true, timeout: "5m", interval: "5s" }),
     ),
   ).not.toThrow()
-  expect(() => validateRequest(req("text2text", { prompt: "x", tag: "t:1" }))).toThrow(/--tag/)
+  // text/embed tasks: packaging is opt-in but accepted
+  expect(() => validateRequest(req("text2text", { prompt: "x", tag: "t:1" }))).not.toThrow()
+  expect(() => validateRequest(req("embed", { inputs: ["a"], output: "./o" }))).not.toThrow()
+  // --no-pack stays media-only (media packs by default; text never does)
+  expect(() => validateRequest(req("text2text", { prompt: "x", noPack: true }))).toThrow(
+    /--no-pack/,
+  )
 })
 
 test("validateRequest: durations must parse", () => {
@@ -297,7 +303,7 @@ test("pickModelForTask: image2image prefers imageInput models", () => {
 
 test("requestFieldsForTask matches the task contracts", () => {
   expect([...requestFieldsForTask("text2text")].sort()).toEqual(
-    ["model", "prompt", "provider", "system", "options"].sort(),
+    ["model", "prompt", "provider", "system", "options", "output", "tag"].sort(),
   )
   expect(requestFieldsForTask("image2image").has("images")).toBe(true)
   expect(requestFieldsForTask("text2image").has("images")).toBe(false)

@@ -93,6 +93,8 @@ test("build schema gen fields match the recipe spec", () => {
       "provider",
       "model",
       "prompt",
+      "promptRef",
+      "inputRefs",
       "system",
       "options",
       "images",

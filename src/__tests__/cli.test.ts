@@ -2,6 +2,7 @@ import { execSync, spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import * as path from "node:path"
+import { pathToFileURL } from "node:url"
 import { stripAnsi } from "../format"
 
 const CLI = path.resolve("dist/index.mjs")
@@ -1363,6 +1364,96 @@ describe("cli generate — integration", () => {
     }
   })
 
+  it("generate <ref> reads a pkg:// prompt inline from package layers", () => {
+    const { env, dir, recordPath } = demoEnv()
+    const assetsDir = path.join(dir, "assets")
+    const recipeDir = path.join(dir, "recipe")
+    mkdirSync(assetsDir, { recursive: true })
+    writeFileSync(path.join(assetsDir, "story.txt"), "a crane over the west lake at dusk")
+    const manifestPath = path.join(dir, "creatifact-build.json")
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        gen: {
+          task: "text2image",
+          provider: "demo",
+          model: "demo-image",
+          prompt: "pkg://story.txt",
+        },
+        assets: assetsDir,
+      }),
+    )
+    try {
+      const built = run([
+        "build",
+        "-f",
+        manifestPath,
+        "-t",
+        "example.com/prompt-pkg:v1.0",
+        "-o",
+        recipeDir,
+      ])
+      expect(built.code).toBe(0)
+
+      const gen = run(["generate", recipeDir, "--no-pack"], undefined, env)
+      expect(gen.code, gen.stderr).toBe(0)
+
+      // the prompt is the file's text, not the pkg:// ref itself
+      const req = lastRequest(recordPath)
+      expect(req["prompt"]).toBe("a crane over the west lake at dusk")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("generate text2text --tag packs the text as a referenceable OCI package", () => {
+    const { env, dir } = demoEnv()
+    const resultDir = path.join(dir, "result")
+    try {
+      const gen = run(
+        [
+          "generate",
+          "text2text",
+          "demo/demo-text",
+          "hello",
+          "--tag",
+          "org/story:1",
+          "--output",
+          resultDir,
+        ],
+        undefined,
+        env,
+      )
+      expect(gen.code, gen.stderr).toBe(0)
+      const parsed = JSON.parse(gen.stdout) as {
+        data: { text: string; tag: string; digest: string; outputDir: string }
+      }
+      expect(parsed.data.text).toBe("demo text reply")
+      expect(parsed.data.tag).toBe("org/story:1")
+      expect(parsed.data.digest).toMatch(/^sha256:/)
+
+      const index = JSON.parse(readFileSync(path.join(resultDir, "index.json"), "utf8"))
+      const manifest = JSON.parse(
+        readFileSync(
+          path.join(resultDir, "blobs", "sha256", index.manifests[0].digest.slice(7)),
+          "utf8",
+        ),
+      )
+      expect(manifest.layers).toHaveLength(1)
+      const config = JSON.parse(
+        readFileSync(
+          path.join(resultDir, "blobs", "sha256", manifest.config.digest.slice(7)),
+          "utf8",
+        ),
+      )
+      expect(config.gen.task).toBe("text2text")
+      expect(config.result.text).toBe("demo text reply")
+      expect(config.result.artifacts).toEqual([{ name: "text.txt", mimeType: "text/plain" }])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it("--list-models returns supporting models with defaults", () => {
     const { env, dir } = demoEnv()
     try {
@@ -1730,6 +1821,327 @@ describe("cli -f file-driven — integration", () => {
         .map((line) => JSON.parse(line))
       expect(requests).toHaveLength(2)
       expect(requests[1]?.["image"]).toEqual({ url: "https://cdn.test/out.png" })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("runs a steps pipeline: text2text → text2image chained on the writer's text", () => {
+    const { env, dir, recordPath } = demoEnv()
+    const pipelinePath = path.join(dir, "pipeline.json")
+    const resultDir = path.join(dir, "result")
+    writeFileSync(
+      pipelinePath,
+      JSON.stringify({
+        steps: [
+          {
+            name: "writer",
+            command: "generate.text2text",
+            provider: "demo/demo-text",
+            prompt: "write a crane image prompt",
+            tag: "demo/writer:v1",
+          },
+          {
+            name: "gen",
+            command: "generate.text2image",
+            provider: "demo/demo-image",
+            // biome-ignore lint/suspicious/noTemplateCurlyInString: pipeline placeholder in a JSON payload string, not a JS template
+            prompt: "${writer.text}",
+            output: resultDir,
+          },
+        ],
+      }),
+    )
+    try {
+      const r = run(["-f", pipelinePath], undefined, env)
+      expect(r.code, r.stderr).toBe(0)
+
+      const summary = JSON.parse(r.stdout)
+      expect(summary.data.steps[0].data.text).toBe("demo text reply")
+      // writer packed its text: digest + tag anchor the provenance chain
+      expect(summary.data.steps[0].data.tag).toBe("demo/writer:v1")
+      expect(summary.data.steps[0].data.digest).toMatch(/^sha256:/)
+      expect(summary.data.steps[1].data.outputDir).toBe(resultDir)
+
+      // the image step's prompt IS the text step's generated text
+      const requests = readFileSync(recordPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+      expect(requests[1]?.["prompt"]).toBe("demo text reply")
+
+      // the image package's config records the digest-anchored promptRef
+      const index = JSON.parse(readFileSync(path.join(resultDir, "index.json"), "utf8"))
+      const manifest = JSON.parse(
+        readFileSync(
+          path.join(resultDir, "blobs", "sha256", index.manifests[0].digest.slice(7)),
+          "utf8",
+        ),
+      )
+      const config = JSON.parse(
+        readFileSync(
+          path.join(resultDir, "blobs", "sha256", manifest.config.digest.slice(7)),
+          "utf8",
+        ),
+      )
+      expect(config.gen.prompt).toBe("demo text reply")
+      expect(config.gen.promptRef).toEqual({
+        name: "writer",
+        digest: summary.data.steps[0].data.digest,
+        tag: "demo/writer:v1",
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("pipeline promptRef records name-only when the text step packed nothing", () => {
+    const { env, dir } = demoEnv()
+    const pipelinePath = path.join(dir, "pipeline.json")
+    const resultDir = path.join(dir, "result")
+    writeFileSync(
+      pipelinePath,
+      JSON.stringify({
+        steps: [
+          {
+            name: "writer",
+            command: "generate.text2text",
+            provider: "demo/demo-text",
+            prompt: "x",
+          },
+          {
+            name: "gen",
+            command: "generate.text2image",
+            provider: "demo/demo-image",
+            // biome-ignore lint/suspicious/noTemplateCurlyInString: pipeline placeholder in a JSON payload string, not a JS template
+            prompt: "${writer.text}",
+            output: resultDir,
+          },
+        ],
+      }),
+    )
+    try {
+      const r = run(["-f", pipelinePath], undefined, env)
+      expect(r.code, r.stderr).toBe(0)
+      const index = JSON.parse(readFileSync(path.join(resultDir, "index.json"), "utf8"))
+      const manifest = JSON.parse(
+        readFileSync(
+          path.join(resultDir, "blobs", "sha256", index.manifests[0].digest.slice(7)),
+          "utf8",
+        ),
+      )
+      const config = JSON.parse(
+        readFileSync(
+          path.join(resultDir, "blobs", "sha256", manifest.config.digest.slice(7)),
+          "utf8",
+        ),
+      )
+      // no digest/tag to anchor: the pointer degrades to the step name only
+      expect(config.gen.promptRef).toEqual({ name: "writer" })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("pipeline records digest-anchored inputRefs for media chained from a packed step", () => {
+    const { env, dir, recordPath } = demoEnv()
+    const pipelinePath = path.join(dir, "pipeline.json")
+    const resultDir = path.join(dir, "result")
+    writeFileSync(
+      pipelinePath,
+      JSON.stringify({
+        steps: [
+          {
+            name: "img",
+            command: "generate.text2image",
+            provider: "demo/demo-image",
+            prompt: "a crane",
+            tag: "demo/src:v1",
+          },
+          {
+            name: "vid",
+            command: "generate.image2video",
+            provider: "demo/demo-video",
+            prompt: "animate it",
+            // biome-ignore lint/suspicious/noTemplateCurlyInString: pipeline placeholder in a JSON payload string, not a JS template
+            images: ["${img.artifacts[0].url}"],
+            output: resultDir,
+          },
+        ],
+      }),
+    )
+    try {
+      const r = run(["-f", pipelinePath], undefined, env)
+      expect(r.code, r.stderr).toBe(0)
+      const summary = JSON.parse(r.stdout)
+      const srcDigest = summary.data.steps[0].data.digest
+      expect(srcDigest).toMatch(/^sha256:/)
+
+      // the video step actually received the image url
+      const requests = readFileSync(recordPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+      expect(requests[1]?.["firstFrame"]).toEqual({ url: "https://cdn.test/out.png" })
+
+      // the config records a digest-anchored pointer beside the expiring url
+      const index = JSON.parse(readFileSync(path.join(resultDir, "index.json"), "utf8"))
+      const manifest = JSON.parse(
+        readFileSync(
+          path.join(resultDir, "blobs", "sha256", index.manifests[0].digest.slice(7)),
+          "utf8",
+        ),
+      )
+      const config = JSON.parse(
+        readFileSync(
+          path.join(resultDir, "blobs", "sha256", manifest.config.digest.slice(7)),
+          "utf8",
+        ),
+      )
+      expect(config.gen.images).toEqual(["https://cdn.test/out.png"])
+      expect(config.gen.inputRefs).toEqual([
+        { field: "images", index: 0, name: "img", digest: srcDigest, tag: "demo/src:v1" },
+      ])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("rerun falls back to stored bytes when the provider rejects an input url", async () => {
+    // data: artifact url → the source package layer holds real bytes without
+    // any network (spawnSync blocks the worker loop, so no in-process server)
+    const servedUrl = `data:image/png;base64,${Buffer.from("SRCIMAGE").toString("base64")}`
+    const providersUrl = pathToFileURL(path.resolve("dist/providers/index.mjs")).href
+
+    const dir = mkdtempSync(path.join(tmpdir(), "creatifact-fallback-"))
+    const recordPath = path.join(dir, "requests.log")
+    const pluginPath = path.join(dir, "demo.mjs")
+    writeFileSync(
+      pluginPath,
+      `
+import { appendFileSync } from "node:fs"
+import { ProviderError } from ${JSON.stringify(providersUrl)}
+export default (settings) => ({
+  id: "demo",
+  models: [
+    { id: "ok-image", capabilities: { "image.generate": {} }, lastVerified: "2026-08" },
+    { id: "reject-url-image", capabilities: { "image.generate": { imageInput: true } }, lastVerified: "2026-08" },
+  ],
+  imageGenerate: {
+    async create(req) {
+      appendFileSync(settings.recordPath, JSON.stringify(req) + "\\n")
+      if (req.model === "reject-url-image" && req.image && "url" in req.image) {
+        throw new ProviderError("internal", "input url rejected (simulated expiry)")
+      }
+      if (req.model === "ok-image") {
+        return { artifacts: [{ url: settings.servedUrl, mimeType: "image/png" }] }
+      }
+      return { artifacts: [{ base64: Buffer.from("EDITED").toString("base64"), mimeType: "image/png" }] }
+    },
+  },
+})
+`,
+    )
+    const configDir = path.join(dir, "cfg")
+    mkdirSync(configDir, { recursive: true })
+    writeFileSync(
+      path.join(configDir, "config.json"),
+      JSON.stringify({
+        providers: { demo: { module: pluginPath, servedUrl, recordPath } },
+      }),
+    )
+    const env = { CREATIFACT_CONFIG_DIR: configDir }
+
+    try {
+      // 1. produce a source package whose layer actually holds the url bytes
+      const src = run(
+        ["generate", "text2image", "demo/ok-image", "a crane", "--tag", "demo/src:v1"],
+        undefined,
+        env,
+      )
+      expect(src.code, src.stderr).toBe(0)
+      const srcDigest = (JSON.parse(src.stdout) as { data: { digest: string } }).data.digest
+      expect(srcDigest).toMatch(/^sha256:/)
+
+      // 2. bake a recipe whose images url will be rejected, with inputRefs anchors
+      const recipeDir = path.join(dir, "recipe")
+      const manifestPath = path.join(dir, "creatifact-build.json")
+      writeFileSync(
+        manifestPath,
+        JSON.stringify({
+          gen: {
+            task: "image2image",
+            provider: "demo",
+            model: "reject-url-image",
+            images: [servedUrl],
+            inputRefs: [
+              { field: "images", index: 0, name: "s1", digest: srcDigest, tag: "demo/src:v1" },
+            ],
+          },
+        }),
+      )
+      const built = run(["build", "-f", manifestPath, "-t", "demo/recipe:v1", "-o", recipeDir])
+      expect(built.code, built.stderr).toBe(0)
+
+      // 3. rerun: url attempt fails → one retry with stored bytes
+      const resultDir = path.join(dir, "result")
+      const gen = run(["generate", recipeDir, "repaint", "--output", resultDir], undefined, env)
+      expect(gen.code, gen.stderr).toBe(0)
+      expect(gen.stderr).toContain("retrying with stored bytes")
+
+      const requests = readFileSync(recordPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+      expect(requests).toHaveLength(3) // src gen + rejected url + fallback retry
+      expect(requests[1]?.["image"]).toEqual({ url: servedUrl })
+      const retryImage = requests[2]?.["image"] as { localPath: string } | undefined
+      expect(retryImage?.localPath).toMatch(/creatifact-fallback-[\w-]+[/\\]artifact-1\.png$/)
+
+      // provenance keeps the original url + anchors; only execution swapped
+      const index = JSON.parse(readFileSync(path.join(resultDir, "index.json"), "utf8"))
+      const manifest = JSON.parse(
+        readFileSync(
+          path.join(resultDir, "blobs", "sha256", index.manifests[0].digest.slice(7)),
+          "utf8",
+        ),
+      )
+      const config = JSON.parse(
+        readFileSync(
+          path.join(resultDir, "blobs", "sha256", manifest.config.digest.slice(7)),
+          "utf8",
+        ),
+      )
+      expect(config.gen.images).toEqual([servedUrl])
+      expect(config.gen.inputRefs[0].digest).toBe(srcDigest)
+
+      // 4. negative: no inputRefs → the provider error propagates, no retry
+      const bareDir = path.join(dir, "recipe-bare")
+      const bareManifest = path.join(dir, "creatifact-build-bare.json")
+      writeFileSync(
+        bareManifest,
+        JSON.stringify({
+          gen: {
+            task: "image2image",
+            provider: "demo",
+            model: "reject-url-image",
+            images: [servedUrl],
+          },
+        }),
+      )
+      const bareBuilt = run(
+        ["build", "-f", bareManifest, "-t", "demo/bare:v1", "-o", bareDir],
+        undefined,
+        env,
+      )
+      expect(bareBuilt.code, bareBuilt.stderr).toBe(0)
+      const bare = run(["generate", bareDir, "repaint"], undefined, env)
+      expect(bare.code).not.toBe(0)
+      expect(bare.stdout).toBe("")
+      expect(bare.stderr).toContain("input url rejected")
+      expect(bare.stderr).not.toContain("retrying with stored bytes")
+      const after = readFileSync(recordPath, "utf8").trim().split("\n")
+      expect(after).toHaveLength(4) // exactly one new attempt, no retry
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

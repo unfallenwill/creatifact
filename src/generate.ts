@@ -4,16 +4,20 @@ import { join } from "node:path"
 import { Command } from "commander"
 
 import { defaultGenProvider, envForConfigPath, loadConfig, storeDir } from "./config"
+import { artifactExtension, fetchArtifactBytes } from "./download"
 import { CliError, usageError } from "./errors"
 import { ok, status, warn } from "./format"
 import {
+  artifactFromStore,
   buildResultPackage,
   GEN_CONFIG_MEDIA_TYPE,
   type GenSpec,
+  type InputProvenance,
   type LoadedImage,
   loadGenImage,
   packageFsView,
   parseGenConfigBlob,
+  type StepProvenance,
 } from "./genPackage"
 import { emitResult } from "./output"
 import {
@@ -66,6 +70,10 @@ export interface GenRequest {
   lastFrame?: string
   /** Media attachments (image2text/video2text) or texts (embed). */
   inputs?: string[]
+  /** Internal: prompt provenance recorded by pipeline runs (not a CLI/-f field). */
+  promptRef?: StepProvenance
+  /** Internal: media-input provenance recorded by pipeline runs. */
+  inputRefs?: InputProvenance[]
   options?: Record<string, unknown>
   /** Video tasks: submit and print the task handle without polling. */
   noWait?: boolean
@@ -220,13 +228,16 @@ const TASK_FLAGS: TaskFlagSpec[] = [
   },
   {
     when: (s) => s.media,
+    add: (cmd) => cmd.option("--no-pack", "Return artifacts only; do not build a result package"),
+  },
+  {
+    when: (s) => s.media || s.packable === true,
     add: (cmd) => {
       cmd.option(
         "--output <dir>",
         "Result OCI layout directory (default ~/.creatifact/layouts/<repo>)",
       )
       cmd.option("--tag <repo:tag>", "Reference name for the result package")
-      cmd.option("--no-pack", "Return artifacts only; do not build a result package")
     },
   },
   {
@@ -610,10 +621,14 @@ function failForbiddenFrames(req: GenRequest): void {
 }
 
 function validateForbiddenPackaging(spec: TaskSpec, req: GenRequest): void {
-  const packaging = req.output !== undefined || req.tag !== undefined || req.noPack === true
-  if (!packaging || spec.media || req.task === "resume") return
-  const flag = req.output !== undefined ? "--output" : req.tag !== undefined ? "--tag" : "--no-pack"
-  fail(`${flag} applies to media tasks (and resume for --output), not ${req.task}`)
+  if (req.noPack === true && !spec.media) {
+    fail(`--no-pack applies to media tasks (they pack by default), not ${req.task}`)
+  }
+  const packaging = req.output !== undefined || req.tag !== undefined
+  if (!packaging) return
+  if (spec.media || spec.packable === true || req.task === "resume") return
+  const flag = req.output !== undefined ? "--output" : "--tag"
+  fail(`${flag} applies to result-packaging tasks (media, text, embed) and resume, not ${req.task}`)
 }
 
 /** Validate a merged request against its task contract. Throws with guidance. */
@@ -974,25 +989,31 @@ function describeStatus(status: { state: string; progress?: number | undefined }
   return status.progress === undefined ? status.state : `${status.state} ${status.progress}%`
 }
 
-const MIME_EXT: Record<string, string> = {
-  "image/png": "png",
-  "image/jpeg": "jpg",
-  "image/webp": "webp",
-  "image/gif": "gif",
-  "video/mp4": "mp4",
-}
-
-/** Write base64-only artifacts into `outputDir` (--output); returns the file paths. */
-function saveArtifacts(artifacts: Artifact[], outputDir: string): string[] {
+/**
+ * Write artifacts into `outputDir` (--output), downloading url artifacts so
+ * the files outlive the provider's expiring CDN links; base64 decodes as-is.
+ */
+async function saveArtifacts(artifacts: Artifact[], outputDir: string): Promise<string[]> {
   mkdirSync(outputDir, { recursive: true })
   const saved: string[] = []
-  artifacts.forEach((a, i) => {
-    if (a.url !== undefined || a.base64 === undefined) return
-    const ext = (a.mimeType && MIME_EXT[a.mimeType]) || "bin"
-    const file = `${outputDir}/artifact-${i + 1}.${ext}`
-    writeFileSync(file, Buffer.from(a.base64, "base64"))
+  for (const [i, artifact] of artifacts.entries()) {
+    let bytes: Buffer | undefined
+    if (artifact.base64 !== undefined) {
+      bytes = Buffer.from(artifact.base64, "base64")
+    } else if (artifact.url !== undefined) {
+      try {
+        bytes = await fetchArtifactBytes(artifact.url)
+      } catch (e) {
+        warn(`could not download ${artifact.url} (${(e as Error).message}); skipped`)
+        continue
+      }
+    } else {
+      continue
+    }
+    const file = `${outputDir}/artifact-${i + 1}.${artifactExtension(artifact)}`
+    writeFileSync(file, bytes)
     saved.push(file)
-  })
+  }
   return saved
 }
 
@@ -1247,7 +1268,7 @@ async function runResumeTask(
     )
   }
   const savedFiles =
-    req.output === undefined ? undefined : saveArtifacts(final.artifacts, req.output)
+    req.output === undefined ? undefined : await saveArtifacts(final.artifacts, req.output)
   return {
     task: "resume",
     provider: provider.id,
@@ -1265,6 +1286,8 @@ async function runResumeTask(
 export function effectiveGenSpec(req: GenRequest, providerId: string, model: string): GenSpec {
   const spec: GenSpec = { task: req.task, provider: providerId, model }
   if (req.prompt !== undefined) spec.prompt = req.prompt
+  if (req.promptRef !== undefined) spec.promptRef = req.promptRef
+  if (req.inputRefs !== undefined && req.inputRefs.length > 0) spec.inputRefs = req.inputRefs
   if (req.system !== undefined) spec.system = req.system
   if (req.images !== undefined && req.images.length > 0) spec.images = req.images
   if (req.firstFrame !== undefined) spec.firstFrame = req.firstFrame
@@ -1321,8 +1344,155 @@ export interface GenerateResult {
   outputDir?: string
   tag?: string
   digest?: string
+  /** Non-fatal packaging warnings (e.g. a url artifact could not be downloaded). */
+  warnings?: string[]
   /** --list-models payload. */
   models?: { entries: ListModelsResult[]; fallback?: ListModelsResult }
+}
+
+/** Opt-in OCI packaging for packable text/embed results (--tag/--output). */
+async function packageTextResultIfRequested(
+  opts: {
+    req: GenRequest
+    provider: Provider
+    model: string
+    fromRef?: string
+    configPath?: string
+  },
+  result: GenerateResult,
+): Promise<GenerateResult> {
+  const { req, provider, model } = opts
+  if (req.noPack === true || (req.tag === undefined && req.output === undefined)) return result
+  if (TASKS[req.task].packable !== true) return result
+
+  const resultTag = req.tag ?? "gen-output:latest"
+  const outputDir = req.output ?? storeDir(envForConfigPath(opts.configPath))
+  const pkg = await buildResultPackage({
+    outputDir,
+    tag: resultTag,
+    ...(req.output === undefined ? { store: true } : {}),
+    ...(opts.fromRef === undefined ? {} : { fromRef: opts.fromRef }),
+    artifacts: [],
+    spec: effectiveGenSpec(req, provider.id, model),
+    ...(result.text === undefined ? {} : { text: result.text }),
+    ...(result.vectors === undefined ? {} : { vectors: result.vectors }),
+    ...(result.dimensions === undefined ? {} : { dimensions: result.dimensions }),
+    ...(result.usage === undefined ? {} : { usage: result.usage }),
+  })
+  for (const message of pkg.warnings) warn(message)
+  ok(`built ${resultTag} → ${outputDir}`)
+  return {
+    ...result,
+    outputDir,
+    tag: resultTag,
+    digest: pkg.digest,
+    ...(pkg.warnings.length > 0 ? { warnings: pkg.warnings } : {}),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rerun fallback: dead input urls → stored bytes
+
+/** The current string value an inputRefs entry points at, if still a url. */
+function inputRefTarget(req: GenRequest, ref: InputProvenance): string | undefined {
+  switch (ref.field) {
+    case "images":
+      return ref.index === undefined ? undefined : req.images?.[ref.index]
+    case "inputs":
+      return ref.index === undefined ? undefined : req.inputs?.[ref.index]
+    case "firstFrame":
+      return req.firstFrame
+    case "lastFrame":
+      return req.lastFrame
+  }
+}
+
+/** Apply a url→localPath replacement map onto a copy of runReq. */
+function applyReplacements(runReq: GenRequest, replacements: Map<string, string>): GenRequest {
+  const apply = (v: string): string => replacements.get(v) ?? v
+  const out: GenRequest = { ...runReq }
+  if (runReq.images !== undefined) out.images = runReq.images.map(apply)
+  if (runReq.inputs !== undefined) out.inputs = runReq.inputs.map(apply)
+  if (runReq.firstFrame !== undefined) out.firstFrame = apply(runReq.firstFrame)
+  if (runReq.lastFrame !== undefined) out.lastFrame = apply(runReq.lastFrame)
+  return out
+}
+
+/** Collect dead-url → temp-file replacements for every anchored input. */
+async function collectUrlReplacements(
+  refs: InputProvenance[],
+  runReq: GenRequest,
+  configPath: string | undefined,
+  tmp: string,
+): Promise<Map<string, string>> {
+  const replacements = new Map<string, string>() // dead url → local path
+  for (const ref of refs) {
+    const target = inputRefTarget(runReq, ref)
+    if (target === undefined || !URL_RE.test(target) || replacements.has(target)) continue
+    if (ref.digest === undefined) continue
+    const stored = await artifactFromStore(ref.digest, target, {
+      ...(configPath === undefined ? {} : { configPath }),
+    })
+    if (stored === undefined) continue
+    writeFileSync(join(tmp, stored.name), stored.bytes)
+    replacements.set(target, join(tmp, stored.name))
+  }
+  return replacements
+}
+
+/**
+ * Replace expiring-url inputs with bytes extracted from the shared store
+ * (anchored by gen.inputRefs digests). Returns undefined when no input is
+ * replaceable — the caller then surfaces the original provider error.
+ */
+async function buildInputFallback(
+  req: GenRequest,
+  runReq: GenRequest,
+  configPath: string | undefined,
+): Promise<{ req: GenRequest; cleanup: () => void; replaced: number } | undefined> {
+  const refs = req.inputRefs ?? []
+  if (refs.length === 0) return undefined
+
+  const tmp = mkdtempSync(join(tmpdir(), "creatifact-fallback-"))
+  try {
+    const replacements = await collectUrlReplacements(refs, runReq, configPath, tmp)
+    if (replacements.size === 0) return undefined
+    return {
+      req: applyReplacements(runReq, replacements),
+      cleanup: () => rmSync(tmp, { recursive: true, force: true }),
+      replaced: replacements.size,
+    }
+  } catch {
+    rmSync(tmp, { recursive: true, force: true })
+    return undefined
+  }
+}
+
+/**
+ * Run a task; on a provider rejection of an input url, retry exactly once
+ * with stored bytes per gen.inputRefs. Anything else surfaces as-is.
+ */
+async function executeWithFallback(
+  ctx: ExecCtx,
+  req: GenRequest,
+  configPath: string | undefined,
+): Promise<Awaited<ReturnType<typeof executeTask>>> {
+  try {
+    return await executeTask(ctx)
+  } catch (e) {
+    const fallback =
+      e instanceof ProviderError ? await buildInputFallback(req, ctx.req, configPath) : undefined
+    if (fallback === undefined) throw e
+    warn(
+      `provider rejected an input url; retrying with stored bytes ` +
+        `(${fallback.replaced} input${fallback.replaced === 1 ? "" : "s"}, per gen.inputRefs)`,
+    )
+    try {
+      return await executeTask({ ...ctx, req: fallback.req })
+    } finally {
+      fallback.cleanup()
+    }
+  }
 }
 
 /** Execute a validated request: run the task and package media results. */
@@ -1342,9 +1512,12 @@ async function executeAndPackage(opts: {
 
   try {
     const ctx: ExecCtx = { req: runReq, provider, model, signal: controller.signal }
-    const result = await executeTask(ctx)
-    // Text/understand/embed already carry a complete result.
-    if ("task" in result) return result
+    const result = await executeWithFallback(ctx, req, opts.configPath)
+    // Text/understand/embed carry a complete structured payload; packaging
+    // stays opt-in (--tag / --output) so stdout-only runs are unchanged.
+    if ("task" in result) {
+      return await packageTextResultIfRequested(opts, result)
+    }
     // --no-wait submit: the handle is the payload.
     if ("handle" in result) {
       return { task: req.task, provider: provider.id, model, handle: result.handle }
@@ -1366,12 +1539,14 @@ async function executeAndPackage(opts: {
       spec: effectiveGenSpec(req, provider.id, model),
       usage: result.usage,
     })
+    for (const message of pkg.warnings) warn(message)
     ok(`built ${resultTag} → ${outputDir}`)
     return {
       ...mediaResult(req, provider.id, model, result),
       outputDir,
       tag: resultTag,
       digest: pkg.digest,
+      ...(pkg.warnings.length > 0 ? { warnings: pkg.warnings } : {}),
     }
   } finally {
     process.off("SIGINT", onSignal)
@@ -1424,14 +1599,16 @@ function looksLikeGenRef(arg: string, storeTags?: Set<string>): boolean {
 }
 
 /**
- * Materialize pkg:// media references (images / frames / inputs) into temp
- * files extracted from the package layers. Non-pkg values pass through.
+ * Materialize pkg:// references (images / frames / inputs into temp files,
+ * prompt read inline as utf8) from the package layers. Non-pkg values pass
+ * through untouched.
  */
 async function materializePackageMedia(
   req: GenRequest,
   image: LoadedImage,
 ): Promise<{ req: GenRequest; cleanup: () => void }> {
   const usesPkg =
+    req.prompt?.startsWith("pkg://") === true ||
     (req.images ?? []).some((v) => v.startsWith("pkg://")) ||
     (req.firstFrame?.startsWith("pkg://") ?? false) ||
     (req.lastFrame?.startsWith("pkg://") ?? false) ||
@@ -1440,18 +1617,28 @@ async function materializePackageMedia(
 
   const view = await packageFsView(image)
   const tmp = mkdtempSync(join(tmpdir(), "creatifact-pkgref-"))
-  const extract = (value: string | undefined): string | undefined => {
-    if (value === undefined || !value.startsWith("pkg://")) return value
+  const lookup = (value: string): { type: "file"; data: Buffer } => {
     const rel = value.slice("pkg://".length)
     const entry = view.get(rel)
     if (entry === undefined || entry.type !== "file") {
       fail(`package media ref '${value}': '${rel}' not found in the package layers`)
     }
-    const base = rel.split("/").pop() ?? "file"
+    return entry
+  }
+  const extract = (value: string | undefined): string | undefined => {
+    if (value === undefined || !value.startsWith("pkg://")) return value
+    const entry = lookup(value)
+    const base = value.slice("pkg://".length).split("/").pop() ?? "file"
     const out = join(tmp, base)
     writeFileSync(out, entry.data)
     return out
   }
+  // A prompt that is exactly one pkg:// ref is replaced by the file's text —
+  // long instructions ship as layer files instead of giant JSON strings.
+  const prompt =
+    req.prompt?.startsWith("pkg://") === true
+      ? lookup(req.prompt).data.toString("utf8")
+      : req.prompt
 
   const images = req.images?.map((v) => extract(v) ?? v)
   const firstFrame = extract(req.firstFrame)
@@ -1461,6 +1648,7 @@ async function materializePackageMedia(
   return {
     req: {
       ...req,
+      ...(prompt !== undefined ? { prompt } : {}),
       ...(images !== undefined ? { images } : {}),
       ...(firstFrame !== undefined ? { firstFrame } : {}),
       ...(lastFrame !== undefined ? { lastFrame } : {}),
@@ -1522,13 +1710,14 @@ async function runGeneratePackage(
 /** pkg:// references only resolve inside package mode. */
 function rejectPkgRefsOutsidePackageMode(req: GenRequest): void {
   const fields = [
+    ...(req.prompt?.startsWith("pkg://") === true ? [req.prompt] : []),
     ...(req.images ?? []),
     ...(req.inputs ?? []),
     ...(req.firstFrame !== undefined ? [req.firstFrame] : []),
     ...(req.lastFrame !== undefined ? [req.lastFrame] : []),
   ]
   if (fields.some((v) => v.startsWith("pkg://"))) {
-    fail("`pkg://` media references only work with `creatifact generate <ref>` (a gen package)")
+    fail("`pkg://` references only work with `creatifact generate <ref>` (a gen package)")
   }
 }
 

@@ -68,9 +68,12 @@ describe("model→task derivation (single source for discoverability)", () => {
 })
 
 describe("requestFieldsForTask contract", () => {
-  test("text tasks carry no media packaging fields", () => {
-    expect(requestFieldsForTask("text2text").has("tag")).toBe(false)
-    expect(requestFieldsForTask("text2text").has("output")).toBe(false)
+  test("text tasks accept opt-in packaging fields but not noPack", () => {
+    const fields = requestFieldsForTask("text2text")
+    expect(fields.has("tag")).toBe(true)
+    expect(fields.has("output")).toBe(true)
+    expect(fields.has("noPack")).toBe(false)
+    expect(requestFieldsForTask("embed").has("tag")).toBe(true)
   })
 
   test("media tasks allow packaging fields", () => {

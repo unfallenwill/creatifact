@@ -2,6 +2,7 @@ import { CliError, usageError } from "./errors"
 import type { CommandResult } from "./execute"
 import { executeCommand } from "./execute"
 import { status } from "./format"
+import type { InputProvenance, StepProvenance } from "./genPackage"
 import { commandRequestFromFields, type Fields } from "./requestFile"
 
 /** One pipeline step: a request-file command plus an optional reference name. */
@@ -19,7 +20,7 @@ export interface PipelineRunOptions {
 const PLACEHOLDER_RE =
   /\$\{([a-zA-Z][a-zA-Z0-9_]*)\.([a-zA-Z][a-zA-Z0-9_]*)(?:\[([0-9]+)\]\.([a-zA-Z][a-zA-Z0-9_]*))?\}/g
 
-/** Fields of each CommandResult that steps may reference. */
+/** Fields of each CommandResult that steps may reference (presence-filtered). */
 function referencableFields(result: CommandResult): string[] {
   switch (result.kind) {
     case "build":
@@ -28,8 +29,16 @@ function referencableFields(result: CommandResult): string[] {
       return ["tag", "digest"]
     case "pull":
       return ["outputDir", "digest"]
-    case "generate":
-      return ["tag", "digest", "outputDir", "artifacts[N].url", "artifacts[N].base64"]
+    case "generate": {
+      // Structured payloads are referenceable when present: a text2text step
+      // exposes `${writer.text}`, embed exposes `${e.vectors}` — so a
+      // text2image / image2video step can chain on a generated prompt.
+      const scalar = ["tag", "digest", "outputDir", "text", "vectors", "dimensions"].filter(
+        (field) => (result as unknown as Record<string, unknown>)[field] !== undefined,
+      )
+      if (result.artifacts !== undefined) scalar.push("artifacts[N].url", "artifacts[N].base64")
+      return scalar
+    }
     default:
       return []
   }
@@ -157,7 +166,7 @@ function resolvePlaceholders(
     if (
       whole !== null &&
       whole !== undefined &&
-      `\${${whole.step}.${whole.field}${whole.index === undefined ? "" : `[${whole.index}].${whole.prop}`}` ===
+      `\${${whole.step}.${whole.field}${whole.index === undefined ? "" : `[${whole.index}].${whole.prop}`}}` ===
         value
     ) {
       return refValue(whole, results, stepIndex)
@@ -284,6 +293,93 @@ export async function runPipeline(
   return { steps: outcomes, results }
 }
 
+/** True when the string is exactly one reference (no interpolation around it). */
+function wholeRef(value: string): ParsedRef | undefined {
+  const ref = parseRef(value)
+  if (ref === undefined) return undefined
+  const canon = `\${${ref.step}.${ref.field}${ref.index === undefined ? "" : `[${ref.index}].${ref.prop}`}}`
+  return canon === value ? ref : undefined
+}
+
+/** Provenance anchors (digest/tag) for a referenced generate step, when packed. */
+function anchorsOf(result: CommandResult & { kind: "generate" }): {
+  digest?: string
+  tag?: string
+} {
+  const out: { digest?: string; tag?: string } = {}
+  if (typeof result.digest === "string") out.digest = result.digest
+  if (typeof result.tag === "string") out.tag = result.tag
+  return out
+}
+
+/**
+ * Detect "this step's prompt is exactly one earlier step's output" and
+ * attach a digest-anchored provenance pointer. Only fires when the referenced
+ * step actually packed its result (digest present); otherwise the prompt's
+ * textual value alone is recorded, as before.
+ */
+function promptProvenance(
+  step: PipelineStep,
+  results: Map<string, CommandResult>,
+): StepProvenance | undefined {
+  if (!step.command.startsWith("generate.")) return undefined
+  const prompt = step.fields["prompt"]
+  if (typeof prompt !== "string") return undefined
+  const ref = wholeRef(prompt)
+  if (ref === undefined || ref.index !== undefined) return undefined
+  const result = results.get(ref.step)
+  if (result?.kind !== "generate") return undefined
+  const value = (result as unknown as Record<string, unknown>)[ref.field]
+  if (typeof value !== "string") return undefined
+  return { name: ref.step, ...anchorsOf(result) }
+}
+
+const MEDIA_INPUT_FIELDS = ["images", "firstFrame", "lastFrame", "inputs"] as const
+
+/** Provenance for one media-entry candidate, when it is a whole step artifact ref. */
+function entryProvenance(
+  field: (typeof MEDIA_INPUT_FIELDS)[number],
+  index: number | undefined,
+  entry: unknown,
+  results: Map<string, CommandResult>,
+): InputProvenance | undefined {
+  if (typeof entry !== "string") return undefined
+  const ref = wholeRef(entry)
+  if (ref === undefined || ref.index === undefined) return undefined
+  const result = results.get(ref.step)
+  if (result?.kind !== "generate" || result.artifacts === undefined) return undefined
+  return {
+    field,
+    ...(index === undefined ? {} : { index }),
+    name: ref.step,
+    ...anchorsOf(result),
+  }
+}
+
+/**
+ * Detect media-input entries that are exactly one earlier step's artifact
+ * reference (`${step.artifacts[N].url}`) and record digest-anchored pointers:
+ * the URL sent to the provider expires, the source package's bytes do not.
+ */
+function inputProvenance(
+  step: PipelineStep,
+  results: Map<string, CommandResult>,
+): InputProvenance[] | undefined {
+  if (!step.command.startsWith("generate.")) return undefined
+  const out: InputProvenance[] = []
+  for (const field of MEDIA_INPUT_FIELDS) {
+    const value = step.fields[field]
+    if (value === undefined) continue
+    const isArray = Array.isArray(value)
+    const entries: unknown[] = isArray ? value : [value]
+    for (const [index, entry] of entries.entries()) {
+      const provenance = entryProvenance(field, isArray ? index : undefined, entry, results)
+      if (provenance !== undefined) out.push(provenance)
+    }
+  }
+  return out.length > 0 ? out : undefined
+}
+
 /** Execute one pipeline step, registering its result for later references. */
 async function runStep(
   step: PipelineStep,
@@ -295,6 +391,12 @@ async function runStep(
 ): Promise<PipelineStepOutcome> {
   const fields = resolvePlaceholders(step.fields, results, i) as Fields
   const request = commandRequestFromFields(step.command, fields)
+  const provenance = promptProvenance(step, results)
+  const inputRefs = inputProvenance(step, results)
+  if (request.kind === "generate") {
+    if (provenance !== undefined) request.req.promptRef = provenance
+    if (inputRefs !== undefined) request.req.inputRefs = inputRefs
+  }
 
   try {
     const result = await executeCommand(request, { configPath: opts.configPath })

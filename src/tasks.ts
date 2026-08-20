@@ -26,6 +26,11 @@ export interface TaskSpec {
   capability: Capability | undefined
   /** Produces media artifacts → result packaging applies. */
   media: boolean
+  /**
+   * Text/embed tasks whose payload can be packed into a result package
+   * (opt-in via --tag/--output). Media implies packable-with-default.
+   */
+  packable?: boolean
   /** Field requirements; absent optional fields below are forbidden. */
   required: {
     prompt?: boolean
@@ -82,6 +87,7 @@ export const TASKS: Record<GenTaskName, TaskSpec> = {
     name: "text2text",
     capability: "text.generate",
     media: false,
+    packable: true,
     required: { prompt: true },
     optional: { system: true, options: true },
     payload: "prompt",
@@ -90,6 +96,7 @@ export const TASKS: Record<GenTaskName, TaskSpec> = {
     name: "image2text",
     capability: "image.understand",
     media: false,
+    packable: true,
     required: { inputs: true },
     optional: { prompt: true, options: true },
     payload: "prompt",
@@ -98,6 +105,7 @@ export const TASKS: Record<GenTaskName, TaskSpec> = {
     name: "video2text",
     capability: "video.understand",
     media: false,
+    packable: true,
     required: { inputs: true },
     optional: { prompt: true, options: true },
     payload: "prompt",
@@ -151,6 +159,7 @@ export const TASKS: Record<GenTaskName, TaskSpec> = {
     name: "embed",
     capability: "embed",
     media: false,
+    packable: true,
     required: { inputs: true },
     optional: { options: true },
     payload: "inputs",
@@ -166,24 +175,39 @@ export const TASKS: Record<GenTaskName, TaskSpec> = {
 }
 
 /** JSON request field names a task accepts (for `-f` files and the schema). */
+function addField(fields: Set<string>, present: boolean, name: string): void {
+  if (present) fields.add(name)
+}
+
+function addTimingFields(fields: Set<string>, spec: TaskSpec): void {
+  const timing = [
+    ["options", spec.optional.options === true],
+    ["noWait", spec.optional.noWait === true],
+    ["timeout", spec.optional.timeout === true],
+    ["interval", spec.optional.interval === true],
+  ] as const
+  for (const [name, on] of timing) addField(fields, on, name)
+}
+
+function addPackagingFields(fields: Set<string>, spec: TaskSpec, task: GenTaskName): void {
+  if (spec.media || spec.packable === true || task === "resume") fields.add("output")
+  if (spec.media || spec.packable === true) {
+    fields.add("tag")
+    if (spec.media) fields.add("noPack")
+  }
+  if (task === "resume") fields.add("handle")
+}
+
 export function requestFieldsForTask(task: GenTaskName): Set<string> {
   const spec = TASKS[task]
   const fields = new Set<string>(["provider", "model"])
-  if (spec.required.prompt || spec.optional.prompt) fields.add("prompt")
-  if (spec.optional.system === true) fields.add("system")
-  if (spec.required.images !== undefined) fields.add("images")
-  if (spec.required.firstFrame === true) fields.add("firstFrame")
-  if (spec.required.lastFrame === true) fields.add("lastFrame")
-  if (spec.required.inputs === true) fields.add("inputs")
-  if (spec.optional.options === true) fields.add("options")
-  if (spec.optional.noWait === true) fields.add("noWait")
-  if (spec.optional.timeout === true) fields.add("timeout")
-  if (spec.optional.interval === true) fields.add("interval")
-  if (spec.media || task === "resume") fields.add("output")
-  if (spec.media) {
-    fields.add("tag")
-    fields.add("noPack")
-  }
-  if (task === "resume") fields.add("handle")
+  addField(fields, spec.required.prompt === true || spec.optional.prompt === true, "prompt")
+  addField(fields, spec.optional.system === true, "system")
+  addField(fields, spec.required.images !== undefined, "images")
+  addField(fields, spec.required.firstFrame === true, "firstFrame")
+  addField(fields, spec.required.lastFrame === true, "lastFrame")
+  addField(fields, spec.required.inputs === true, "inputs")
+  addTimingFields(fields, spec)
+  addPackagingFields(fields, spec, task)
   return fields
 }
