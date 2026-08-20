@@ -41,6 +41,12 @@ export function bodyOf(r: Recorded): Record<string, unknown> {
   return JSON.parse(String(r.init?.body)) as Record<string, unknown>
 }
 
+/** Lowercased header record: the JSON client sends a plain object, the OpenAI SDK a Headers instance. */
 export function headersOf(r: Recorded): Record<string, string> {
-  return (r.init?.headers ?? {}) as Record<string, string>
+  const headers = r.init?.headers
+  const entries =
+    headers instanceof Headers
+      ? [...headers.entries()]
+      : Object.entries((headers ?? {}) as Record<string, string>)
+  return Object.fromEntries(entries.map(([k, v]) => [k.toLowerCase(), v]))
 }

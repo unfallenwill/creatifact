@@ -1,3 +1,4 @@
+import type { ChatCompletionCreateParamsNonStreaming } from "openai/resources/chat/completions"
 import { mimeOfUrl, toImageUrl } from "../core/fileref"
 import {
   createJsonClient,
@@ -7,6 +8,7 @@ import {
 } from "../core/http"
 import { pollToArtifacts } from "../core/job"
 import { mergeModelDeclarations } from "../core/modelRegistry"
+import { callOpenAi, createOpenAiClient, sdkParams } from "../core/openai"
 import {
   type CallContext,
   type Env,
@@ -111,17 +113,6 @@ interface ZhipuAsyncResultResponse {
   video_result?: Array<{ url?: string; cover_image_url?: string }>
   image_result?: Array<{ url?: string }>
   content_filter?: Array<{ role?: string; level?: number }>
-}
-
-interface ZhipuImageSyncResponse {
-  created?: number
-  data?: Array<{ url?: string }>
-  content_filter?: Array<{ role?: string; level?: number }>
-}
-
-interface ZhipuChatResponse {
-  choices?: Array<{ message?: { content?: string } }>
-  usage?: Record<string, unknown>
 }
 
 const MODE_LABEL: Record<ZhipuVideoMode, string> = {
@@ -241,6 +232,11 @@ export function createZhipuProvider(
     headers: { authorization: `Bearer ${apiKey}` },
     classifyError: classifyZhipuError,
   })
+  // OpenAI-compatible surface (chat + sync images); video and async task endpoints stay on the JSON client.
+  const openai = createOpenAiClient({
+    apiKey,
+    baseUrl: config.baseUrl ?? DEFAULT_BASE_URL,
+  })
 
   /** GET /async-result/{id} → JobStatus; video and image tasks share this query endpoint. */
   async function pollAsyncResult(handle: JobHandle): Promise<JobStatus> {
@@ -354,16 +350,12 @@ export function createZhipuProvider(
     req: ImageGenerateRequest<ZhipuImageOptions>,
     options: Record<string, unknown>,
   ): Promise<ImageGenerateResult> {
-    const resp = unwrapOrThrow(
-      await client.post<ZhipuImageSyncResponse>(
-        "/images/generations",
-        {
-          model: req.model,
-          prompt: req.prompt,
-          ...options,
-        },
-        { timeoutMs: SLOW_POST_TIMEOUT_MS },
-      ),
+    const resp = await callOpenAi(
+      () =>
+        openai.images.generate(sdkParams({ model: req.model, prompt: req.prompt, ...options }), {
+          timeout: SLOW_POST_TIMEOUT_MS,
+        }),
+      classifyZhipuError,
     )
     const urls = (resp.data ?? [])
       .map((item) => item.url)
@@ -381,22 +373,28 @@ export function createZhipuProvider(
     },
   }
 
-  /** Text chat: POST /chat/completions (OpenAI-compatible). */
+  /** Text chat: chat.completions (OpenAI-compatible surface). */
   const textGenerate: TextGenerateApi<ZhipuChatOptions> = {
     async create(req) {
       const messages: Array<{ role: string; content: string }> = []
       if (req.system !== undefined) messages.push({ role: "system", content: req.system })
       messages.push({ role: "user", content: req.prompt })
-      const resp = unwrapOrThrow(
-        await client.post<ZhipuChatResponse>("/chat/completions", {
-          model: req.model,
-          messages,
-          ...(req.options ?? {}),
-        }),
+      const resp = await callOpenAi(
+        () =>
+          openai.chat.completions.create(
+            sdkParams<ChatCompletionCreateParamsNonStreaming>({
+              model: req.model,
+              messages,
+              ...(req.options ?? {}),
+            }),
+          ),
+        classifyZhipuError,
       )
       return {
-        text: resp.choices?.[0]?.message?.content ?? "",
-        ...(resp.usage === undefined ? {} : { usage: { native: resp.usage } }),
+        text: resp.choices[0]?.message?.content ?? "",
+        ...(resp.usage === undefined || resp.usage === null
+          ? {}
+          : { usage: { native: { ...resp.usage } } }),
       }
     },
   }

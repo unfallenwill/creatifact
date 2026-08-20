@@ -1,3 +1,4 @@
+import type { ChatCompletionCreateParamsNonStreaming } from "openai/resources/chat/completions"
 import { mimeOfUrl, toImageUrl } from "../core/fileref"
 import {
   createJsonClient,
@@ -6,6 +7,7 @@ import {
   unwrapOrThrow,
 } from "../core/http"
 import { mergeModelDeclarations } from "../core/modelRegistry"
+import { callOpenAi, createOpenAiClient, sdkParams } from "../core/openai"
 import {
   type CallContext,
   type Env,
@@ -110,12 +112,6 @@ interface MiniMaxBaseResp {
   status_msg?: string
 }
 
-interface MiniMaxChatResponse {
-  choices?: Array<{ message?: { content?: string } }>
-  usage?: Record<string, unknown>
-  base_resp?: MiniMaxBaseResp
-}
-
 interface MiniMaxV2TaskResponse {
   task_id?: string
   task?: {
@@ -209,6 +205,11 @@ export function createMiniMaxProvider(
     baseUrl: config.baseUrl ?? DEFAULT_BASE_URL,
     headers: { authorization: `Bearer ${apiKey}` },
     classifyError: classifyMinimaxError,
+  })
+  // Chat runs on the OpenAI-compatible surface rooted at <baseUrl>/v1 (video/image APIs stay on the root).
+  const openai = createOpenAiClient({
+    apiKey,
+    baseUrl: `${(config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "")}/v1`,
   })
 
   function isV1Handle(handle: JobHandle): boolean {
@@ -522,27 +523,31 @@ export function createMiniMaxProvider(
     },
   }
 
-  /** Text chat: POST /v1/chat/completions (OpenAI-compatible). */
+  /** Text chat: chat.completions on the OpenAI-compatible surface. */
   const textGenerate: TextGenerateApi<MiniMaxChatOptions> = {
     async create(req, ctx) {
       const messages: Array<{ role: string; content: string }> = []
       if (req.system !== undefined) messages.push({ role: "system", content: req.system })
       messages.push({ role: "user", content: req.prompt })
-      const resp = unwrapOrThrow(
-        await client.post<MiniMaxChatResponse>(
-          "/v1/chat/completions",
-          {
-            model: req.model,
-            messages,
-            ...(req.options ?? {}),
-          },
-          { signal: ctx?.signal },
-        ),
+      const resp = await callOpenAi(
+        () =>
+          openai.chat.completions.create(
+            sdkParams<ChatCompletionCreateParamsNonStreaming>({
+              model: req.model,
+              messages,
+              ...(req.options ?? {}),
+            }),
+            { signal: ctx?.signal },
+          ),
+        classifyMinimaxError,
       )
-      checkBaseResp(resp)
+      // base_resp rides along on the OpenAI-compatible response body (business-code envelope)
+      checkBaseResp(resp as { base_resp?: MiniMaxBaseResp })
       return {
-        text: stripLeadingThink(resp.choices?.[0]?.message?.content ?? ""),
-        ...(resp.usage === undefined ? {} : { usage: { native: resp.usage } }),
+        text: stripLeadingThink(resp.choices[0]?.message?.content ?? ""),
+        ...(resp.usage === undefined || resp.usage === null
+          ? {}
+          : { usage: { native: { ...resp.usage } } }),
       }
     },
   }

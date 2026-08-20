@@ -1,3 +1,6 @@
+import type { ChatCompletionCreateParamsNonStreaming } from "openai/resources/chat/completions"
+import type { EmbeddingCreateParams } from "openai/resources/embeddings"
+import type { ImageGenerateParams, ImagesResponse } from "openai/resources/images"
 import { toImageUrl } from "../core/fileref"
 import {
   createJsonClient,
@@ -6,6 +9,7 @@ import {
   unwrapOrThrow,
 } from "../core/http"
 import { mergeModelDeclarations } from "../core/modelRegistry"
+import { callOpenAi, createOpenAiClient, sdkParams } from "../core/openai"
 import {
   type EmbedApi,
   type Env,
@@ -80,21 +84,6 @@ interface ArkTaskResponse {
   usage?: Record<string, unknown>
 }
 
-interface ArkImageResponse {
-  data?: Array<{ url?: string; b64_json?: string }>
-  usage?: Record<string, unknown>
-}
-
-interface ArkChatResponse {
-  choices?: Array<{ message?: { content?: string } }>
-  usage?: Record<string, unknown>
-}
-
-interface ArkEmbedResponse {
-  data?: Array<{ embedding?: number[] }>
-  usage?: Record<string, unknown>
-}
-
 function classifyJobFailure(code: string | undefined): ErrorCategory {
   return classifyArkError(200, code ? { error: { code } } : undefined) ?? "internal"
 }
@@ -121,6 +110,11 @@ export function createArkProvider(
     baseUrl: config.baseUrl ?? DEFAULT_BASE_URL,
     headers: { authorization: `Bearer ${apiKey}` },
     classifyError: classifyArkError,
+  })
+  // OpenAI-compatible surface (chat, embeddings, images); video tasks stay on the JSON client.
+  const openai = createOpenAiClient({
+    apiKey,
+    baseUrl: config.baseUrl ?? DEFAULT_BASE_URL,
   })
 
   async function buildVideoContent(
@@ -221,11 +215,14 @@ export function createArkProvider(
         if (watermark !== undefined) body["watermark"] = watermark
         Object.assign(body, rest)
       }
-      const resp = unwrapOrThrow(
-        await client.post<ArkImageResponse>("/images/generations", body, {
-          timeoutMs: SLOW_POST_TIMEOUT_MS,
-          signal: ctx?.signal,
-        }),
+      const resp = await callOpenAi(
+        // cast: the SDK's stream=true overload never applies here (no streaming passthrough)
+        async () =>
+          (await openai.images.generate(sdkParams<ImageGenerateParams>(body), {
+            timeout: SLOW_POST_TIMEOUT_MS,
+            signal: ctx?.signal,
+          })) as ImagesResponse,
+        classifyArkError,
       )
       return {
         artifacts: (resp.data ?? []).map((item) => ({
@@ -233,7 +230,7 @@ export function createArkProvider(
           base64: item.b64_json,
           mimeType: "image/png",
         })),
-        usage: toUsage(resp.usage),
+        usage: resp.usage ? toUsage({ ...resp.usage }) : undefined,
       }
     },
   }
@@ -267,20 +264,21 @@ export function createArkProvider(
   function understandApi(fileKind: "image_url" | "video_url"): UnderstandApi<ArkChatOptions> {
     return {
       async create(req, ctx) {
-        const resp = unwrapOrThrow(
-          await client.post<ArkChatResponse>(
-            "/chat/completions",
-            {
-              model: req.model,
-              messages: await toChatMessages(req.messages, fileKind),
-              ...(req.options ?? {}),
-            },
-            { signal: ctx?.signal },
-          ),
+        const resp = await callOpenAi(
+          async () =>
+            openai.chat.completions.create(
+              sdkParams<ChatCompletionCreateParamsNonStreaming>({
+                model: req.model,
+                messages: await toChatMessages(req.messages, fileKind),
+                ...(req.options ?? {}),
+              }),
+              { signal: ctx?.signal },
+            ),
+          classifyArkError,
         )
         return {
-          text: resp.choices?.[0]?.message?.content ?? "",
-          usage: toUsage(resp.usage),
+          text: resp.choices[0]?.message?.content ?? "",
+          usage: resp.usage ? toUsage({ ...resp.usage }) : undefined,
         }
       },
     }
@@ -289,27 +287,31 @@ export function createArkProvider(
   const embed: EmbedApi<ArkEmbedOptions> = {
     async create(req, ctx) {
       // Text embeddings take no dimensions param (multimodal endpoint only); options passthrough covers it
-      const resp = unwrapOrThrow(
-        await client.post<ArkEmbedResponse>(
-          "/embeddings",
-          {
-            model: req.model,
-            input: req.inputs,
-            ...(req.options ?? {}),
-          },
-          { signal: ctx?.signal },
-        ),
+      const resp = await callOpenAi(
+        () =>
+          openai.embeddings.create(
+            sdkParams<EmbeddingCreateParams>({
+              model: req.model,
+              input: req.inputs,
+              // explicit float keeps the SDK from defaulting to base64 + decoding,
+              // which Ark's plain float arrays would not survive; an explicit option still wins
+              encoding_format: "float",
+              ...(req.options ?? {}),
+            }),
+            { signal: ctx?.signal },
+          ),
+        classifyArkError,
       )
       const vectors = (resp.data ?? []).map((item) => item.embedding ?? [])
       return {
         vectors,
         dimensions: vectors[0]?.length,
-        usage: toUsage(resp.usage),
+        usage: resp.usage ? toUsage({ ...resp.usage }) : undefined,
       }
     },
   }
 
-  /** Text chat: POST /chat/completions (OpenAI-compatible). */
+  /** Text chat: chat.completions (OpenAI-compatible surface). */
   const textGenerate: TextGenerateApi<ArkChatOptions> = {
     async create(req, ctx) {
       const messages: Array<Record<string, unknown>> = []
@@ -317,20 +319,21 @@ export function createArkProvider(
         messages.push({ role: "system", content: req.system })
       }
       messages.push({ role: "user", content: req.prompt })
-      const resp = unwrapOrThrow(
-        await client.post<ArkChatResponse>(
-          "/chat/completions",
-          {
-            model: req.model,
-            messages,
-            ...(req.options ?? {}),
-          },
-          { signal: ctx?.signal },
-        ),
+      const resp = await callOpenAi(
+        () =>
+          openai.chat.completions.create(
+            sdkParams<ChatCompletionCreateParamsNonStreaming>({
+              model: req.model,
+              messages,
+              ...(req.options ?? {}),
+            }),
+            { signal: ctx?.signal },
+          ),
+        classifyArkError,
       )
       return {
-        text: resp.choices?.[0]?.message?.content ?? "",
-        usage: toUsage(resp.usage),
+        text: resp.choices[0]?.message?.content ?? "",
+        usage: resp.usage ? toUsage({ ...resp.usage }) : undefined,
       }
     },
   }
