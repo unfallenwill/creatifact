@@ -12,6 +12,7 @@
 import { spawn } from "node:child_process"
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { type ServerType, serve } from "@hono/node-server"
 import { Hono } from "hono"
 
@@ -292,11 +293,11 @@ async function loadPackage(
 const APP_HTML_URL = new URL("./browserui/app.html", import.meta.url)
 let appHtmlCache: string | undefined
 
-/** Read the prebuilt single-file Svelte app (built by `npm run build:ui`). */
+/** Read the prebuilt single-file Svelte app (built by `npm run build:ui` + scripts/emit-ui.mjs). */
 async function loadAppHtml(): Promise<string> {
   appHtmlCache ??= await readFile(APP_HTML_URL, "utf8").catch(() => {
     throw new Error(
-      `browser UI bundle not found at ${APP_HTML_URL.pathname} — run 'npm run build:ui' first`,
+      `browser UI bundle not found at ${fileURLToPath(APP_HTML_URL)} — run 'npm run build' (or 'npm run build:ui' then 'node scripts/emit-ui.mjs') first`,
     )
   })
   return appHtmlCache

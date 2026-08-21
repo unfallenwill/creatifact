@@ -77,7 +77,9 @@ refresh()
   <p class="empty">No packages in the store yet — build, pull, or generate one first.</p>
 {:else}
   <div class="masonry">
-    <Masonry items={entries} gap={14} minColWidth={240} maxColWidth={420}>
+    <!-- idKey: entries carry no "id"; Masonry throws without a key getter, and
+         ref (not digest) is unique — the same package can carry several tags. -->
+    <Masonry items={entries} idKey="ref" gap={14} minColWidth={240} maxColWidth={420}>
       {#snippet children({ item })}
         <PackageCard entry={item} onopen={open} ondelete={remove} />
       {/snippet}
