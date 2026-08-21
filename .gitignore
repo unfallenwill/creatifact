@@ -140,3 +140,7 @@ dist
 
 # local MCP tool config
 .mcp.json
+
+# store browser UI (built by vite, emitted by scripts/emit-ui.mjs)
+src/browserui/build/
+src/browserui/app.html

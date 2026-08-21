@@ -6,7 +6,15 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!!**/dist"]
+    "includes": [
+      "**",
+      "!!**/dist",
+      "!src/browserui/build/**",
+      "!src/browserui/app.html",
+      "!src/browserui/build",
+      "!**/*.svelte",
+      "!src/browserui/styles.css"
+    ]
   },
   "formatter": {
     "enabled": true,

@@ -158,7 +158,9 @@ test("uploadBlob does POST then PUT with blob data", async () => {
     "http://localhost:5000/v2/myrepo/blobs/uploads/uuid-123?digest=sha256:abc",
     expect.objectContaining({
       method: "PUT",
-      body: blobData,
+      // uploadBlob wraps the Buffer in a plain Uint8Array view; vitest 4's
+      // equals no longer treats Buffer and Uint8Array as interchangeable.
+      body: new Uint8Array(blobData),
     }),
   )
 

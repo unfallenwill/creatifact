@@ -661,6 +661,75 @@ describe("cli package store — integration", () => {
       rmSync(tmp, { recursive: true, force: true })
     }
   })
+
+  it("package serve serves the store web UI until interrupted", async () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "oci-cli-browser-"))
+    const configDir = path.join(tmp, "cfg")
+    mkdirSync(configDir, { recursive: true })
+    writeFileSync(path.join(configDir, "config.json"), JSON.stringify({ version: 1 }))
+    try {
+      const help = await run(["package", "serve", "--help"])
+      expect(help.code).toBe(0)
+      expect(help.stdout).toContain("--browser")
+      expect(help.stdout).toContain("--port")
+
+      // the serve flags live on the subcommand, not on package or ls
+      const pkgHelp = await run(["package", "--help"])
+      expect(pkgHelp.code).toBe(0)
+      expect(pkgHelp.stdout).not.toContain("--browser")
+      const lsHelp = await run(["package", "ls", "--help"])
+      expect(lsHelp.code).toBe(0)
+      expect(lsHelp.stdout).not.toContain("--browser")
+
+      // Long-running: the envelope (kind package.serve, carrying the URL)
+      // lands on stdout at startup; the process keeps serving until SIGTERM.
+      const proc = execa(process.execPath, [CLI, "package", "serve"], {
+        reject: false,
+        env: { ...process.env, NO_COLOR: "1", CREATIFACT_CONFIG_DIR: configDir },
+      })
+      const envelope = await new Promise<{ kind: string; url: string }>((resolve, reject) => {
+        let buf = ""
+        const timer = setTimeout(
+          () => reject(new Error("no envelope on stdout within 15s")),
+          15_000,
+        )
+        proc.stdout.on("data", (chunk: Buffer) => {
+          buf += chunk.toString("utf8")
+          const line = buf.trim().split("\n").at(-1) ?? ""
+          if (line === "") return
+          try {
+            const parsed = JSON.parse(line) as {
+              ok: boolean
+              kind?: string
+              data?: { url?: string }
+            }
+            if (parsed.ok === true && parsed.kind === "package.serve" && parsed.data?.url) {
+              clearTimeout(timer)
+              resolve({ kind: parsed.kind, url: parsed.data.url })
+            }
+          } catch {
+            // partial line — wait for more stdout
+          }
+        })
+      })
+      expect(envelope.kind).toBe("package.serve")
+      expect(envelope.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
+
+      const res = await fetch(`${envelope.url}/api/packages`)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual([])
+
+      const shell = await fetch(envelope.url)
+      expect(shell.status).toBe(200)
+      expect(await shell.text()).toContain('id="app"')
+
+      proc.kill("SIGTERM")
+      const done = await proc
+      expect(done.exitCode).toBe(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }, 30_000)
 })
 
 describe("cli config/auth — integration", () => {

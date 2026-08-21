@@ -3,6 +3,7 @@ import { join } from "node:path"
 
 import { Command } from "commander"
 
+import { parseBrowserPort, serveStoreBrowser } from "./browse"
 import { envForConfigPath, storeDir } from "./config"
 import { usageError } from "./errors"
 import { GEN_CONFIG_MEDIA_TYPE } from "./genPackage"
@@ -166,7 +167,7 @@ export function buildTagCommand(): Command {
 
 export function buildPackageCommand(): Command {
   const pkg = new Command("package")
-    .usage("<action>")
+    .usage("[action] [options]")
     .description("Manage packages in the shared store (~/.creatifact/store)")
   addGlobalOptions(pkg)
   pkg.allowExcessArguments(true)
@@ -179,6 +180,26 @@ export function buildPackageCommand(): Command {
     emitResult("package.list", { entries }, prettyOpts(command))
   })
   pkg.addCommand(ls)
+
+  const serve = new Command("serve")
+    .description(
+      "Serve the store web UI on 127.0.0.1 (waterfall gallery, package contents, delete); runs until Ctrl-C",
+    )
+    .option("--browser", "Open the web UI in the default browser once the server is up")
+    .option("--port <port>", "Port to listen on (default: a random free port)")
+  serve.action(
+    async (options: { configDir?: string; browser?: boolean; port?: string }, command: Command) => {
+      const { configPath } = configOpts(command, options.configDir)
+      await serveStoreBrowser({
+        configPath,
+        port: parseBrowserPort(options.port),
+        open: options.browser === true,
+        pretty: prettyOpts(command).pretty,
+        removeRefs: (refs) => removeStoreRefs(refs, configPath),
+      })
+    },
+  )
+  pkg.addCommand(serve)
 
   const rmCmd = new Command("rm")
     .description("Remove tags from the store; unreferenced blobs are deleted")
@@ -196,7 +217,7 @@ export function buildPackageCommand(): Command {
       command.help()
       return
     }
-    throw usageError(`unknown package action '${action}' (expected list, rm, tag)`)
+    throw usageError(`unknown package action '${action}' (expected list, serve, rm, tag)`)
   })
   return pkg
 }

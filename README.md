@@ -317,11 +317,23 @@ pointers, similar to a local container image store.
 
 ```bash
 creatifact package ls
+creatifact package serve --browser
 creatifact tag demo/crane:v1 demo/crane:latest
 creatifact package rm demo/crane:v1
 ```
 
 Removing a tag deletes blobs only when no other tag references them.
+
+`package serve` starts a local web UI on 127.0.0.1 (random port, override
+with `--port`) and prints its URL; with `--browser` it also opens it in the
+default browser. The UI is a lazy-loaded waterfall gallery of every package,
+and per package the gen recipe, result metadata, and every file of its
+layers — media rendered inline. Packages can be deleted right from the page
+(same semantics as `package rm`: shared blobs survive). The command prints
+the JSON envelope (`kind: package.serve`, carrying the URL) on stdout and
+runs until Ctrl-C. The UI itself is a Svelte app built into the CLI by
+`npm run build` (`npm run dev:ui` develops it against a running
+`package serve --port 8765` instance).
 
 Registry commands operate on the shared store by default:
 

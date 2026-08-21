@@ -20,5 +20,6 @@
     "noEmit": true,
     "types": ["vitest/globals"]
   },
-  "include": ["src", "scripts", "tsdown.config.ts", "vitest.config.ts"]
+  "include": ["src", "scripts", "tsdown.config.ts", "vitest.config.ts"],
+  "exclude": ["src/browserui"]
 }

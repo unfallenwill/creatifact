@@ -10,11 +10,11 @@
     },
     {
       "name": "no-orphans",
-      "comment": "无入口可达的死模块(index.ts 除外)",
+      "comment": "无入口可达的死模块(index.ts 除外;browserui 是自带入口的子应用)",
       "severity": "error",
       "from": {
         "orphan": true,
-        "pathNot": "^(src/index[.]ts)$"
+        "pathNot": "^(src/index[.]ts|src/browserui/)"
       },
       "to": {}
     },
