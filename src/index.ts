@@ -9,13 +9,13 @@ import { buildConfigCommand } from "./configCmd"
 import { usageError } from "./errors"
 import { executeCommand, resultData } from "./execute"
 import { type FileRunResult, runFileFromArgs } from "./fileCmd"
-import { buildGenerateCommand } from "./generate"
 import { armInterrupts } from "./interrupt"
 import { buildAuthCommand } from "./login"
 import { buildModelsCommand, type ModelsCommandOptions, modelsArgsFromOptions } from "./models"
 import { emitError, emitResult } from "./output"
 import { buildPullCommand, type PullCommandOptions, pullArgsFromOptions } from "./pull"
 import { buildPushCommand, type PushCommandOptions, pushArgsFromOptions } from "./push"
+import { buildRunCommand } from "./run"
 import { buildPackageCommand, buildTagCommand } from "./store"
 import { addGlobalOptions, configOpts, prettyOpts } from "./util"
 
@@ -52,9 +52,9 @@ addGlobalOptions(program)
 // --- -f <file>.json: run the command described by a JSON file ---
 program
   .command("-f <file> [args...]")
-  .usage("<file>.json [options] [-- generate flags]")
+  .usage("<file>.json [options] [-- run flags]")
   .description(
-    `Run the single command described by a JSON file — the exact mirror of one command line, for when flags get unwieldy. Example: {"command":"generate.text2image","prompt":"a crane"} equals \`creatifact generate text2image --prompt "a crane"\`; flags after the file override generate fields. Multi-step orchestration lives in creatifact.json (stages)`,
+    `Run the single command described by a JSON file — the exact mirror of one command line, for when flags get unwieldy. Example: {"command":"run.text2image","prompt":"a crane"} equals \`creatifact run text2image --prompt "a crane"\`; flags after the file override run fields. Multi-step orchestration lives in creatifact.json (stages)`,
   )
   .allowExcessArguments(true)
   .passThroughOptions(true)
@@ -114,8 +114,8 @@ program.addCommand(
   ),
 )
 
-// --- generate / gen ---
-program.addCommand(buildGenerateCommand().alias("gen"))
+// --- run ---
+program.addCommand(buildRunCommand())
 
 // --- package: store management (list / ls, rm) ---
 program.addCommand(buildPackageCommand())

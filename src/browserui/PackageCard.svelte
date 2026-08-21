@@ -14,11 +14,11 @@ let {
 let confirming = $state(false)
 let busy = $state(false)
 
-const created = $derived(entry.gen?.createdAt?.slice(0, 10) ?? "")
+const created = $derived(entry.run?.createdAt?.slice(0, 10) ?? "")
 const taskLine = $derived(
-  entry.gen === undefined
+  entry.run === undefined
     ? ""
-    : `${entry.gen.task}${entry.gen.model === undefined ? "" : ` · ${entry.gen.model}`}`,
+    : `${entry.run.task}${entry.run.model === undefined ? "" : ` · ${entry.run.model}`}`,
 )
 
 async function confirmDelete(): Promise<void> {

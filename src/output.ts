@@ -15,7 +15,7 @@ export type EnvelopeKind =
   | "build"
   | "push"
   | "pull"
-  | "generate"
+  | "run"
   | "login"
   | "logout"
   | "models"

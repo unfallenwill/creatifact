@@ -123,60 +123,60 @@ test("loadBuildManifest accepts JSONC comments and trailing commas", async () =>
   await rm(tmp, { recursive: true })
 })
 
-// gen.promptFile inlining
+// run.promptFile inlining
 
-test("gen.promptFile with gen.prompt is rejected at validation", () => {
-  expect(() => parse({ gen: { task: "text2image", prompt: "x", promptFile: "./p.md" } })).toThrow(
+test("run.promptFile with run.prompt is rejected at validation", () => {
+  expect(() => parse({ run: { task: "text2image", prompt: "x", promptFile: "./p.md" } })).toThrow(
     "use either prompt or promptFile",
   )
 })
 
-test("gen.promptFile is inlined (trimmed) and dropped, for stages and top-level gen", async () => {
+test("run.promptFile is inlined (trimmed) and dropped, for stages and top-level run", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "manifest-test-"))
   await mkdir(join(tmp, "prompts"), { recursive: true })
-  await writeFile(join(tmp, "prompts", "hero.md"), "hero on a cliff\n")
+  await writeFile(join(tmp, "prompts/hero.md"), "hero on a cliff\n")
   await writeFile(
     join(tmp, "stage-build.json"),
     JSON.stringify({
       stages: [
-        { name: "hero", gen: { task: "text2image", promptFile: "./prompts/hero.md" } },
-        { name: "cat", gen: { task: "text2image", prompt: "a cat" } },
+        { name: "hero", run: { task: "text2image", promptFile: "./prompts/hero.md" } },
+        { name: "cat", run: { task: "text2image", prompt: "a cat" } },
       ],
     }),
   )
   await writeFile(
     join(tmp, "top-build.json"),
-    JSON.stringify({ gen: { task: "text2image", promptFile: "prompts/hero.md" } }),
+    JSON.stringify({ run: { task: "text2image", promptFile: "prompts/hero.md" } }),
   )
 
   const staged = await loadBuildManifest(join(tmp, "stage-build.json"))
-  expect(staged.file.stages?.[0]?.gen).toEqual({ task: "text2image", prompt: "hero on a cliff" })
-  expect(staged.file.stages?.[1]?.gen).toEqual({ task: "text2image", prompt: "a cat" })
+  expect(staged.file.stages?.[0]?.run).toEqual({ task: "text2image", prompt: "hero on a cliff" })
+  expect(staged.file.stages?.[1]?.run).toEqual({ task: "text2image", prompt: "a cat" })
   const top = await loadBuildManifest(join(tmp, "top-build.json"))
-  expect(top.file.gen).toEqual({ task: "text2image", prompt: "hero on a cliff" })
-  await rm(tmp, { recursive: true })
+  expect(top.file.run).toEqual({ task: "text2image", prompt: "hero on a cliff" })
+  await rm(tmp, { recursive: true, force: true })
 })
 
-test("gen.promptFile errors name the manifest and the file", async () => {
+test("run.promptFile errors name the manifest and the file", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "manifest-test-"))
   const missing = join(tmp, "missing-build.json")
-  await writeFile(missing, JSON.stringify({ gen: { task: "text2image", promptFile: "./nope.md" } }))
+  await writeFile(missing, JSON.stringify({ run: { task: "text2image", promptFile: "./nope.md" } }))
   const missingError = await loadBuildManifest(missing).catch((e) => e)
   expect(missingError.code).toBe("E_USAGE")
   expect(missingError.message).toContain("./nope.md")
 
   await writeFile(join(tmp, "empty.md"), "  \n")
   const empty = join(tmp, "empty-build.json")
-  await writeFile(empty, JSON.stringify({ gen: { task: "text2image", promptFile: "./empty.md" } }))
+  await writeFile(empty, JSON.stringify({ run: { task: "text2image", promptFile: "./empty.md" } }))
   const emptyError = await loadBuildManifest(empty).catch((e) => e)
   expect(emptyError.code).toBe("E_USAGE")
   expect(emptyError.message).toContain("is empty")
-  await rm(tmp, { recursive: true })
+  await rm(tmp, { recursive: true, force: true })
 })
 
-test("gen field is validated and normalized", () => {
+test("run field is validated and normalized", () => {
   const result = parse({
-    gen: {
+    run: {
       task: "image2image",
       provider: "zhipu",
       model: "cogview-4",
@@ -185,7 +185,7 @@ test("gen field is validated and normalized", () => {
       images: "a.png",
     },
   })
-  expect(result.gen).toEqual({
+  expect(result.run).toEqual({
     task: "image2image",
     provider: "zhipu",
     model: "cogview-4",
@@ -195,15 +195,19 @@ test("gen field is validated and normalized", () => {
   })
 })
 
-test("gen field rejects missing task, unknown task, and resume", () => {
-  expect(() => parse({ gen: { provider: "zhipu" } })).toThrow("gen.task")
-  expect(() => parse({ gen: { task: "nope" } })).toThrow("gen.task")
-  expect(() => parse({ gen: { task: "resume" } })).toThrow("gen.task")
-  expect(() => parse({ gen: "nope" })).toThrow("gen ")
+test("run field rejects missing task, unknown task, and resume", () => {
+  expect(() => parse({ run: { provider: "zhipu" } })).toThrow("run.task")
+  expect(() => parse({ run: { task: "nope" } })).toThrow("run.task")
+  expect(() => parse({ run: { task: "resume" } })).toThrow("run.task")
+  expect(() => parse({ run: "nope" })).toThrow("run ")
 })
 
-test("gen field rejects bad options and images", () => {
-  expect(() => parse({ gen: { task: "text2image", options: [] } })).toThrow("gen.options")
-  expect(() => parse({ gen: { task: "text2image", images: [] } })).toThrow("gen.images")
-  expect(() => parse({ gen: { task: "text2image", provider: "" } })).toThrow("gen.provider")
+test("run field rejects bad options and images", () => {
+  expect(() => parse({ run: { task: "text2image", options: [] } })).toThrow("run.options")
+  expect(() => parse({ run: { task: "text2image", images: [] } })).toThrow("run.images")
+  expect(() => parse({ run: { task: "text2image", provider: "" } })).toThrow("run.provider")
+})
+
+test("legacy gen field fails with a rename hint instead of being ignored", () => {
+  expect(() => parse({ gen: { task: "text2image" } })).toThrow("gen was renamed to 'run'")
 })

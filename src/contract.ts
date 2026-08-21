@@ -1,17 +1,17 @@
 import { z } from "zod"
 import type { ParsedArgs as BuildRequest, BuildResult } from "./build"
-import type { GenerateResult, GenRequest } from "./generate"
 import type { ParsedLoginArgs } from "./login"
 import type { ParsedPullArgs } from "./pull"
 import type { ParsedPushArgs } from "./push"
-import { type GenTaskName, requestFieldsForTask, TASKS } from "./tasks"
+import type { RunRequest, RunResult } from "./run"
+import { type RunTaskName, requestFieldsForTask, TASKS } from "./tasks"
 
 /**
  * The single source of truth for every externally visible contract:
  *
  *  1. `-f` request-file field validation (requestFile.ts parses through
  *     these schemas; no hand-rolled readers left behind),
- *  2. gen-recipe validation (genPackage.ts / manifest.ts),
+ *  2. run-recipe validation (runPackage.ts / manifest.ts),
  *  3. `schemas/*.json` — generated at build time from these definitions
  *     (`npm run gen:schemas`); hand edits are rejected by the drift gate,
  *  4. pipeline referenceable fields (pipeline.ts reads the constants below;
@@ -64,17 +64,17 @@ export const handleField = z.union([nonEmptyString, recordField], {
 
 // ---------------------------------------------------------------------------
 // Shared `-f` fields. TAG_DESCRIPTION is shared by two schema objects
-// (generate's optional tag, build's required tag); every other description
+// (run's optional tag, build's required tag); every other description
 // lives directly on its single field const.
 
 const providerField = nonEmptyString.describe(
-  "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider).",
+  "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.run.provider).",
 )
 const outputField = nonEmptyString.describe(
   "Result OCI layout directory for packaging tasks (media always; text/embed opt-in with --tag). Resume / --no-pack: directory to save artifacts. Also used by build / pull.",
 )
 const TAG_DESCRIPTION =
-  "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+  "Reference name for the result package (default run-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
 const tagField = nonEmptyString.describe(TAG_DESCRIPTION)
 
 /** Compile-time lock: a table's keys must be exactly the request type minus
@@ -84,31 +84,31 @@ const tagField = nonEmptyString.describe(TAG_DESCRIPTION)
 type assertExact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never
 
 // ---------------------------------------------------------------------------
-// generate.* request fields (the JSON face of GenRequest).
+// run.* request fields (the JSON face of RunRequest).
 
 /**
- * Every `-f` JSON field accepted by `generate.<task>` commands, in required
+ * Every `-f` JSON field accepted by `run.<task>` commands, in required
  * (unwrapped) form. `task`, `promptRef`, and `inputRefs` are excluded: the
  * first comes from the command name itself, the latter two are internal
  * pipeline bookkeeping, never accepted from JSON input. Consumers wrap
  * fields in `.optional()` themselves (requiredness is the consumer's
- * business: all-optional for generate requests, per-command for the schema
+ * business: all-optional for run requests, per-command for the schema
  * branches).
  */
-export const generateRequestFields = {
+export const runRequestFields = {
   provider: providerField,
   model: nonEmptyString.describe("Model id (overrides any model in 'provider')."),
   prompt: nonEmptyString.describe(
-    "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text).",
+    "Text instruction or question (run.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text).",
   ),
-  system: nonEmptyString.describe("System prompt (generate.text2text only)."),
+  system: nonEmptyString.describe("System prompt (run.text2text only)."),
   images: requestListField.describe(
     "Reference image(s): http(s)/data URL, local path, or pkg://path into a recipe package. Repeatable as --image. Exactly one for image2image and image2video.",
   ),
-  firstFrame: nonEmptyString.describe("generate.frames2video only: first frame image."),
-  lastFrame: nonEmptyString.describe("generate.frames2video only: last frame image."),
+  firstFrame: nonEmptyString.describe("run.frames2video only: first frame image."),
+  lastFrame: nonEmptyString.describe("run.frames2video only: last frame image."),
   inputs: requestListField.describe(
-    "Media attachments (generate.image2text / video2text) or texts to embed (generate.embed). Repeatable as --input.",
+    "Media attachments (run.image2text / video2text) or texts to embed (run.embed). Repeatable as --input.",
   ),
   options: recordField.describe("Provider-specific options (passed as --opt k=v)."),
   noWait: boolField.describe("Video tasks only: submit and print the task handle without polling."),
@@ -124,13 +124,13 @@ export const generateRequestFields = {
     "Media tasks only: return artifacts without building a result package.",
   ),
   handle: handleField.describe(
-    "generate.resume only: the saved task handle (object or inline JSON string).",
+    "run.resume only: the saved task handle (object or inline JSON string).",
   ),
 } as const
 
 const _genFaceCheck: assertExact<
-  keyof typeof generateRequestFields,
-  Exclude<keyof GenRequest, "task" | "promptRef" | "inputRefs">
+  keyof typeof runRequestFields,
+  Exclude<keyof RunRequest, "task" | "promptRef" | "inputRefs">
 > = true
 void _genFaceCheck
 
@@ -140,16 +140,16 @@ function msToDuration(ms: number): string {
 }
 
 /** The JSON input face of one generate field (before normalization). */
-export type GenerateFieldJson<K extends keyof GenRequest & string> = K extends "images" | "inputs"
+export type RunFieldJson<K extends keyof RunRequest & string> = K extends "images" | "inputs"
   ? string | string[]
   : K extends "timeout" | "interval"
     ? string | number
     : K extends "handle"
       ? string | Record<string, unknown>
-      : GenRequest[K]
+      : RunRequest[K]
 
 /** Field-normalization rules, untyped core (see the typed wrapper below). */
-function normalizeGenerateValue(field: string, value: unknown): unknown {
+function normalizeRunValue(field: string, value: unknown): unknown {
   switch (field) {
     case "images":
     case "inputs":
@@ -165,17 +165,17 @@ function normalizeGenerateValue(field: string, value: unknown): unknown {
 }
 
 /**
- * Normalize an already-validated generate-field value into its GenRequest
+ * Normalize an already-validated generate-field value into its RunRequest
  * form: bare strings for list fields wrap into arrays, numeric durations
  * become duration strings, handle objects become inline JSON strings. Lives
  * next to the schema table so the two never drift apart; typed end-to-end
- * (JSON face in, GenRequest field out).
+ * (JSON face in, RunRequest field out).
  */
-export function normalizeGenerateField<K extends keyof GenRequest & string>(
+export function normalizeRunField<K extends keyof RunRequest & string>(
   field: K,
-  value: GenerateFieldJson<K>,
-): GenRequest[K] {
-  return normalizeGenerateValue(field, value) as GenRequest[K]
+  value: RunFieldJson<K>,
+): RunRequest[K] {
+  return normalizeRunValue(field, value) as RunRequest[K]
 }
 
 /** Normalize a validated build-field value (annotations stringify values). */
@@ -189,7 +189,7 @@ export function normalizeBuildField(field: string, value: unknown): unknown {
 }
 
 // ---------------------------------------------------------------------------
-// Non-generate command fields, in required (unwrapped) form. Consumers wrap
+// Non-run command fields, in required (unwrapped) form. Consumers wrap
 // fields in `.optional()` themselves; each table carries a compile-time lock
 // against its request type.
 
@@ -281,7 +281,7 @@ export const configSetFields = {
 
 export const modelsRequestFields = {
   provider: nonEmptyString.describe(
-    "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider).",
+    "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.run.provider).",
   ),
 } as const
 
@@ -289,14 +289,14 @@ export const modelsRequestFields = {
 export type Fields = Record<string, unknown>
 
 // ---------------------------------------------------------------------------
-// Gen recipe (`gen:` in build manifests and package config blobs).
+// Run recipe (`run:` in build manifests and package config blobs).
 
-/** Gen tasks that can be baked as a recipe (`resume` cannot). */
-const GEN_RECIPE_TASKS = Object.keys(TASKS).filter(
-  (t): t is Exclude<GenTaskName, "resume"> => t !== "resume",
+/** Run tasks that can be baked as a recipe (`resume` cannot). */
+const RUN_RECIPE_TASKS = Object.keys(TASKS).filter(
+  (t): t is Exclude<RunTaskName, "resume"> => t !== "resume",
 )
 
-const RECIPE_TASKS_MESSAGE = `must be one of ${GEN_RECIPE_TASKS.join(", ")}`
+const RECIPE_TASKS_MESSAGE = `must be one of ${RUN_RECIPE_TASKS.join(", ")}`
 
 const promptRefSchema = z.object(
   {
@@ -327,13 +327,13 @@ const inputProvenanceSchema = z.object(
 )
 
 /**
- * The `gen` recipe object. Loose: unknown keys are warned about and ignored
+ * The `run` recipe object. Loose: unknown keys are warned about and ignored
  * by the validators, not rejected. exactOptional keeps the inferred output
- * assignable to GenSpec under tsconfig's exactOptionalPropertyTypes.
+ * assignable to RunSpec under tsconfig's exactOptionalPropertyTypes.
  */
-const genSpecShape = {
+const runSpecShape = {
   task: z
-    .enum(GEN_RECIPE_TASKS as [GenTaskName, ...GenTaskName[]], {
+    .enum(RUN_RECIPE_TASKS as [RunTaskName, ...RunTaskName[]], {
       error: () => RECIPE_TASKS_MESSAGE,
     })
     .describe("Generation task."),
@@ -348,7 +348,7 @@ const genSpecShape = {
   prompt: nonEmptyString
     .optional()
     .exactOptional()
-    .describe("Default prompt (overridable via the positional prompt at generate time)."),
+    .describe("Default prompt (overridable via the positional prompt at run time)."),
   promptFile: nonEmptyString
     .optional()
     .exactOptional()
@@ -393,8 +393,8 @@ const genSpecShape = {
   options: recordField.optional().exactOptional().describe("Provider-specific generation options."),
 }
 
-export const genSpecSchema = z.looseObject(genSpecShape)
-type GenSpecShape = typeof genSpecShape
+export const runSpecSchema = z.looseObject(runSpecShape)
+type RunSpecShape = typeof runSpecShape
 
 /** Strip the undefined member from a union (distributive). */
 type NoUndefined<T> = T extends undefined ? never : T
@@ -413,13 +413,13 @@ type CleanShapeOutput<Shape extends z.ZodRawShape> = {
 }
 
 /**
- * The parsed gen recipe type, derived from the schema shape so the two can
+ * The parsed run recipe type, derived from the schema shape so the two can
  * never drift. images/inputs are the normalized (always-array) form — the
- * schema accepts a bare string, validateGenSpec wraps it. `task` widens back
- * to GenTaskName to match historical call sites.
+ * schema accepts a bare string, validateRunSpec wraps it. `task` widens back
+ * to RunTaskName to match historical call sites.
  */
-export type GenSpec = Omit<CleanShapeOutput<GenSpecShape>, "images" | "inputs" | "task"> & {
-  task: GenTaskName
+export type RunSpec = Omit<CleanShapeOutput<RunSpecShape>, "images" | "inputs" | "task"> & {
+  task: RunTaskName
   images?: string[]
   inputs?: string[]
 }
@@ -434,10 +434,10 @@ export type InputProvenanceField = InputProvenance["field"]
 export type InputProvenance = z.output<typeof inputProvenanceSchema>
 
 // ---------------------------------------------------------------------------
-// Build manifest (annotations / from / copy / assets) — the non-gen half of
-// creatifact-build.schema.json, and manifest.ts's validators. The `gen`
-// section reuses genSpecSchema at generation time; runtime keeps calling
-// validateGenSpec for it so unknown-key warnings stay intact.
+// Build manifest (annotations / from / copy / assets) — the non-run half of
+// creatifact-build.schema.json, and manifest.ts's validators. The `run`
+// section reuses runSpecSchema at generation time; runtime keeps calling
+// validateRunSpec for it so unknown-key warnings stay intact.
 
 /**
  * `from`: non-empty string or non-empty array of non-empty strings.
@@ -503,7 +503,7 @@ export function formatIssuePath(path: readonly PropertyKey[]): string {
 
 // ---------------------------------------------------------------------------
 // Pipeline referenceable fields — compile-time locked true subsets of each
-// result type. Adding a GenerateResult field without deciding whether it is
+// result type. Adding a RunResult field without deciding whether it is
 // referenceable no longer silently drifts: update the constant or nothing.
 
 const referenceableBuildFields = [
@@ -519,7 +519,7 @@ const referenceableGenerateFields = [
   "text",
   "vectors",
   "dimensions",
-] as const satisfies readonly (keyof GenerateResult)[]
+] as const satisfies readonly (keyof RunResult)[]
 
 /**
  * Which result fields each command kind exposes to later pipeline steps.
@@ -573,7 +573,7 @@ const NON_GENERATE_COMMANDS = [
 
 /** Every command name a request file (root or step) accepts. */
 export function requestFileCommands(): string[] {
-  return [...Object.keys(TASKS).map((t) => `generate.${t}`), ...NON_GENERATE_COMMANDS]
+  return [...Object.keys(TASKS).map((t) => `run.${t}`), ...NON_GENERATE_COMMANDS]
 }
 
 /** Root-only `$schema` hint (the runtime strips it from the root only). */
@@ -582,7 +582,7 @@ const schemaRefField = z.string().optional().describe("Optional schema reference
 /**
  * One closed command branch: `command` literal + `extra` (step `name` or
  * root `$schema`) + the command's fields, all optional except `required`.
- * generate.* keeps every payload field optional — the documented flow lets
+ * run.* keeps every payload field optional — the documented flow lets
  * CLI flags and the positional prompt complete a file-supplied request, so
  * requiredness would false-positive legal files.
  */
@@ -603,20 +603,20 @@ function commandBranch(
 }
 
 /**
- * Every command with its field table and runtime-required keys, generate.*
+ * Every command with its field table and runtime-required keys, run.*
  * first (field set per task from the task registry).
  */
 function commandBranchSpecs(): Array<[string, Record<string, z.ZodType>, readonly string[]]> {
-  const all = generateRequestFields as Record<string, z.ZodType>
-  const generate: Array<[string, Record<string, z.ZodType>, readonly string[]]> = (
-    Object.keys(TASKS) as GenTaskName[]
+  const all = runRequestFields as Record<string, z.ZodType>
+  const taskBranches: Array<[string, Record<string, z.ZodType>, readonly string[]]> = (
+    Object.keys(TASKS) as RunTaskName[]
   ).map((task) => {
     const allowed = requestFieldsForTask(task)
     const fields = Object.fromEntries(Object.entries(all).filter(([name]) => allowed.has(name)))
-    return [`generate.${task}`, fields, [] as readonly string[]]
+    return [`run.${task}`, fields, [] as readonly string[]]
   })
   return [
-    ...generate,
+    ...taskBranches,
     ["build", buildRequestFields as Record<string, z.ZodType>, ["tag"]],
     ["push", pushRequestFields as Record<string, z.ZodType>, ["ref"]],
     ["pull", pullRequestFields as Record<string, z.ZodType>, ["ref"]],
@@ -632,13 +632,13 @@ function commandBranchSpecs(): Array<[string, Record<string, z.ZodType>, readonl
 }
 
 /**
- * The build-manifest root schema: manifest.ts's sections plus the gen
+ * The build-manifest root schema: manifest.ts's sections plus the run
  * recipe — the source for schemas/creatifact-build.schema.json.
  */
 const buildManifestFileSchema = z.looseObject({
   ...manifestSchema.shape,
-  gen: genSpecSchema.describe(
-    "Generation section (RUN): executed during build (unless --plan) — pkg:// refs resolve against the layers above; artifacts become the top layer and the config records the executed spec. Never contains credentials.",
+  run: runSpecSchema.describe(
+    "Run section: a generation task executed during build (unless --plan) — pkg:// refs resolve against the layers above; artifacts become the top layer and the config records the executed spec. Never contains credentials.",
   ),
 })
 
@@ -664,7 +664,7 @@ export function requestFileSchemaJson(): JsonSchema {
     $id: "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-request.schema.json",
     title: "Creatifact request file",
     description:
-      "The JSON mirror of one creatifact command line, run via `creatifact -f <file>.json`. The 'command' field selects the command; the remaining fields map to its arguments exactly as the flags would, and command-line flags after the file override generate.* fields. Orchestration (multi-step, dependency graph) lives in creatifact.json stages.",
+      "The JSON mirror of one creatifact command line, run via `creatifact -f <file>.json`. The 'command' field selects the command; the remaining fields map to its arguments exactly as the flags would, and command-line flags after the file override run.* fields. Orchestration (multi-step, dependency graph) lives in creatifact.json stages.",
     $defs: defs,
     anyOf: singles,
   }

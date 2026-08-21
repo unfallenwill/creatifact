@@ -24,13 +24,13 @@ let {
 let confirming = $state(false)
 let busy = $state(false)
 
-const gen = $derived(detail.gen)
+const run = $derived(detail.run)
 const result = $derived(detail.result)
 const created = $derived(str(result, "createdAt"))
 const from = $derived(str(result, "from"))
-const prompt = $derived(str(gen, "prompt"))
-const inputs = $derived(strArray(gen, "inputs"))
-const images = $derived(strArray(gen, "images"))
+const prompt = $derived(str(run, "prompt"))
+const inputs = $derived(strArray(run, "inputs"))
+const images = $derived(strArray(run, "images"))
 const text = $derived(str(result, "text"))
 const files = $derived(detail.files.filter((f) => f.type === "file"))
 const mediaFiles = $derived(files.filter((f) => isMedia(f.path)))
@@ -71,8 +71,8 @@ async function confirmDelete(): Promise<void> {
         <tr><th>manifest size</th><td class="mono">{humanSize(detail.size)}</td></tr>
         {#if created}<tr><th>created</th><td class="mono">{created}</td></tr>{/if}
         {#if from}<tr><th>built from</th><td class="mono">{from}</td></tr>{/if}
-        {#if str(gen, "provider")}<tr><th>provider</th><td>{str(gen, "provider")}</td></tr>{/if}
-        {#if str(gen, "model")}<tr><th>model</th><td>{str(gen, "model")}</td></tr>{/if}
+        {#if str(run, "provider")}<tr><th>provider</th><td>{str(run, "provider")}</td></tr>{/if}
+        {#if str(run, "model")}<tr><th>model</th><td>{str(run, "model")}</td></tr>{/if}
       </tbody>
     </table>
     <button class="danger" type="button" onclick={() => (confirming = true)}>delete…</button>
@@ -199,11 +199,11 @@ async function confirmDelete(): Promise<void> {
     {/if}
   </section>
 
-  {#if gen}
+  {#if run}
     <section>
       <details>
-        <summary>full gen spec (json)</summary>
-        <pre>{JSON.stringify(gen, null, 2)}</pre>
+        <summary>full run spec (json)</summary>
+        <pre>{JSON.stringify(run, null, 2)}</pre>
       </details>
     </section>
   {/if}

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest"
-import { GEN_CONFIG_MEDIA_TYPE } from "../genPackage"
+import { RUN_CONFIG_MEDIA_TYPE } from "../runPackage"
 import { modelSupportsTask, requestFieldsForTask, TASKS, tasksForModel } from "../tasks"
 
 test("TASKS registry keys cover all generation tasks plus resume", () => {
@@ -100,5 +100,5 @@ describe("requestFieldsForTask contract", () => {
 })
 
 test("gen recipe media type is versioned", () => {
-  expect(GEN_CONFIG_MEDIA_TYPE).toBe("application/vnd.creatifact.gen.v1+json")
+  expect(RUN_CONFIG_MEDIA_TYPE).toBe("application/vnd.creatifact.run.v1+json")
 })

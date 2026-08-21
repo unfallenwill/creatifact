@@ -9,7 +9,7 @@
   --muted: #8b95a3;
   --accent: #6cb2ff;
   --danger: #ff7a7a;
-  --gen: #7dd487;
+  --run: #7dd487;
   --image: #74b3ff;
 }
 
@@ -162,9 +162,9 @@ header h1 {
   white-space: nowrap;
 }
 
-.badge.gen {
+.badge.run {
   background: #1d2b1f;
-  color: var(--gen);
+  color: var(--run);
   border: 1px solid #2f4a33;
 }
 

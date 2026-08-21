@@ -130,10 +130,10 @@ test("mergeOptions defaults output and empty lists", () => {
   expect(opts.copy).toEqual([])
 })
 
-test("mergeOptions forwards gen from manifest", () => {
-  const opts = mergeOptions({ ...emptyCli(), tag: "x:1" }, { gen: { task: "text2image" } })
-  expect(opts.gen).toEqual({ task: "text2image" })
-  expect(mergeOptions({ ...emptyCli(), tag: "x:1" }, {}).gen).toBeUndefined()
+test("mergeOptions forwards run from manifest", () => {
+  const opts = mergeOptions({ ...emptyCli(), tag: "x:1" }, { run: { task: "text2image" } })
+  expect(opts.run).toEqual({ task: "text2image" })
+  expect(mergeOptions({ ...emptyCli(), tag: "x:1" }, {}).run).toBeUndefined()
 })
 
 test("mergeOptions forwards auth options", () => {
@@ -253,19 +253,19 @@ test("runBuild produces an empty image with no sources", async () => {
   await rm(tmp, { recursive: true })
 })
 
-test("runBuild --bake writes a gen recipe into the config blob without executing", async () => {
+test("runBuild --bake writes a run recipe into the config blob without executing", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "build-test-"))
   const outputDir = join(tmp, "out")
 
   await runBuild({
-    tag: "org/gen:1.0.0",
+    tag: "org/run:1.0.0",
     assetsDir: undefined,
     output: outputDir,
     annotations: {},
     from: [],
     copy: [],
     bake: true,
-    gen: {
+    run: {
       task: "image2image",
       provider: "zhipu",
       model: "cogview-4",
@@ -280,13 +280,13 @@ test("runBuild --bake writes a gen recipe into the config blob without executing
   const manifest = JSON.parse(
     await readFile(join(outputDir, "blobs", "sha256", index.manifests[0].digest.slice(7)), "utf8"),
   )
-  expect(manifest.config.mediaType).toBe("application/vnd.creatifact.gen.v1+json")
+  expect(manifest.config.mediaType).toBe("application/vnd.creatifact.run.v1+json")
   const config = JSON.parse(
     await readFile(join(outputDir, "blobs", "sha256", manifest.config.digest.slice(7)), "utf8"),
   )
   expect(config).toEqual({
     schemaVersion: 1,
-    gen: {
+    run: {
       task: "image2image",
       provider: "zhipu",
       model: "cogview-4",
@@ -294,7 +294,7 @@ test("runBuild --bake writes a gen recipe into the config blob without executing
     },
   })
 
-  await rm(tmp, { recursive: true })
+  await rm(tmp, { recursive: true, force: true })
 })
 
 test("runBuild packs assets as the top layer", async () => {
@@ -749,7 +749,7 @@ test("top-level build reuses an unchanged build (zero provider calls)", async ()
   const env = await setupReuseEnv()
   await writeFile(
     env.manifestPath,
-    JSON.stringify({ gen: { task: "text2image", provider: "demo", prompt: "a crane" } }),
+    JSON.stringify({ run: { task: "text2image", provider: "demo", prompt: "a crane" } }),
   )
   try {
     const first = await runBuildFromArgs(["-f", env.manifestPath, "-t", "org/crane:1"], {
@@ -780,7 +780,7 @@ test("--force re-executes an unchanged top-level build", async () => {
   const env = await setupReuseEnv()
   await writeFile(
     env.manifestPath,
-    JSON.stringify({ gen: { task: "text2image", provider: "demo", prompt: "a crane" } }),
+    JSON.stringify({ run: { task: "text2image", provider: "demo", prompt: "a crane" } }),
   )
   try {
     const args = (extra: string[]) =>
@@ -808,7 +808,7 @@ test("defaults.build.reuse never re-executes every time", async () => {
   )
   await writeFile(
     env.manifestPath,
-    JSON.stringify({ gen: { task: "text2image", provider: "demo", prompt: "a crane" } }),
+    JSON.stringify({ run: { task: "text2image", provider: "demo", prompt: "a crane" } }),
   )
   try {
     const args = ["-f", env.manifestPath, "-t", "org/crane:1"]
@@ -824,7 +824,7 @@ test("explicit --output has no diff base and never reuses", async () => {
   const env = await setupReuseEnv()
   await writeFile(
     env.manifestPath,
-    JSON.stringify({ gen: { task: "text2image", provider: "demo", prompt: "a crane" } }),
+    JSON.stringify({ run: { task: "text2image", provider: "demo", prompt: "a crane" } }),
   )
   try {
     const o1 = ["-f", env.manifestPath, "-t", "org/crane:1", "-o", join(env.dir, "o1")]
@@ -841,7 +841,7 @@ test("--plan dry run prints the plan and writes nothing", async () => {
   const env = await setupReuseEnv()
   await writeFile(
     env.manifestPath,
-    JSON.stringify({ gen: { task: "text2image", provider: "demo", prompt: "a crane" } }),
+    JSON.stringify({ run: { task: "text2image", provider: "demo", prompt: "a crane" } }),
   )
   try {
     const planned = await runBuildFromArgs(["--plan", "-f", env.manifestPath, "-t", "org/plan:1"], {
@@ -871,8 +871,8 @@ test("stages: unchanged stages are reused and changes propagate downstream", asy
   const manifest = (catPrompt: string): string =>
     JSON.stringify({
       stages: [
-        { name: "cat", gen: { task: "text2image", provider: "demo", prompt: catPrompt } },
-        { name: "dog", gen: { task: "text2image", provider: "demo", prompt: "a dog" } },
+        { name: "cat", run: { task: "text2image", provider: "demo", prompt: catPrompt } },
+        { name: "dog", run: { task: "text2image", provider: "demo", prompt: "a dog" } },
         {
           name: "combo",
           // biome-ignore lint/suspicious/noTemplateCurlyInString: fixture for the ${...} stage-ref syntax
@@ -919,8 +919,8 @@ test("stages --plan predicts would-execute/would-reuse without executing", async
   const manifest = (catPrompt: string): string =>
     JSON.stringify({
       stages: [
-        { name: "cat", gen: { task: "text2image", provider: "demo", prompt: catPrompt } },
-        { name: "dog", gen: { task: "text2image", provider: "demo", prompt: "a dog" } },
+        { name: "cat", run: { task: "text2image", provider: "demo", prompt: catPrompt } },
+        { name: "dog", run: { task: "text2image", provider: "demo", prompt: "a dog" } },
         {
           name: "combo",
           // biome-ignore lint/suspicious/noTemplateCurlyInString: fixture for the ${...} stage-ref syntax

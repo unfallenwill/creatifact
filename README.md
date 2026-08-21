@@ -46,26 +46,26 @@ Set credentials for a built-in provider and choose it as the default:
 
 ```bash
 export ZHIPU_API_KEY="..."
-creatifact config set defaults.gen.provider zhipu
+creatifact config set defaults.run.provider zhipu
 ```
 
 Generate an image and store it as an OCI package:
 
 ```bash
-creatifact generate text2image "a paper crane in the rain" \
+creatifact run text2image "a paper crane in the rain" \
   --tag demo/crane:v1
 ```
 
 The command returns one machine-readable JSON document on stdout:
 
 ```json
-{"ok":true,"kind":"generate","data":{"task":"text2image","provider":"zhipu","model":"cogview-4","capability":"image.generate","artifacts":[{"url":"https://..."}],"tag":"demo/crane:v1","outputDir":"...","digest":"sha256:..."}}
+{"ok":true,"kind":"run","data":{"task":"text2image","provider":"zhipu","model":"cogview-4","capability":"image.generate","artifacts":[{"url":"https://..."}],"tag":"demo/crane:v1","outputDir":"...","digest":"sha256:..."}}
 ```
 
 Inspect the local store:
 
 ```bash
-creatifact package ls
+creatifact package list
 ```
 
 To publish the same package, give it a registry-qualified tag and push it:
@@ -80,7 +80,7 @@ Another machine or agent can retrieve the exact package:
 
 ```bash
 creatifact pull ghcr.io/acme/crane:v1
-creatifact package ls
+creatifact package list
 ```
 
 ## Core workflows
@@ -88,7 +88,8 @@ creatifact package ls
 ### Generate directly
 
 Creatifact exposes model capabilities as tasks instead of provider-specific API
-shapes. `gen` is an alias for `generate`.
+shapes. `run <task>` executes a task; `run <ref>` executes a packaged recipe
+(docker-style).
 
 | Task | Input | Output | Common options |
 |---|---|---|---|
@@ -107,18 +108,18 @@ Examples:
 
 ```bash
 # Select a provider explicitly
-creatifact generate text2image zhipu "a paper crane"
+creatifact run text2image zhipu "a paper crane"
 
 # Select a provider and model
-creatifact generate image2video kling/kling-3.0-turbo "animate" \
+creatifact run image2video kling/kling-3.0-turbo "animate" \
   --image first.png
 
 # Let the configured default provider choose a suitable model
-creatifact generate text2text "explain content-addressed storage"
+creatifact run text2text "explain content-addressed storage"
 
 # Submit an asynchronous video job and resume it later
-creatifact generate text2video ark "a paper crane taking flight" --no-wait
-creatifact generate resume '{"providerId":"ark","id":"..."}'
+creatifact run text2video ark "a paper crane taking flight" --no-wait
+creatifact run resume '{"providerId":"ark","id":"..."}'
 ```
 
 Run `creatifact models` to list providers and `creatifact models <provider>` to
@@ -133,16 +134,16 @@ positional prompt).
 
 ### Package a reusable recipe
 
-A build manifest can contain a `gen` instruction. This packages model defaults,
-prompts, and input assets into a portable recipe; credentials are never stored
-in the package.
+A build manifest can contain a `run` instruction (dockerfile-style RUN). This
+packages model defaults, prompts, and input assets into a portable recipe;
+credentials are never stored in the package.
 
 ```jsonc
 // creatifact.json
 {
   "$schema": "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-build.schema.json",
   "assets": "./assets",
-  "gen": {
+  "run": {
     "task": "image2image",
     "provider": "zhipu",
     "model": "cogview-4",
@@ -159,22 +160,22 @@ Build the recipe without calling the provider, then run it with an override:
 creatifact build --bake -t ghcr.io/acme/editorial:v1
 creatifact push ghcr.io/acme/editorial:v1
 
-creatifact generate ghcr.io/acme/editorial:v1 \
+creatifact run ghcr.io/acme/editorial:v1 \
   "editorial illustration in red and black"
 ```
 
-Long prompts can stay in their own files: set `gen.promptFile` to a path
-relative to the manifest (mutually exclusive with `gen.prompt`). The file is
+Long prompts can stay in their own files: set `run.promptFile` to a path
+relative to the manifest (mutually exclusive with `run.prompt`). The file is
 read and trimmed at load time — the inlined prompt drives fingerprints and the
 packaged recipe, so built artifacts never reference the file again and prompt
 edits re-run exactly the stages that consume them.
 
-Without `--bake`, `build` executes the `gen` instruction once and packages the
-result. Running `creatifact generate <ref>` behaves more like running an image:
+Without `--bake`, `build` executes the `run` instruction once and packages the
+result. Running `creatifact run <ref>` behaves more like running an image:
 it reads the packaged recipe, applies CLI overrides, calls the provider, and
 creates a fresh result.
 
-`generate <ref>` accepts a registry reference, a local store tag, or a local OCI
+`run <ref>` accepts a registry reference, a local store tag, or a local OCI
 layout. Scalar CLI values replace recipe values, arrays replace arrays, and
 `--opt` merges individual keys.
 
@@ -190,11 +191,11 @@ independent stages run concurrently.
   "stages": [
     {
       "name": "cat",
-      "gen": { "task": "text2image", "provider": "zhipu", "prompt": "a cat" }
+      "run": { "task": "text2image", "provider": "zhipu", "prompt": "a cat" }
     },
     {
       "name": "dog",
-      "gen": { "task": "text2image", "provider": "zhipu", "prompt": "a dog" }
+      "run": { "task": "text2image", "provider": "zhipu", "prompt": "a dog" }
     },
     {
       "name": "gallery",
@@ -215,7 +216,7 @@ independent stages run concurrently.
 creatifact build -t demo/gallery:v1
 ```
 
-Each stage is a mini build with optional `from`, `copy`, `assets`, `gen`, and
+Each stage is a mini build with optional `from`, `copy`, `assets`, `run`, and
 `annotations` fields. The last stage is also tagged with the build's `-t`
 reference. A stage may reference these outputs from an earlier stage:
 
@@ -256,13 +257,13 @@ default changes, or a mutable remote tag moving to a new digest.
 
 Primary execution and configuration commands also have a JSON form. The
 `command` value mirrors the subcommand tree and the remaining fields mirror its
-arguments. Supported values include `generate.*`, `build`, `push`, `pull`,
+arguments. Supported values include `run.*`, `build`, `push`, `pull`,
 `auth.*`, `config.*`, and `models`.
 
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-request.schema.json",
-  "command": "generate.text2image",
+  "command": "run.text2image",
   "provider": "zhipu",
   "prompt": "a paper crane",
   "options": { "size": "1024x1024" },
@@ -274,7 +275,7 @@ arguments. Supported values include `generate.*`, `build`, `push`, `pull`,
 creatifact -f request.json
 ```
 
-For `generate.*` requests, trailing CLI flags override file values:
+For `run.*` requests, trailing CLI flags override file values:
 
 ```bash
 creatifact -f request.json --prompt "a red paper crane" --opt size=2048x2048
@@ -295,7 +296,7 @@ Every non-meta command emits exactly one JSON document:
 - `--help`, `--version`, and a bare invocation remain human-readable.
 
 ```json
-{"ok":false,"kind":"generate","error":{"code":"E_PROVIDER","message":"...","details":{"category":"quota","status":429}}}
+{"ok":false,"kind":"run","error":{"code":"E_PROVIDER","message":"...","details":{"category":"quota","status":429}}}
 ```
 
 | Code | Exit | Meaning |
@@ -316,7 +317,7 @@ at `~/.creatifact/store`. Blobs are deduplicated by digest and tags are movable
 pointers, similar to a local container image store.
 
 ```bash
-creatifact package ls
+creatifact package list
 creatifact package serve --browser
 creatifact tag demo/crane:v1 demo/crane:latest
 creatifact package rm demo/crane:v1
@@ -327,7 +328,7 @@ Removing a tag deletes blobs only when no other tag references them.
 `package serve` starts a local web UI on 127.0.0.1 (random port, override
 with `--port`) and prints its URL; with `--browser` it also opens it in the
 default browser. The UI is a lazy-loaded waterfall gallery of every package,
-and per package the gen recipe, result metadata, and every file of its
+and per package the run recipe, result metadata, and every file of its
 layers — media rendered inline. Packages can be deleted right from the page
 (same semantics as `package rm`: shared blobs survive). The command prints
 the JSON envelope (`kind: package.serve`, carrying the URL) on stdout and
@@ -369,7 +370,7 @@ manifest supports these fields:
 | `from` | One or more registry refs or local OCI layouts whose layers are inherited |
 | `copy` | Selected files or subtrees extracted from source packages into new layers |
 | `assets` | Local directory packed as the top layer, relative to the manifest |
-| `gen` | Generation recipe or build-time generation instruction |
+| `run` | Generation recipe or build-time generation instruction (dockerfile-style RUN) |
 
 ```json
 {
@@ -440,7 +441,7 @@ Use the model catalog before constructing a command:
 ```bash
 creatifact models
 creatifact models zhipu
-creatifact generate frames2video zhipu --list-models
+creatifact run frames2video zhipu --list-models
 ```
 
 ### Custom models
@@ -541,7 +542,7 @@ with `CREATIFACT_CONFIG_DIR` or pass `--config-dir <dir>` to any command.
 {
   "defaults": {
     "registry": "ghcr.io",
-    "gen": { "provider": "zhipu" },
+    "run": { "provider": "zhipu" },
     "build": { "concurrency": 4, "reuse": "stale" }
   },
   "providers": {
@@ -555,8 +556,8 @@ Manage it through the CLI:
 ```bash
 creatifact config path
 creatifact config list
-creatifact config get defaults.gen.provider
-creatifact config set defaults.gen.provider zhipu
+creatifact config get defaults.run.provider
+creatifact config set defaults.run.provider zhipu
 creatifact config reset
 ```
 

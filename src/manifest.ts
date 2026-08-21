@@ -2,10 +2,10 @@ import { readFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { formatIssuePath, manifestSchema } from "./contract"
 import { usageError } from "./errors"
-import { type GenSpec, validateGenSpec } from "./genPackage"
 import { stripJsonc } from "./jsonc"
+import { type RunSpec, validateRunSpec } from "./runPackage"
 
-export type { GenSpec }
+export type { RunSpec }
 
 export interface CopyEntry {
   from: string
@@ -19,7 +19,7 @@ export interface BuildStage {
   from?: string | string[]
   copy?: CopyEntry[]
   assets?: string
-  gen?: GenSpec
+  run?: RunSpec
 }
 
 export interface BuildManifestFile {
@@ -27,7 +27,7 @@ export interface BuildManifestFile {
   from?: string | string[]
   copy?: CopyEntry[]
   assets?: string
-  gen?: GenSpec
+  run?: RunSpec
   stages?: BuildStage[]
 }
 
@@ -37,6 +37,8 @@ export interface LoadedManifest {
 }
 
 const LEGACY_FIELDS = ["tag", "dir", "output"] as const
+/** Fields renamed by the gen→run unification; fail loudly so a stale recipe is never silently dropped. */
+const RENAMED_FIELDS = new Map([["gen", "run"]])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -46,11 +48,16 @@ function fail(filePath: string, field: string, message: string): never {
   throw new Error(`${filePath}: ${field} ${message}`)
 }
 
-/** Warn about unknown and legacy manifest keys (kept out of the main flow). */
+/** Fail on renamed fields; warn about unknown and legacy keys (kept out of the main flow). */
 function warnUnknownKeys(raw: Record<string, unknown>, filePath: string): void {
+  for (const [oldName, newName] of RENAMED_FIELDS) {
+    if (raw[oldName] !== undefined) {
+      fail(filePath, oldName, `was renamed to '${newName}'`)
+    }
+  }
   const knownKeys = new Set([
     ...Object.keys(manifestSchema.shape),
-    "gen",
+    "run",
     "stages",
     // stage entries carry their reference name
     ...(filePath.includes("#stages[") ? ["name"] : []),
@@ -82,7 +89,7 @@ function validateStages(
     fail(
       filePath,
       "stages",
-      "cannot combine 'stages' with top-level from/copy/assets/gen (put those on a stage)",
+      "cannot combine 'stages' with top-level from/copy/assets/run (put those on a stage)",
     )
   }
   if (!Array.isArray(stagesRaw) || stagesRaw.length === 0) {
@@ -104,10 +111,10 @@ function validateStages(
 }
 
 /**
- * Validate a build manifest's non-gen sections through contract.ts's
+ * Validate a build manifest's non-run sections through contract.ts's
  * manifestSchema (the same source that generates
- * schemas/creatifact-build.schema.json), then the gen section through
- * validateGenSpec so its unknown-key warnings stay intact.
+ * schemas/creatifact-build.schema.json), then the run section through
+ * validateRunSpec so its unknown-key warnings stay intact.
  */
 export function validateBuildManifest(raw: unknown, filePath: string): BuildManifestFile {
   if (!isRecord(raw)) {
@@ -126,10 +133,10 @@ export function validateBuildManifest(raw: unknown, filePath: string): BuildMani
   }
 
   const { annotations, from, copy, assets } = result.data
-  const gen = raw["gen"]
+  const run = raw["run"]
   const stagesRaw = raw["stages"]
   const hasTopLevel =
-    gen !== undefined || from !== undefined || copy !== undefined || assets !== undefined
+    run !== undefined || from !== undefined || copy !== undefined || assets !== undefined
   const stages =
     stagesRaw === undefined ? undefined : validateStages(stagesRaw, filePath, hasTopLevel)
 
@@ -140,13 +147,13 @@ export function validateBuildManifest(raw: unknown, filePath: string): BuildMani
     ...(from === undefined ? {} : { from: from as string | string[] }),
     ...(copy === undefined ? {} : { copy }),
     ...(assets === undefined ? {} : { assets }),
-    ...(gen === undefined ? {} : { gen: validateGenSpec(gen, filePath) }),
+    ...(run === undefined ? {} : { run: validateRunSpec(run, filePath) }),
     ...(stages === undefined ? {} : { stages }),
   }
 }
 
 /**
- * Resolve gen.promptFile (relative to the manifest directory) into gen.prompt
+ * Resolve run.promptFile (relative to the manifest directory) into run.prompt
  * and drop the field. The manifest on disk keeps the authoring reference;
  * fingerprints, --bake packages, and execution only ever see the inlined
  * prompt, so artifacts stay self-contained and prompt-file edits re-run the
@@ -157,13 +164,13 @@ async function inlinePromptFiles(
   filePath: string,
   baseDir: string,
 ): Promise<void> {
-  const gens: GenSpec[] = []
-  if (file.gen !== undefined) gens.push(file.gen)
+  const runs: RunSpec[] = []
+  if (file.run !== undefined) runs.push(file.run)
   for (const stage of file.stages ?? []) {
-    if (stage.gen !== undefined) gens.push(stage.gen)
+    if (stage.run !== undefined) runs.push(stage.run)
   }
-  for (const gen of gens) {
-    const ref = gen.promptFile
+  for (const run of runs) {
+    const ref = run.promptFile
     if (ref === undefined) continue
     const abs = resolve(baseDir, ref)
     let content: string
@@ -171,15 +178,15 @@ async function inlinePromptFiles(
       content = await readFile(abs, "utf8")
     } catch (e) {
       throw usageError(
-        `${filePath}: gen.promptFile '${ref}' cannot be read: ${(e as Error).message}`,
+        `${filePath}: run.promptFile '${ref}' cannot be read: ${(e as Error).message}`,
       )
     }
     const prompt = content.trim()
     if (prompt === "") {
-      throw usageError(`${filePath}: gen.promptFile '${ref}' is empty`)
+      throw usageError(`${filePath}: run.promptFile '${ref}' is empty`)
     }
-    gen.prompt = prompt
-    delete gen.promptFile
+    run.prompt = prompt
+    delete run.promptFile
   }
 }
 

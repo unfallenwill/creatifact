@@ -32,17 +32,17 @@ test("result envelope pretty mode indents with two spaces", () => {
 })
 
 test("error envelope includes code, message, and optional details", () => {
-  expect(formatErrorEnvelope("generate", { code: "E_USAGE", message: "bad flag" }, plain)).toBe(
-    '{"ok":false,"kind":"generate","error":{"code":"E_USAGE","message":"bad flag"}}',
+  expect(formatErrorEnvelope("run", { code: "E_USAGE", message: "bad flag" }, plain)).toBe(
+    '{"ok":false,"kind":"run","error":{"code":"E_USAGE","message":"bad flag"}}',
   )
   expect(
     formatErrorEnvelope(
-      "generate",
+      "run",
       { code: "E_PROVIDER", message: "boom", details: { category: "quota" } },
       plain,
     ),
   ).toBe(
-    '{"ok":false,"kind":"generate","error":{"code":"E_PROVIDER","message":"boom","details":{"category":"quota"}}}',
+    '{"ok":false,"kind":"run","error":{"code":"E_PROVIDER","message":"boom","details":{"category":"quota"}}}',
   )
 })
 

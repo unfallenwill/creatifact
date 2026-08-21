@@ -2,15 +2,15 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-request.schema.json",
   "title": "Creatifact request file",
-  "description": "The JSON mirror of one creatifact command line, run via `creatifact -f <file>.json`. The 'command' field selects the command; the remaining fields map to its arguments exactly as the flags would, and command-line flags after the file override generate.* fields. Orchestration (multi-step, dependency graph) lives in creatifact.json stages.",
+  "description": "The JSON mirror of one creatifact command line, run via `creatifact -f <file>.json`. The 'command' field selects the command; the remaining fields map to its arguments exactly as the flags would, and command-line flags after the file override run.* fields. Orchestration (multi-step, dependency graph) lives in creatifact.json stages.",
   "$defs": {
-    "single.generate.text2text": {
+    "single.run.text2text": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
         "command": {
           "type": "string",
-          "const": "generate.text2text",
+          "const": "run.text2text",
           "description": "Which command to run."
         },
         "$schema": {
@@ -20,7 +20,7 @@
         "provider": {
           "type": "string",
           "minLength": 1,
-          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.run.provider)."
         },
         "model": {
           "type": "string",
@@ -30,12 +30,12 @@
         "prompt": {
           "type": "string",
           "minLength": 1,
-          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+          "description": "Text instruction or question (run.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
         },
         "system": {
           "type": "string",
           "minLength": 1,
-          "description": "System prompt (generate.text2text only)."
+          "description": "System prompt (run.text2text only)."
         },
         "options": {
           "type": "object",
@@ -53,7 +53,7 @@
         "tag": {
           "type": "string",
           "minLength": 1,
-          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+          "description": "Reference name for the result package (default run-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
         }
       },
       "required": [
@@ -61,13 +61,13 @@
       ],
       "additionalProperties": false
     },
-    "single.generate.image2text": {
+    "single.run.image2text": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
         "command": {
           "type": "string",
-          "const": "generate.image2text",
+          "const": "run.image2text",
           "description": "Which command to run."
         },
         "$schema": {
@@ -77,7 +77,7 @@
         "provider": {
           "type": "string",
           "minLength": 1,
-          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.run.provider)."
         },
         "model": {
           "type": "string",
@@ -87,7 +87,7 @@
         "prompt": {
           "type": "string",
           "minLength": 1,
-          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+          "description": "Text instruction or question (run.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
         },
         "inputs": {
           "anyOf": [
@@ -103,7 +103,7 @@
               }
             }
           ],
-          "description": "Media attachments (generate.image2text / video2text) or texts to embed (generate.embed). Repeatable as --input."
+          "description": "Media attachments (run.image2text / video2text) or texts to embed (run.embed). Repeatable as --input."
         },
         "options": {
           "type": "object",
@@ -121,7 +121,7 @@
         "tag": {
           "type": "string",
           "minLength": 1,
-          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+          "description": "Reference name for the result package (default run-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
         }
       },
       "required": [
@@ -129,13 +129,13 @@
       ],
       "additionalProperties": false
     },
-    "single.generate.video2text": {
+    "single.run.video2text": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
         "command": {
           "type": "string",
-          "const": "generate.video2text",
+          "const": "run.video2text",
           "description": "Which command to run."
         },
         "$schema": {
@@ -145,7 +145,7 @@
         "provider": {
           "type": "string",
           "minLength": 1,
-          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.run.provider)."
         },
         "model": {
           "type": "string",
@@ -155,7 +155,7 @@
         "prompt": {
           "type": "string",
           "minLength": 1,
-          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+          "description": "Text instruction or question (run.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
         },
         "inputs": {
           "anyOf": [
@@ -171,7 +171,7 @@
               }
             }
           ],
-          "description": "Media attachments (generate.image2text / video2text) or texts to embed (generate.embed). Repeatable as --input."
+          "description": "Media attachments (run.image2text / video2text) or texts to embed (run.embed). Repeatable as --input."
         },
         "options": {
           "type": "object",
@@ -189,7 +189,7 @@
         "tag": {
           "type": "string",
           "minLength": 1,
-          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+          "description": "Reference name for the result package (default run-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
         }
       },
       "required": [
@@ -197,13 +197,13 @@
       ],
       "additionalProperties": false
     },
-    "single.generate.text2image": {
+    "single.run.text2image": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
         "command": {
           "type": "string",
-          "const": "generate.text2image",
+          "const": "run.text2image",
           "description": "Which command to run."
         },
         "$schema": {
@@ -213,7 +213,7 @@
         "provider": {
           "type": "string",
           "minLength": 1,
-          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.run.provider)."
         },
         "model": {
           "type": "string",
@@ -223,7 +223,7 @@
         "prompt": {
           "type": "string",
           "minLength": 1,
-          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+          "description": "Text instruction or question (run.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
         },
         "options": {
           "type": "object",
@@ -241,7 +241,7 @@
         "tag": {
           "type": "string",
           "minLength": 1,
-          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+          "description": "Reference name for the result package (default run-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
         },
         "noPack": {
           "type": "boolean",
@@ -253,13 +253,13 @@
       ],
       "additionalProperties": false
     },
-    "single.generate.image2image": {
+    "single.run.image2image": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
         "command": {
           "type": "string",
-          "const": "generate.image2image",
+          "const": "run.image2image",
           "description": "Which command to run."
         },
         "$schema": {
@@ -269,7 +269,7 @@
         "provider": {
           "type": "string",
           "minLength": 1,
-          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.run.provider)."
         },
         "model": {
           "type": "string",
@@ -279,7 +279,7 @@
         "prompt": {
           "type": "string",
           "minLength": 1,
-          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+          "description": "Text instruction or question (run.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
         },
         "images": {
           "anyOf": [
@@ -313,7 +313,7 @@
         "tag": {
           "type": "string",
           "minLength": 1,
-          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+          "description": "Reference name for the result package (default run-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
         },
         "noPack": {
           "type": "boolean",
@@ -325,13 +325,13 @@
       ],
       "additionalProperties": false
     },
-    "single.generate.text2video": {
+    "single.run.text2video": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
         "command": {
           "type": "string",
-          "const": "generate.text2video",
+          "const": "run.text2video",
           "description": "Which command to run."
         },
         "$schema": {
@@ -341,7 +341,7 @@
         "provider": {
           "type": "string",
           "minLength": 1,
-          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.run.provider)."
         },
         "model": {
           "type": "string",
@@ -351,7 +351,7 @@
         "prompt": {
           "type": "string",
           "minLength": 1,
-          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+          "description": "Text instruction or question (run.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
         },
         "options": {
           "type": "object",
@@ -395,7 +395,7 @@
         "tag": {
           "type": "string",
           "minLength": 1,
-          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+          "description": "Reference name for the result package (default run-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
         },
         "noPack": {
           "type": "boolean",
@@ -407,13 +407,13 @@
       ],
       "additionalProperties": false
     },
-    "single.generate.image2video": {
+    "single.run.image2video": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
         "command": {
           "type": "string",
-          "const": "generate.image2video",
+          "const": "run.image2video",
           "description": "Which command to run."
         },
         "$schema": {
@@ -423,7 +423,7 @@
         "provider": {
           "type": "string",
           "minLength": 1,
-          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.run.provider)."
         },
         "model": {
           "type": "string",
@@ -433,7 +433,7 @@
         "prompt": {
           "type": "string",
           "minLength": 1,
-          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+          "description": "Text instruction or question (run.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
         },
         "images": {
           "anyOf": [
@@ -493,7 +493,7 @@
         "tag": {
           "type": "string",
           "minLength": 1,
-          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+          "description": "Reference name for the result package (default run-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
         },
         "noPack": {
           "type": "boolean",
@@ -505,13 +505,13 @@
       ],
       "additionalProperties": false
     },
-    "single.generate.frames2video": {
+    "single.run.frames2video": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
         "command": {
           "type": "string",
-          "const": "generate.frames2video",
+          "const": "run.frames2video",
           "description": "Which command to run."
         },
         "$schema": {
@@ -521,7 +521,7 @@
         "provider": {
           "type": "string",
           "minLength": 1,
-          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.run.provider)."
         },
         "model": {
           "type": "string",
@@ -531,17 +531,17 @@
         "prompt": {
           "type": "string",
           "minLength": 1,
-          "description": "Text instruction or question (generate.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
+          "description": "Text instruction or question (run.text2text / text2image / image2image / text2video / image2video / frames2video; optional for image2text / video2text)."
         },
         "firstFrame": {
           "type": "string",
           "minLength": 1,
-          "description": "generate.frames2video only: first frame image."
+          "description": "run.frames2video only: first frame image."
         },
         "lastFrame": {
           "type": "string",
           "minLength": 1,
-          "description": "generate.frames2video only: last frame image."
+          "description": "run.frames2video only: last frame image."
         },
         "options": {
           "type": "object",
@@ -585,7 +585,7 @@
         "tag": {
           "type": "string",
           "minLength": 1,
-          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+          "description": "Reference name for the result package (default run-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
         },
         "noPack": {
           "type": "boolean",
@@ -597,13 +597,13 @@
       ],
       "additionalProperties": false
     },
-    "single.generate.embed": {
+    "single.run.embed": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
         "command": {
           "type": "string",
-          "const": "generate.embed",
+          "const": "run.embed",
           "description": "Which command to run."
         },
         "$schema": {
@@ -613,7 +613,7 @@
         "provider": {
           "type": "string",
           "minLength": 1,
-          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.run.provider)."
         },
         "model": {
           "type": "string",
@@ -634,7 +634,7 @@
               }
             }
           ],
-          "description": "Media attachments (generate.image2text / video2text) or texts to embed (generate.embed). Repeatable as --input."
+          "description": "Media attachments (run.image2text / video2text) or texts to embed (run.embed). Repeatable as --input."
         },
         "options": {
           "type": "object",
@@ -652,7 +652,7 @@
         "tag": {
           "type": "string",
           "minLength": 1,
-          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+          "description": "Reference name for the result package (default run-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
         }
       },
       "required": [
@@ -660,13 +660,13 @@
       ],
       "additionalProperties": false
     },
-    "single.generate.resume": {
+    "single.run.resume": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
         "command": {
           "type": "string",
-          "const": "generate.resume",
+          "const": "run.resume",
           "description": "Which command to run."
         },
         "$schema": {
@@ -676,7 +676,7 @@
         "provider": {
           "type": "string",
           "minLength": 1,
-          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.run.provider)."
         },
         "model": {
           "type": "string",
@@ -724,7 +724,7 @@
               "additionalProperties": {}
             }
           ],
-          "description": "generate.resume only: the saved task handle (object or inline JSON string)."
+          "description": "run.resume only: the saved task handle (object or inline JSON string)."
         }
       },
       "required": [
@@ -748,7 +748,7 @@
         "tag": {
           "type": "string",
           "minLength": 1,
-          "description": "Reference name for the result package (default gen-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
+          "description": "Reference name for the result package (default run-output:latest). Media tasks pack by default; text/embed tasks pack only when tag/output is set. Also build's image reference."
         },
         "dir": {
           "type": "string",
@@ -1046,7 +1046,7 @@
         "provider": {
           "type": "string",
           "minLength": 1,
-          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.gen.provider)."
+          "description": "Provider id, optionally with model: 'zhipu' or 'zhipu/cogview-4'. Omit to use the default provider (config key defaults.run.provider)."
         }
       },
       "required": [
@@ -1114,34 +1114,34 @@
   },
   "anyOf": [
     {
-      "$ref": "#/$defs/single.generate.text2text"
+      "$ref": "#/$defs/single.run.text2text"
     },
     {
-      "$ref": "#/$defs/single.generate.image2text"
+      "$ref": "#/$defs/single.run.image2text"
     },
     {
-      "$ref": "#/$defs/single.generate.video2text"
+      "$ref": "#/$defs/single.run.video2text"
     },
     {
-      "$ref": "#/$defs/single.generate.text2image"
+      "$ref": "#/$defs/single.run.text2image"
     },
     {
-      "$ref": "#/$defs/single.generate.image2image"
+      "$ref": "#/$defs/single.run.image2image"
     },
     {
-      "$ref": "#/$defs/single.generate.text2video"
+      "$ref": "#/$defs/single.run.text2video"
     },
     {
-      "$ref": "#/$defs/single.generate.image2video"
+      "$ref": "#/$defs/single.run.image2video"
     },
     {
-      "$ref": "#/$defs/single.generate.frames2video"
+      "$ref": "#/$defs/single.run.frames2video"
     },
     {
-      "$ref": "#/$defs/single.generate.embed"
+      "$ref": "#/$defs/single.run.embed"
     },
     {
-      "$ref": "#/$defs/single.generate.resume"
+      "$ref": "#/$defs/single.run.resume"
     },
     {
       "$ref": "#/$defs/single.build"

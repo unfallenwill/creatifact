@@ -1,16 +1,16 @@
 import { type ParsedArgs as BuildRequest, type BuildResult, runBuildFromParsed } from "./build"
 import { type ConfigActionResult, runConfigAction } from "./configCmd"
-import { type GenerateResult, type GenRequest, runGenerateRequest } from "./generate"
 import { type ParsedLoginArgs, runLoginFromParsed, runLogoutFromParsed } from "./login"
 import { type ModelsResult, runModelsFromParsed } from "./models"
 import { type ParsedPullArgs, type PullResult, runPullFromParsed } from "./pull"
 import { type ParsedPushArgs, type PushResult, runPushFromParsed } from "./push"
+import { executeRunRequest, type RunRequest, type RunResult } from "./run"
 
 export type CommandRequest =
   | { kind: "build"; req: BuildRequest }
   | { kind: "push"; req: ParsedPushArgs }
   | { kind: "pull"; req: ParsedPullArgs }
-  | { kind: "generate"; req: GenRequest }
+  | { kind: "run"; req: RunRequest }
   | { kind: "login"; req: ParsedLoginArgs }
   | { kind: "logout"; req: { registry: string | undefined } }
   | { kind: "models"; req: { provider: string | undefined } }
@@ -20,7 +20,7 @@ export type CommandResult =
   | ({ kind: "build" } & BuildResult)
   | ({ kind: "push" } & PushResult)
   | ({ kind: "pull" } & PullResult)
-  | ({ kind: "generate" } & GenerateResult)
+  | ({ kind: "run" } & RunResult)
   | ({ kind: "config" } & ConfigActionResult)
   | ({ kind: "login" } & { registry: string; username: string })
   | ({ kind: "logout" } & { registry: string })
@@ -49,10 +49,10 @@ export async function executeCommand(
       return { kind: "push", ...(await runPushFromParsed(request.req, opts)) }
     case "pull":
       return { kind: "pull", ...(await runPullFromParsed(request.req, opts)) }
-    case "generate":
+    case "run":
       return {
-        kind: "generate",
-        ...(await runGenerateRequest(request.req, opts)),
+        kind: "run",
+        ...(await executeRunRequest(request.req, opts)),
       }
     case "login":
       return { kind: "login", ...(await runLoginFromParsed(request.req, opts)) }

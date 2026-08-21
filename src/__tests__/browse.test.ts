@@ -6,10 +6,10 @@ import { okAsync } from "neverthrow"
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "vitest"
 import { type BrowserServer, startStoreBrowserServer } from "../browse"
 import { runBuild } from "../build"
-import { buildResultPackage, type GenSpec } from "../genPackage"
+import { buildResultPackage, type RunSpec } from "../runPackage"
 import { listStoreEntries, removeStoreRefs } from "../store"
 
-const GEN_REF = "demo/crane:v1"
+const RUN_REF = "demo/crane:v1"
 
 let dir: string
 let configPath: string
@@ -50,9 +50,9 @@ async function start(): Promise<string> {
   return server.url
 }
 
-const genRefUrl = (base: string): string => `${base}/api/packages/${encodeURIComponent(GEN_REF)}`
+const runRefUrl = (base: string): string => `${base}/api/packages/${encodeURIComponent(RUN_REF)}`
 
-async function addGenPackage(tag: string, task: GenSpec["task"]): Promise<void> {
+async function addRunPackage(tag: string, task: RunSpec["task"]): Promise<void> {
   await buildResultPackage({
     outputDir: join(dir, "cfg", "store"),
     tag,
@@ -78,8 +78,8 @@ test("/ serves the prebuilt SPA shell", async () => {
   expect(html).toContain('id="app"')
 })
 
-test("/api/packages reflects store entries with gen summary and cover", async () => {
-  await addGenPackage(GEN_REF, "text2image")
+test("/api/packages reflects store entries with run summary and cover", async () => {
+  await addRunPackage(RUN_REF, "text2image")
   const base = await start()
 
   const res = await fetch(`${base}/api/packages`)
@@ -89,47 +89,47 @@ test("/api/packages reflects store entries with gen summary and cover", async ()
     digest: string
     kind: string
     cover?: string
-    gen?: { task: string; provider?: string; model?: string; createdAt?: string }
+    run?: { task: string; provider?: string; model?: string; createdAt?: string }
   }>
   expect(entries).toHaveLength(1)
-  expect(entries[0]?.ref).toBe(GEN_REF)
+  expect(entries[0]?.ref).toBe(RUN_REF)
   expect(entries[0]?.digest).toMatch(/^sha256:[0-9a-f]{64}$/)
-  expect(entries[0]?.kind).toBe("gen")
-  expect(entries[0]?.gen).toMatchObject({
+  expect(entries[0]?.kind).toBe("run")
+  expect(entries[0]?.run).toMatchObject({
     task: "text2image",
     provider: "demo-pro",
     model: "crane-x",
     createdAt: "2026-08-17T00:00:00.000Z",
   })
   expect(entries[0]?.cover).toBe(
-    `/package/${encodeURIComponent(GEN_REF)}/file/${encodeURIComponent("artifact-1.png")}`,
+    `/package/${encodeURIComponent(RUN_REF)}/file/${encodeURIComponent("artifact-1.png")}`,
   )
 })
 
-test("/api/packages/:ref returns detail with gen recipe, result, and files", async () => {
-  await addGenPackage(GEN_REF, "text2image")
+test("/api/packages/:ref returns detail with run recipe, result, and files", async () => {
+  await addRunPackage(RUN_REF, "text2image")
   const base = await start()
 
-  const res = await fetch(genRefUrl(base))
+  const res = await fetch(runRefUrl(base))
   expect(res.status).toBe(200)
   const detail = (await res.json()) as {
     ref: string
     kind: string
-    gen?: { prompt?: string }
+    run?: { prompt?: string }
     files: Array<{ path: string; type: string; size?: number }>
   }
-  expect(detail.ref).toBe(GEN_REF)
-  expect(detail.kind).toBe("gen")
-  expect(detail.gen?.prompt).toBe("a crane at dusk")
+  expect(detail.ref).toBe(RUN_REF)
+  expect(detail.kind).toBe("run")
+  expect(detail.run?.prompt).toBe("a crane at dusk")
   expect(detail.files).toContainEqual({ path: "artifact-1.png", type: "file", size: 7 })
 })
 
 test("file endpoint serves exact bytes with the mapped content type", async () => {
-  await addGenPackage(GEN_REF, "text2image")
+  await addRunPackage(RUN_REF, "text2image")
   const base = await start()
 
   const res = await fetch(
-    `${base}/package/${encodeURIComponent(GEN_REF)}/file/${encodeURIComponent("artifact-1.png")}`,
+    `${base}/package/${encodeURIComponent(RUN_REF)}/file/${encodeURIComponent("artifact-1.png")}`,
   )
   expect(res.status).toBe(200)
   expect(res.headers.get("content-type")).toBe("image/png")
@@ -137,7 +137,7 @@ test("file endpoint serves exact bytes with the mapped content type", async () =
 })
 
 test("unknown packages, missing files, and traversal paths are 404 JSON", async () => {
-  await addGenPackage(GEN_REF, "text2image")
+  await addRunPackage(RUN_REF, "text2image")
   const base = await start()
 
   const unknownPkg = await fetch(`${base}/api/packages/${encodeURIComponent("nope:v1")}`)
@@ -147,18 +147,18 @@ test("unknown packages, missing files, and traversal paths are 404 JSON", async 
   expect(
     (
       await fetch(
-        `${base}/package/${encodeURIComponent(GEN_REF)}/file/${encodeURIComponent("../config.json")}`,
+        `${base}/package/${encodeURIComponent(RUN_REF)}/file/${encodeURIComponent("../config.json")}`,
       )
     ).status,
   ).toBe(404)
-  expect((await fetch(`${genRefUrl(base)}/file/missing.txt`)).status).toBe(404)
+  expect((await fetch(`${runRefUrl(base)}/file/missing.txt`)).status).toBe(404)
   expect((await fetch(`${base}/no/such/path`)).status).toBe(404)
 })
 
 test("DELETE untags, keeps shared blobs, and GCs the last reference", async () => {
   // same artifact bytes → shared layer blob; different tasks → distinct manifests
-  await addGenPackage("demo/a:v1", "text2image")
-  await addGenPackage("demo/b:v1", "image2image")
+  await addRunPackage("demo/a:v1", "text2image")
+  await addRunPackage("demo/b:v1", "image2image")
   const base = await start()
 
   const first = await fetch(`${base}/api/packages/${encodeURIComponent("demo/a:v1")}`, {
@@ -221,13 +221,13 @@ test("plain image packages list as image kind and serve their layer files", asyn
   const entries = (await (await fetch(`${base}/api/packages`)).json()) as Array<{
     ref: string
     kind: string
-    gen?: unknown
+    run?: unknown
     cover?: string
   }>
   expect(entries).toHaveLength(1)
   expect(entries[0]?.ref).toBe("assets:1")
   expect(entries[0]?.kind).toBe("image")
-  expect(entries[0]?.gen).toBeUndefined()
+  expect(entries[0]?.run).toBeUndefined()
   expect(entries[0]?.cover).toBeUndefined()
 
   const res = await fetch(

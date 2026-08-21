@@ -18,9 +18,9 @@ import { glob } from "tinyglobby"
 
 import { stableStringify } from "./contract"
 import { dagEdges } from "./dag"
-import { GEN_CONFIG_MEDIA_TYPE, type GenResultBlob, type GenSpec } from "./genPackage"
 import { type OCIManifest, REF_NAME_ANNOTATION, readIndexEntries } from "./oci"
 import { isLocalRef } from "./refs"
+import { RUN_CONFIG_MEDIA_TYPE, type RunResultBlob, type RunSpec } from "./runPackage"
 
 export const PLAN_SCHEMA_VERSION = 1
 
@@ -32,9 +32,9 @@ export interface SourceDigest {
 
 /** Everything that affects one stage's output, after reference resolution. */
 export interface StageInputs {
-  /** Build-level context that changes behavior: the default gen provider. */
+  /** Build-level context that changes behavior: the default run provider. */
   defaultProvider?: string
-  gen?: GenSpec
+  run?: RunSpec
   from: SourceDigest[]
   copy: Array<SourceDigest & { paths: string[] }>
   assets?: string
@@ -164,14 +164,14 @@ export async function readPreviousStageResult(
   const manifest = await readManifestBlob(storeDir, digest)
   if (manifest === undefined) return undefined
   let artifacts: PreviousStageResult["artifacts"] = []
-  if (manifest.config.mediaType === GEN_CONFIG_MEDIA_TYPE) {
+  if (manifest.config.mediaType === RUN_CONFIG_MEDIA_TYPE) {
     try {
       const config = JSON.parse(
         await readFile(
           join(storeDir, "blobs", "sha256", manifest.config.digest.slice("sha256:".length)),
           "utf8",
         ),
-      ) as GenResultBlob
+      ) as RunResultBlob
       artifacts = config.result.artifacts ?? []
     } catch {
       artifacts = []

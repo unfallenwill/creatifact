@@ -31,9 +31,9 @@ test("collectDagRefs returns empty for no refs", () => {
 
 test("dagEdges: every reference in a node's payload is an edge", () => {
   const payload = {
-    a: { gen: { task: "text2image" } },
+    a: { run: { task: "text2image" } },
     b: { annotations: { x: ref("a", "tag") } },
-    c: { gen: { images: [indexedRef("a", "artifacts", 0, "url"), ref("b", "digest")] } },
+    c: { run: { images: [indexedRef("a", "artifacts", 0, "url"), ref("b", "digest")] } },
     d: { assets: "." },
   }
   const edges = dagEdges(["a", "b", "c", "d"], (n) => payload[n as keyof typeof payload] ?? {})

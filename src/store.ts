@@ -6,7 +6,6 @@ import { Command } from "commander"
 import { parseBrowserPort, serveStoreBrowser } from "./browse"
 import { envForConfigPath, storeDir } from "./config"
 import { usageError } from "./errors"
-import { GEN_CONFIG_MEDIA_TYPE } from "./genPackage"
 import {
   digestHex,
   type IndexEntry,
@@ -16,13 +15,14 @@ import {
   writeIndexAtomic,
 } from "./oci"
 import { emitResult } from "./output"
+import { RUN_CONFIG_MEDIA_TYPE } from "./runPackage"
 import { addGlobalOptions, configOpts, prettyOpts } from "./util"
 
 export interface StoreEntry {
   ref: string
   digest: string
   size: number
-  kind: "gen" | "image"
+  kind: "run" | "image"
 }
 /** Read the shared store index; manifest blobs refine the entry kind. */
 export async function listStoreEntries(configPath?: string): Promise<StoreEntry[]> {
@@ -37,7 +37,7 @@ export async function listStoreEntries(configPath?: string): Promise<StoreEntry[
       const manifest = JSON.parse(
         await readFile(join(dir, "blobs", "sha256", digestHex(e.digest)), "utf8"),
       ) as { config?: { mediaType?: string } }
-      if (manifest.config?.mediaType === GEN_CONFIG_MEDIA_TYPE) kind = "gen"
+      if (manifest.config?.mediaType === RUN_CONFIG_MEDIA_TYPE) kind = "run"
     } catch {
       // blob missing — still list the tag with its index-level metadata
     }
@@ -172,9 +172,7 @@ export function buildPackageCommand(): Command {
   addGlobalOptions(pkg)
   pkg.allowExcessArguments(true)
 
-  const ls = new Command("list")
-    .alias("ls")
-    .description("List tags in the shared store (~/.creatifact/store)")
+  const ls = new Command("list").description("List tags in the shared store (~/.creatifact/store)")
   ls.action(async (options: { configDir?: string }, command: Command) => {
     const entries = await listStoreEntries(configOpts(command, options.configDir).configPath)
     emitResult("package.list", { entries }, prettyOpts(command))

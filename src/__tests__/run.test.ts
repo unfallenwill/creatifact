@@ -1,32 +1,32 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { ModelSupport, Provider } from "../providers"
 import {
-  type GenRequest,
   mergeRequest,
   type ProviderContext,
-  parseGenerateArgs,
+  parseRunArgs,
   pickModelForTask,
+  type RunRequest,
   requestFieldsForTask,
   splitProviderPositional,
   TASKS,
   toFileRef,
   validateRequest,
-} from "../generate"
-import type { ModelSupport, Provider } from "../providers"
+} from "../run"
 import { parseDurationMs, parseKvValue } from "../util"
 
 const CTX: ProviderContext = { known: new Set(["demo"]), hasDefaultProvider: false }
 const DEFAULTED: ProviderContext = { known: new Set(["demo"]), hasDefaultProvider: true }
 
-function req(task: GenRequest["task"], fields: Partial<GenRequest> = {}): GenRequest {
+function req(task: RunRequest["task"], fields: Partial<RunRequest> = {}): RunRequest {
   return { task, ...fields }
 }
 
 // --- parse -----------------------------------------------------------------
 
-test("parseGenerateArgs: provider positional, prompt, repeats, flags", () => {
-  const o = parseGenerateArgs(
+test("parseRunArgs: provider positional, prompt, repeats, flags", () => {
+  const o = parseRunArgs(
     "image2image",
     [
       "demo/img-model",
@@ -56,48 +56,48 @@ test("parseGenerateArgs: provider positional, prompt, repeats, flags", () => {
   })
 })
 
-test("parseGenerateArgs: --provider/--model flags replace the positional", () => {
-  const o = parseGenerateArgs("text2image", ["--provider", "demo", "--model", "m1", "a crane"], CTX)
+test("parseRunArgs: --provider/--model flags replace the positional", () => {
+  const o = parseRunArgs("text2image", ["--provider", "demo", "--model", "m1", "a crane"], CTX)
   expect(o.provider).toBe("demo")
   expect(o.model).toBe("m1")
   expect(o.prompt).toBe("a crane")
 })
 
-test("parseGenerateArgs: provider positional + provider flag conflict", () => {
-  expect(() => parseGenerateArgs("text2image", ["demo/m", "x", "--provider", "demo"], CTX)).toThrow(
+test("parseRunArgs: provider positional + provider flag conflict", () => {
+  expect(() => parseRunArgs("text2image", ["demo/m", "x", "--provider", "demo"], CTX)).toThrow(
     /conflicting provider/,
   )
 })
 
-test("parseGenerateArgs: positional prompt vs --prompt are mutually exclusive", () => {
-  expect(() => parseGenerateArgs("text2image", ["demo", "pos", "--prompt", "flag"], CTX)).toThrow(
+test("parseRunArgs: positional prompt vs --prompt are mutually exclusive", () => {
+  expect(() => parseRunArgs("text2image", ["demo", "pos", "--prompt", "flag"], CTX)).toThrow(
     /mutually exclusive/,
   )
 })
 
-test("parseGenerateArgs: --prompt-file supplies a trimmed prompt", async () => {
+test("parseRunArgs: --prompt-file supplies a trimmed prompt", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "prompt-file-"))
   const promptPath = join(tmp, "hero.md")
   await writeFile(promptPath, "hero on a cliff\n")
-  const o = parseGenerateArgs("text2image", ["--prompt-file", promptPath], CTX)
+  const o = parseRunArgs("text2image", ["--prompt-file", promptPath], CTX)
   expect(o.prompt).toBe("hero on a cliff")
   await rm(tmp, { recursive: true, force: true })
 })
 
-test("parseGenerateArgs: --prompt-file conflicts with --prompt and the positional prompt", async () => {
+test("parseRunArgs: --prompt-file conflicts with --prompt and the positional prompt", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "prompt-file-"))
   const promptPath = join(tmp, "hero.md")
   await writeFile(promptPath, "x")
   expect(() =>
-    parseGenerateArgs("text2image", ["--prompt-file", promptPath, "--prompt", "flag"], CTX),
+    parseRunArgs("text2image", ["--prompt-file", promptPath, "--prompt", "flag"], CTX),
   ).toThrow(/--prompt-file and --prompt are mutually exclusive/)
   expect(() =>
-    parseGenerateArgs("text2image", ["demo", "pos", "--prompt-file", promptPath], CTX),
+    parseRunArgs("text2image", ["demo", "pos", "--prompt-file", promptPath], CTX),
   ).toThrow(/mutually exclusive/)
   await rm(tmp, { recursive: true, force: true })
 })
 
-test("parseGenerateArgs: --prompt-file IO and empty-file errors are usage errors", async () => {
+test("parseRunArgs: --prompt-file IO and empty-file errors are usage errors", async () => {
   const capture = (fn: () => unknown): unknown => {
     try {
       return fn()
@@ -106,35 +106,36 @@ test("parseGenerateArgs: --prompt-file IO and empty-file errors are usage errors
     }
   }
   const missing = capture(() =>
-    parseGenerateArgs("text2image", ["--prompt-file", "/nonexistent/p.md"], CTX),
+    parseRunArgs("text2image", ["--prompt-file", "/nonexistent/p.md"], CTX),
   ) as { code?: string }
   expect(missing.code).toBe("E_USAGE")
 
   const tmp = await mkdtemp(join(tmpdir(), "prompt-file-"))
   const emptyPath = join(tmp, "empty.md")
   await writeFile(emptyPath, " \n")
-  const empty = capture(() =>
-    parseGenerateArgs("text2image", ["--prompt-file", emptyPath], CTX),
-  ) as { code?: string; message?: string }
+  const empty = capture(() => parseRunArgs("text2image", ["--prompt-file", emptyPath], CTX)) as {
+    code?: string
+    message?: string
+  }
   expect(empty.code).toBe("E_USAGE")
   expect(empty.message).toContain("is empty")
   await rm(tmp, { recursive: true, force: true })
 })
 
-test("parseGenerateArgs: embed positionals are inputs; --prompt rejected", () => {
-  const o = parseGenerateArgs("embed", ["demo/embed", "a", "b", "--input", "c"], CTX)
+test("parseRunArgs: embed positionals are inputs; --prompt rejected", () => {
+  const o = parseRunArgs("embed", ["demo/embed", "a", "b", "--input", "c"], CTX)
   expect(o.inputs).toEqual(["a", "b", "c"])
-  expect(() => parseGenerateArgs("embed", ["demo", "--prompt", "x"], CTX)).toThrow(/--prompt/)
+  expect(() => parseRunArgs("embed", ["demo", "--prompt", "x"], CTX)).toThrow(/--prompt/)
 })
 
-test("parseGenerateArgs: resume takes a handle positional", () => {
-  const o = parseGenerateArgs("resume", ['{"providerId":"demo","id":"t"}', "--interval", "1s"], CTX)
+test("parseRunArgs: resume takes a handle positional", () => {
+  const o = parseRunArgs("resume", ['{"providerId":"demo","id":"t"}', "--interval", "1s"], CTX)
   expect(o.handle).toBe('{"providerId":"demo","id":"t"}')
   expect(o.interval).toBe("1s")
 })
 
-test("parseGenerateArgs: packageMode disables the provider positional", () => {
-  const o = parseGenerateArgs("image2image", ["a crane", "--image", "x.png"], CTX, {
+test("parseRunArgs: packageMode disables the provider positional", () => {
+  const o = parseRunArgs("image2image", ["a crane", "--image", "x.png"], CTX, {
     packageMode: true,
   })
   expect(o.prompt).toBe("a crane")
@@ -142,27 +143,27 @@ test("parseGenerateArgs: packageMode disables the provider positional", () => {
   expect(o.provider).toBeUndefined()
 })
 
-test("parseGenerateArgs: task-inapplicable flags fail at parse time", () => {
-  expect(() =>
-    parseGenerateArgs("image2text", ["what is this", "--first-frame", "f.png"], CTX),
-  ).toThrow(/unknown option '--first-frame'/)
-  expect(() => parseGenerateArgs("text2text", ["hi", "--no-wait"], CTX)).toThrow(
+test("parseRunArgs: task-inapplicable flags fail at parse time", () => {
+  expect(() => parseRunArgs("image2text", ["what is this", "--first-frame", "f.png"], CTX)).toThrow(
+    /unknown option '--first-frame'/,
+  )
+  expect(() => parseRunArgs("text2text", ["hi", "--no-wait"], CTX)).toThrow(
     /unknown option '--no-wait'/,
   )
 })
 
-test("parseGenerateArgs: malformed provider targets and opt values", () => {
-  expect(() => parseGenerateArgs("text2image", ["a/b/c", "x"], CTX)).toThrow(/expected <provider>/)
-  expect(() => parseGenerateArgs("text2image", ["demo", "x", "--opt", "novalue"], CTX)).toThrow(
+test("parseRunArgs: malformed provider targets and opt values", () => {
+  expect(() => parseRunArgs("text2image", ["a/b/c", "x"], CTX)).toThrow(/expected <provider>/)
+  expect(() => parseRunArgs("text2image", ["demo", "x", "--opt", "novalue"], CTX)).toThrow(
     /expected k=v/,
   )
 })
 
-test("parseGenerateArgs: non-provider first positional uses the default provider", () => {
-  const o = parseGenerateArgs("text2image", ["a crane"], DEFAULTED)
+test("parseRunArgs: non-provider first positional uses the default provider", () => {
+  const o = parseRunArgs("text2image", ["a crane"], DEFAULTED)
   expect(o.prompt).toBe("a crane")
   expect(o.provider).toBeUndefined()
-  expect(() => parseGenerateArgs("text2image", ["a crane"], CTX)).toThrow(/expected <provider>/)
+  expect(() => parseRunArgs("text2image", ["a crane"], CTX)).toThrow(/expected <provider>/)
 })
 
 // --- validate --------------------------------------------------------------
@@ -394,7 +395,7 @@ test("TASKS registry is complete and consistent", () => {
 })
 
 test("toFileRef maps URLs and existing paths", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "generate-test-"))
+  const dir = await mkdtemp(join(tmpdir(), "run-test-"))
   try {
     expect(toFileRef("https://x.test/a.png", "--image")).toEqual({ url: "https://x.test/a.png" })
     const local = join(dir, "f.png")

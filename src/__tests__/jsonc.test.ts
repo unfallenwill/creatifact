@@ -52,7 +52,7 @@ test("jsonc manifest shape parses: comments plus trailing commas together", () =
     stripJsonc(`{
       // recipe
       "assets": "./project", // top layer
-      "gen": {
+      "run": {
         "task": "text2image",
         "prompt": "a cat",
       },
@@ -60,6 +60,6 @@ test("jsonc manifest shape parses: comments plus trailing commas together", () =
   )
   expect(parsed).toEqual({
     assets: "./project",
-    gen: { task: "text2image", prompt: "a cat" },
+    run: { task: "text2image", prompt: "a cat" },
   })
 })

@@ -25,5 +25,5 @@ test("looksLikeRegistryRef: host-like first segments qualify", () => {
 test("looksLikeRegistryRef: tasks and bare refs do not", () => {
   expect(looksLikeRegistryRef("text2image")).toBe(false)
   expect(looksLikeRegistryRef("myrepo:latest")).toBe(false)
-  // "./dir" contains "." so this predicate alone says true; the caller (looksLikeGenRef) short-circuits via isLocalRef first
+  // "./dir" contains "." so this predicate alone says true; the caller (looksLikeRunRef) short-circuits via isLocalRef first
 })

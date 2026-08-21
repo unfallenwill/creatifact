@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs"
 import {
   buildManifestSchemaJson,
-  generateRequestFields,
   REFERENCEABLE,
   requestFileCommands,
   requestFileSchemaJson,
+  runRequestFields,
   stableStringify,
 } from "../contract"
 import { commandRequestFromFields } from "../requestFile"
@@ -35,10 +35,10 @@ test("schemas/creatifact-build.schema.json matches the contract", () => {
 })
 
 test("every registry task's -f fields exist in the contract tables", () => {
-  const known = new Set(Object.keys(generateRequestFields))
+  const known = new Set(Object.keys(runRequestFields))
   for (const task of Object.keys(TASKS)) {
     for (const field of requestFieldsForTask(task as keyof typeof TASKS)) {
-      expect(known.has(field), `generate.${task}: '${field}'`).toBe(true)
+      expect(known.has(field), `run.${task}: '${field}'`).toBe(true)
     }
   }
 })

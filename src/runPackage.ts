@@ -4,10 +4,10 @@ import { join } from "node:path"
 import { envForConfigPath, loadConfig, storeDir } from "./config"
 import {
   formatIssuePath,
-  type GenSpec,
-  genSpecSchema,
   type InputProvenance,
   type InputProvenanceField,
+  type RunSpec,
+  runSpecSchema,
   type StepProvenance,
 } from "./contract"
 import {
@@ -34,18 +34,18 @@ import type { ImageFetchOptions } from "./pull"
 import { isLocalRef } from "./refs"
 import { ensureOutputDirEmpty } from "./util"
 
-export type { GenSpec, InputProvenance, InputProvenanceField, LoadedImage, StepProvenance }
+export type { InputProvenance, InputProvenanceField, LoadedImage, RunSpec, StepProvenance }
 
-/** Media type of the OCI config blob that carries a gen recipe (or a result's provenance). */
-export const GEN_CONFIG_MEDIA_TYPE = "application/vnd.creatifact.gen.v1+json"
-export const GEN_SCHEMA_VERSION = 1
+/** Media type of the OCI config blob that carries a run recipe (or a result's provenance). */
+export const RUN_CONFIG_MEDIA_TYPE = "application/vnd.creatifact.run.v1+json"
+export const RUN_SCHEMA_VERSION = 1
 
-export interface GenConfigBlob {
+export interface RunConfigBlob {
   schemaVersion: number
-  gen: GenSpec
+  run: RunSpec
 }
 
-export interface GenResultMeta {
+export interface RunResultMeta {
   createdAt: string
   from?: string
   usage?: Usage | undefined
@@ -56,13 +56,13 @@ export interface GenResultMeta {
   dimensions?: number | undefined
 }
 
-export interface GenResultBlob {
+export interface RunResultBlob {
   schemaVersion: number
-  gen: GenSpec
-  result: GenResultMeta
+  run: RunSpec
+  result: RunResultMeta
 }
 
-const KNOWN_SPEC_FIELDS = new Set(Object.keys(genSpecSchema.shape))
+const KNOWN_SPEC_FIELDS = new Set(Object.keys(runSpecSchema.shape))
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -71,33 +71,33 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** promptFile is an authoring reference the manifest loader inlines; pairing it with prompt is ambiguous. */
 function rejectPromptFileConflict(spec: Record<string, unknown>, path: string): void {
   if (spec["prompt"] !== undefined && spec["promptFile"] !== undefined) {
-    throw new Error(`${path}: gen.promptFile use either prompt or promptFile, not both`)
+    throw new Error(`${path}: run.promptFile use either prompt or promptFile, not both`)
   }
 }
 
 /**
- * Validate the `gen` section of a build manifest or a package config blob.
- * Constraints live in contract.ts's genSpecSchema; this wrapper keeps the
- * historical error format (`<path>: gen.<field> <message>`) and the two
+ * Validate the `run` section of a build manifest or a package config blob.
+ * Constraints live in contract.ts's runSpecSchema; this wrapper keeps the
+ * historical error format (`<path>: run.<field> <message>`) and the two
  * normalizations the schema stays silent about: a bare string list value
  * wraps into an array, and an all-empty promptRef collapses to nothing.
  */
-export function validateGenSpec(raw: unknown, path: string): GenSpec {
+export function validateRunSpec(raw: unknown, path: string): RunSpec {
   if (!isRecord(raw)) {
-    throw new Error(`${path}: gen must be an object`)
+    throw new Error(`${path}: run must be an object`)
   }
   for (const key of Object.keys(raw)) {
     if (!KNOWN_SPEC_FIELDS.has(key)) {
-      console.warn(`${path}: gen: unknown field '${key}' is ignored`)
+      console.warn(`${path}: run: unknown field '${key}' is ignored`)
     }
   }
-  const result = genSpecSchema.safeParse(raw)
+  const result = runSpecSchema.safeParse(raw)
   if (!result.success) {
     const issue = result.error.issues[0]
     throw new Error(
       issue === undefined
-        ? `${path}: gen failed validation`
-        : `${path}: gen.${formatIssuePath(issue.path)} ${issue.message}`,
+        ? `${path}: run failed validation`
+        : `${path}: run.${formatIssuePath(issue.path)} ${issue.message}`,
     )
   }
   // looseObject passthrough keeps unknown keys; the historical contract
@@ -115,35 +115,35 @@ export function validateGenSpec(raw: unknown, path: string): GenSpec {
     delete spec["promptRef"]
   }
   // images/inputs are normalized above (string variants eliminated); the
-  // constraints themselves live in contract.ts's genSpecSchema.
-  return spec as GenSpec
+  // constraints themselves live in contract.ts's runSpecSchema.
+  return spec as RunSpec
 }
 
-/** Parse a package config blob produced by `build` (gen recipe). */
-export function parseGenConfigBlob(data: Buffer, source: string): GenConfigBlob {
+/** Parse a package config blob produced by `build` (run recipe). */
+export function parseRunConfigBlob(data: Buffer, source: string): RunConfigBlob {
   let parsed: unknown
   try {
     parsed = JSON.parse(data.toString("utf8"))
   } catch (e) {
-    throw new Error(`${source}: gen config blob is not valid JSON (${(e as Error).message})`)
+    throw new Error(`${source}: run config blob is not valid JSON (${(e as Error).message})`)
   }
   if (!isRecord(parsed)) {
-    throw new Error(`${source}: gen config blob must be a JSON object`)
+    throw new Error(`${source}: run config blob must be a JSON object`)
   }
-  if (parsed["schemaVersion"] !== GEN_SCHEMA_VERSION) {
+  if (parsed["schemaVersion"] !== RUN_SCHEMA_VERSION) {
     throw new Error(
-      `${source}: unsupported gen config schemaVersion (expected ${GEN_SCHEMA_VERSION}, got ${String(parsed["schemaVersion"])})`,
+      `${source}: unsupported run config schemaVersion (expected ${RUN_SCHEMA_VERSION}, got ${String(parsed["schemaVersion"])})`,
     )
   }
-  return { schemaVersion: GEN_SCHEMA_VERSION, gen: validateGenSpec(parsed["gen"], source) }
+  return { schemaVersion: RUN_SCHEMA_VERSION, run: validateRunSpec(parsed["run"], source) }
 }
 
 /**
- * Load a gen package image: a local layout path is read directly, a store
+ * Load a run package image: a local layout path is read directly, a store
  * tag is resolved from the shared store index, anything else is fetched from
  * a registry.
  */
-export async function loadGenImage(
+export async function loadRunImage(
   ref: string,
   opts: { plainHttp: boolean; configPath?: string | undefined },
   fetchImage: (ref: string, opts: ImageFetchOptions) => Promise<LoadedImage>,
@@ -167,7 +167,7 @@ export async function loadGenImage(
   })
 }
 
-/** Merge every layer of a gen package into a single file view. */
+/** Merge every layer of a run package into a single file view. */
 export async function packageFsView(image: LoadedImage): Promise<FsView> {
   const layerBlobs: Buffer[] = []
   for (const layer of image.manifest.layers) {
@@ -210,10 +210,10 @@ export async function artifactFromStore(
   if (!inStore) return undefined
 
   let manifest: OCIManifest
-  let config: GenResultBlob
+  let config: RunResultBlob
   try {
     manifest = JSON.parse(await readFile(blobPath(digest), "utf8")) as OCIManifest
-    config = JSON.parse(await readFile(blobPath(manifest.config.digest), "utf8")) as GenResultBlob
+    config = JSON.parse(await readFile(blobPath(manifest.config.digest), "utf8")) as RunResultBlob
   } catch {
     return undefined
   }
@@ -247,7 +247,7 @@ export interface ResultPackageOptions {
   /** Input package ref for provenance. */
   fromRef?: string
   artifacts: Artifact[]
-  spec: GenSpec
+  spec: RunSpec
   usage?: Usage | undefined
   /** Packed text payload (text2text / image2text / video2text). */
   text?: string | undefined
@@ -316,7 +316,7 @@ export const VECTORS_RESULT_FILE = "vectors.json"
 /**
  * Write generated media as an OCI layout: artifacts (base64 decoded, urls
  * downloaded) become a tar layer, and a config blob records the effective
- * gen spec + result metadata so anyone can see exactly how the
+ * run spec + result metadata so anyone can see exactly how the
  * image/video was produced. Url downloads that fail degrade to a url-only
  * record plus a returned warning — the package still preserves the result.
  * Text / vector payloads (packable tasks) stage as text.txt / vectors.json
@@ -333,7 +333,7 @@ export async function buildResultPackage(opts: ResultPackageOptions): Promise<{
   const blobsDir = join(opts.outputDir, "blobs", "sha256")
   await mkdir(blobsDir, { recursive: true })
 
-  const stage = await mkdtemp(join(tmpdir(), "creatifact-gen-"))
+  const stage = await mkdtemp(join(tmpdir(), "creatifact-run-"))
   let recorded: Array<{ name?: string; url?: string; mimeType?: string | undefined }> = []
   let layers: OCIDescriptor[] = []
   let warnings: string[] = []
@@ -368,7 +368,7 @@ export async function buildResultPackage(opts: ResultPackageOptions): Promise<{
     await rm(stage, { recursive: true, force: true })
   }
 
-  const result: GenResultMeta = {
+  const result: RunResultMeta = {
     createdAt: opts.createdAt ?? new Date().toISOString(),
     artifacts: recorded,
   }
@@ -377,24 +377,24 @@ export async function buildResultPackage(opts: ResultPackageOptions): Promise<{
   if (opts.text !== undefined) result.text = opts.text
   if (opts.dimensions !== undefined) result.dimensions = opts.dimensions
 
-  const configBlob: GenResultBlob = {
-    schemaVersion: GEN_SCHEMA_VERSION,
-    gen: opts.spec,
+  const configBlob: RunResultBlob = {
+    schemaVersion: RUN_SCHEMA_VERSION,
+    run: opts.spec,
     result,
   }
   const configDescriptor = await writeBlob(
     Buffer.from(JSON.stringify(configBlob, null, 2)),
     blobsDir,
-    GEN_CONFIG_MEDIA_TYPE,
+    RUN_CONFIG_MEDIA_TYPE,
   )
 
   const annotations: Record<string, string> = {
-    "org.creatifact.gen.task": opts.spec.task,
+    "org.creatifact.run.task": opts.spec.task,
   }
   if (opts.spec.provider !== undefined) {
-    annotations["org.creatifact.gen.provider"] = opts.spec.provider
+    annotations["org.creatifact.run.provider"] = opts.spec.provider
   }
-  if (opts.spec.model !== undefined) annotations["org.creatifact.gen.model"] = opts.spec.model
+  if (opts.spec.model !== undefined) annotations["org.creatifact.run.model"] = opts.spec.model
 
   const manifest: OCIManifest = {
     schemaVersion: 2,

@@ -4,11 +4,11 @@ import type { Capability, ModelSupport } from "./providers"
  * Task-oriented generation. Every task is an X2Y name; the task registry is
  * the single source of truth for parameters (required/optional/forbidden),
  * default-model selection, CLI usage, and the JSON request fields. CLI args,
- * `-f` JSON files, and recipe packages all normalize to one GenRequest, with
+ * `-f` JSON files, and recipe packages all normalize to one RunRequest, with
  * CLI flags taking priority.
  */
 
-export type GenTaskName =
+export type RunTaskName =
   | "text2text"
   | "image2text"
   | "video2text"
@@ -21,7 +21,7 @@ export type GenTaskName =
   | "resume"
 
 export interface TaskSpec {
-  name: GenTaskName
+  name: RunTaskName
   /** undefined for the control command `resume`. */
   capability: Capability | undefined
   /** Produces media artifacts → result packaging applies. */
@@ -65,7 +65,7 @@ export interface TaskSpec {
  */
 export function modelSupportsTask(
   model: { capabilities: Partial<Record<Capability, ModelSupport>> },
-  task: GenTaskName,
+  task: RunTaskName,
 ): boolean {
   const spec = TASKS[task]
   const cap = spec.capability
@@ -78,11 +78,11 @@ export function modelSupportsTask(
 /** The tasks a model verifiably supports, in TASKS declaration order. */
 export function tasksForModel(model: {
   capabilities: Partial<Record<Capability, ModelSupport>>
-}): GenTaskName[] {
-  return (Object.keys(TASKS) as GenTaskName[]).filter((task) => modelSupportsTask(model, task))
+}): RunTaskName[] {
+  return (Object.keys(TASKS) as RunTaskName[]).filter((task) => modelSupportsTask(model, task))
 }
 
-export const TASKS: Record<GenTaskName, TaskSpec> = {
+export const TASKS: Record<RunTaskName, TaskSpec> = {
   text2text: {
     name: "text2text",
     capability: "text.generate",
@@ -189,7 +189,7 @@ function addTimingFields(fields: Set<string>, spec: TaskSpec): void {
   for (const [name, on] of timing) addField(fields, on, name)
 }
 
-function addPackagingFields(fields: Set<string>, spec: TaskSpec, task: GenTaskName): void {
+function addPackagingFields(fields: Set<string>, spec: TaskSpec, task: RunTaskName): void {
   if (spec.media || spec.packable === true || task === "resume") fields.add("output")
   if (spec.media || spec.packable === true) {
     fields.add("tag")
@@ -198,7 +198,7 @@ function addPackagingFields(fields: Set<string>, spec: TaskSpec, task: GenTaskNa
   if (task === "resume") fields.add("handle")
 }
 
-export function requestFieldsForTask(task: GenTaskName): Set<string> {
+export function requestFieldsForTask(task: RunTaskName): Set<string> {
   const spec = TASKS[task]
   const fields = new Set<string>(["provider", "model"])
   addField(fields, spec.required.prompt === true || spec.optional.prompt === true, "prompt")

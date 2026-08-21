@@ -19,7 +19,6 @@ import { Hono } from "hono"
 import { envForConfigPath, storeDir } from "./config"
 import { usageError } from "./errors"
 import { status } from "./format"
-import { GEN_CONFIG_MEDIA_TYPE } from "./genPackage"
 import { interruptSignal } from "./interrupt"
 import { type FsView, mergeImageLayers, normalizeTarPath } from "./layers"
 import {
@@ -30,9 +29,10 @@ import {
   readIndexEntries,
 } from "./oci"
 import { emitResult } from "./output"
+import { RUN_CONFIG_MEDIA_TYPE } from "./runPackage"
 
-/** Gen-package summary shown in the list (from the config blob). */
-interface BrowserGenMeta {
+/** Run-package summary shown in the list (from the config blob). */
+interface BrowserRunMeta {
   task: string
   provider?: string
   model?: string
@@ -43,9 +43,9 @@ export interface BrowserEntry {
   ref: string
   digest: string
   size: number
-  kind: "gen" | "image"
+  kind: "run" | "image"
   annotations: Record<string, string>
-  gen?: BrowserGenMeta
+  run?: BrowserRunMeta
   /** URL path of a previewable media file, for the gallery card cover. */
   cover?: string
 }
@@ -62,10 +62,10 @@ export interface PackageDetail {
   ref: string
   digest: string
   size: number
-  kind: "gen" | "image"
+  kind: "run" | "image"
   annotations: Record<string, string>
-  /** Parsed config blob sections, when the package carries a gen config. */
-  gen?: Record<string, unknown>
+  /** Parsed config blob sections, when the package carries a run config. */
+  run?: Record<string, unknown>
   result?: Record<string, unknown>
   files: PackageFile[]
 }
@@ -135,8 +135,8 @@ export function fileUrl(ref: string, filePath: string): string {
 // --- store reads ---
 
 interface EntryMeta {
-  kind: "gen" | "image"
-  gen?: BrowserGenMeta
+  kind: "run" | "image"
+  run?: BrowserRunMeta
   coverName?: string
 }
 
@@ -149,7 +149,7 @@ async function describeEntry(store: string, digest: string): Promise<EntryMeta> 
     return { kind: "image" }
   }
   if (
-    manifest.config?.mediaType !== GEN_CONFIG_MEDIA_TYPE ||
+    manifest.config?.mediaType !== RUN_CONFIG_MEDIA_TYPE ||
     manifest.config.digest === undefined
   ) {
     return { kind: "image" }
@@ -160,24 +160,24 @@ async function describeEntry(store: string, digest: string): Promise<EntryMeta> 
   } catch {
     config = undefined // unreadable config — the summary stays generic
   }
-  const genRec = asRecord(config?.["gen"])
+  const runRec = asRecord(config?.["run"])
   const resultRec = asRecord(config?.["result"])
-  const gen: BrowserGenMeta = { task: strField(genRec, "task") ?? "unknown" }
-  const provider = strField(genRec, "provider")
-  if (provider !== undefined) gen.provider = provider
-  const model = strField(genRec, "model")
-  if (model !== undefined) gen.model = model
+  const run: BrowserRunMeta = { task: strField(runRec, "task") ?? "unknown" }
+  const provider = strField(runRec, "provider")
+  if (provider !== undefined) run.provider = provider
+  const model = strField(runRec, "model")
+  if (model !== undefined) run.model = model
   const createdAt = strField(resultRec, "createdAt")
-  if (createdAt !== undefined) gen.createdAt = createdAt
+  if (createdAt !== undefined) run.createdAt = createdAt
   const coverName = coverNameFromResult(resultRec)
   return {
-    kind: "gen",
+    kind: "run",
     ...(coverName === undefined ? {} : { coverName }),
-    gen,
+    run,
   }
 }
 
-/** First previewable artifact name of a gen result (cover candidate). */
+/** First previewable artifact name of a run result (cover candidate). */
 function coverNameFromResult(resultRec: Record<string, unknown> | undefined): string | undefined {
   const artifacts = Array.isArray(resultRec?.["artifacts"]) ? resultRec["artifacts"] : []
   for (const a of artifacts) {
@@ -187,7 +187,7 @@ function coverNameFromResult(resultRec: Record<string, unknown> | undefined): st
   return undefined
 }
 
-/** List store tags with annotations and, for gen packages, a config summary. */
+/** List store tags with annotations and, for run packages, a config summary. */
 export async function browserEntries(configPath?: string): Promise<BrowserEntry[]> {
   return browserEntriesStore(storeDir(envForConfigPath(configPath)))
 }
@@ -205,7 +205,7 @@ async function browserEntriesStore(store: string): Promise<BrowserEntry[]> {
       size: e.size,
       kind: meta.kind,
       annotations: e.annotations ?? {},
-      ...(meta.gen === undefined ? {} : { gen: meta.gen }),
+      ...(meta.run === undefined ? {} : { run: meta.run }),
       ...(coverName === undefined ? {} : { cover: coverName }),
     })
   }
@@ -253,7 +253,7 @@ async function loadPackage(
   if (entry === undefined) return undefined
 
   const manifest = JSON.parse(await readFile(blobPath(store, entry.digest), "utf8")) as OCIManifest
-  const isGen = manifest.config?.mediaType === GEN_CONFIG_MEDIA_TYPE
+  const isRun = manifest.config?.mediaType === RUN_CONFIG_MEDIA_TYPE
   let config: Record<string, unknown> | undefined
   if (manifest.config !== undefined) {
     try {
@@ -270,17 +270,17 @@ async function loadPackage(
     if (e?.type === "symlink") return { path, type: "symlink" as const, target: e.target }
     return { path, type: "dir" as const }
   })
-  const genRec = isGen ? asRecord(config?.["gen"]) : undefined
-  const resultRec = isGen ? asRecord(config?.["result"]) : undefined
+  const runRec = isRun ? asRecord(config?.["run"]) : undefined
+  const resultRec = isRun ? asRecord(config?.["result"]) : undefined
 
   return {
     detail: {
       ref,
       digest: entry.digest,
       size: entry.size,
-      kind: isGen ? "gen" : "image",
+      kind: isRun ? "run" : "image",
       annotations: entry.annotations ?? {},
-      ...(genRec === undefined ? {} : { gen: genRec }),
+      ...(runRec === undefined ? {} : { run: runRec }),
       ...(resultRec === undefined ? {} : { result: resultRec }),
       files,
     },

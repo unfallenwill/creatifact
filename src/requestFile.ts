@@ -6,24 +6,24 @@ import {
   configGetFields,
   configSetFields,
   type Fields,
-  type GenerateFieldJson,
-  generateRequestFields,
   loginRequestFields,
   logoutRequestFields,
   modelsRequestFields,
   nonEmptyString,
   normalizeBuildField,
-  normalizeGenerateField,
+  normalizeRunField,
   pullRequestFields,
   pushRequestFields,
+  type RunFieldJson,
+  runRequestFields,
 } from "./contract"
 import { usageError } from "./errors"
 import type { CommandRequest } from "./execute"
-import type { GenRequest, GenTaskName } from "./generate"
 import { stripJsonc } from "./jsonc"
 import type { ParsedLoginArgs } from "./login"
 import type { ParsedPullArgs } from "./pull"
 import type { ParsedPushArgs } from "./push"
+import type { RunRequest, RunTaskName } from "./run"
 import { requestFieldsForTask, TASKS } from "./tasks"
 
 export type { Fields }
@@ -60,34 +60,34 @@ export function rejectUnknown(fields: Fields, allowed: ReadonlySet<string>, comm
   }
 }
 
-/** Build a GenRequest from a generate.<task> file's fields. */
-export function generateRequest(task: GenTaskName, fields: Fields): GenRequest {
-  rejectUnknown(fields, requestFieldsForTask(task), `generate.${task}`)
+/** Build a RunRequest from a run.<task> file's fields. */
+export function runRequestFromFields(task: RunTaskName, fields: Fields): RunRequest {
+  rejectUnknown(fields, requestFieldsForTask(task), `run.${task}`)
 
-  const req: GenRequest = { task }
-  for (const field of Object.keys(generateRequestFields) as GenerateJsonField[]) {
+  const req: RunRequest = { task }
+  for (const field of Object.keys(runRequestFields) as RunJsonField[]) {
     const value = fields[field]
     if (value === undefined) continue
-    assignGenerateField(req, field, value)
+    assignRunField(req, field, value)
   }
   return req
 }
 
-/** Generate-request fields that come from `-f` JSON (not task/internals). */
-type GenerateJsonField = Exclude<keyof GenRequest, "task" | "promptRef" | "inputRefs"> & string
+/** Run-request fields that come from `-f` JSON (not task/internals). */
+type RunJsonField = Exclude<keyof RunRequest, "task" | "promptRef" | "inputRefs"> & string
 
-/** Parse + normalize one field and write it onto req, type-safely end to end. */
-function assignGenerateField<K extends keyof GenRequest & string>(
-  req: GenRequest,
+/** Parse + normalize one field and write onto req, type-safely end to end. */
+function assignRunField<K extends keyof RunRequest & string>(
+  req: RunRequest,
   field: K,
   value: unknown,
 ): void {
-  const table = generateRequestFields as Record<string, z.ZodType>
+  const table = runRequestFields as Record<string, z.ZodType>
   const schema = table[field]
   // Unreachable in practice: field enumerates the table's own keys.
   if (schema === undefined) return
   const parsed: unknown = parseField(schema, value, field)
-  req[field] = normalizeGenerateField(field, parsed as GenerateFieldJson<K>)
+  req[field] = normalizeRunField(field, parsed as RunFieldJson<K>)
 }
 
 export function buildRequest(fields: Fields): BuildRequest {
@@ -196,12 +196,12 @@ export function readRequestFile(file: string): { command: string; fields: Fields
  * overlay). Shared by the single-command `-f` path and pipeline steps.
  */
 export function commandRequestFromFields(command: string, fields: Fields): CommandRequest {
-  if (command.startsWith("generate.")) {
-    const task = command.slice("generate.".length) as GenTaskName
+  if (command.startsWith("run.")) {
+    const task = command.slice("run.".length) as RunTaskName
     if (TASKS[task] === undefined) {
-      throw usageError(`unknown generate task '${task}' in command '${command}'`)
+      throw usageError(`unknown task '${task}' in command '${command}'`)
     }
-    return { kind: "generate", req: generateRequest(task, fields) }
+    return { kind: "run", req: runRequestFromFields(task, fields) }
   }
   switch (command) {
     case "build":
@@ -253,7 +253,7 @@ export function commandRequestFromFields(command: string, fields: Fields): Comma
     }
     default:
       throw usageError(
-        `unknown command '${command}' (expected generate.*, build, push, pull, auth.*, config.*, or models)`,
+        `unknown command '${command}' (expected run.*, build, push, pull, auth.*, config.*, or models)`,
       )
   }
 }

@@ -2,7 +2,7 @@ import { isAbsolute } from "node:path"
 
 /**
  * Ref classification, shared by every consumer of image references (build
- * sources, gen package loading, the generate CLI): a ref is either a local
+ * sources, run package loading, the run CLI): a ref is either a local
  * OCI layout path (relative ./… or absolute /…), a registry reference
  * (host[:port]/repo[:tag]), or bare (repo without registry — resolved
  * against the default registry by the fetch layer).

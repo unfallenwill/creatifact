@@ -5,18 +5,11 @@ import { isAbsolute, join } from "node:path"
 
 import { Command } from "commander"
 
-import { defaultGenProvider, envForConfigPath, loadConfig, storeDir } from "./config"
+import { defaultRunProvider, envForConfigPath, loadConfig, storeDir } from "./config"
 import { runDag } from "./dag"
 import { artifactBytes, artifactExtension } from "./download"
 import { usageError } from "./errors"
 import { ok, status } from "./format"
-import { effectiveGenSpec, type GenRequest, runGenerateRequest } from "./generate"
-import {
-  GEN_CONFIG_MEDIA_TYPE,
-  GEN_SCHEMA_VERSION,
-  type GenResultMeta,
-  type GenSpec,
-} from "./genPackage"
 import { createLayerFromView, createLayerTarball, mergeImageLayers, selectPaths } from "./layers"
 import {
   type BuildManifestFile,
@@ -53,6 +46,13 @@ import {
 import type { Artifact } from "./providers"
 import { fetchImage, type ImageFetchOptions } from "./pull"
 import { isLocalRef } from "./refs"
+import { effectiveRunSpec, executeRunRequest, type RunRequest } from "./run"
+import {
+  RUN_CONFIG_MEDIA_TYPE,
+  RUN_SCHEMA_VERSION,
+  type RunResultMeta,
+  type RunSpec,
+} from "./runPackage"
 import {
   addGlobalOptions,
   collectValue,
@@ -107,7 +107,7 @@ export function buildBuildCommand(): Command {
     )
     .option(
       "--bake",
-      "Bake the gen recipe without executing it (recipe-only package; creatifact generate <ref> runs it later)",
+      "Bake the run recipe without executing it (recipe-only package; creatifact run <ref> runs it later)",
     )
     .option("--force", "Run every stage, ignoring the store's previous fingerprints")
   return addGlobalOptions(cmd)
@@ -144,11 +144,11 @@ export interface BuildOptions {
   annotations: Record<string, string>
   from: string[]
   copy: CopyEntry[]
-  gen?: GenSpec
+  run?: RunSpec
   plainHttp: boolean
   username: string | undefined
   password: string | undefined
-  /** Bake the gen recipe without executing it (recipe-only package). */
+  /** Bake the run recipe without executing it (recipe-only package). */
   bake?: boolean
   /** Extra annotations for this build's store entry (input fingerprint). */
   storeAnnotations?: Record<string, string>
@@ -196,7 +196,7 @@ export function mergeOptions(cli: ParsedArgs, manifestFile: BuildManifestFile): 
     username: cli.username,
     password: cli.password,
   }
-  if (manifestFile.gen !== undefined) options.gen = manifestFile.gen
+  if (manifestFile.run !== undefined) options.run = manifestFile.run
   return options
 }
 
@@ -329,7 +329,7 @@ export interface BuildResult {
   plan?: PlanReport
   /** False for `--plan` dry runs (digest/outputDir are empty there). */
   executed?: boolean
-  /** A gen stage's staged artifacts (referenceable as ${name.artifacts[N].url}). */
+  /** A run stage's staged artifacts (referenceable as ${name.artifacts[N].url}). */
   artifacts?: Array<{ name?: string; url?: string; mimeType?: string | undefined }>
 }
 
@@ -370,22 +370,24 @@ export async function runBuild(options: BuildOptions): Promise<BuildResult> {
     layers.push(await createLayerTarball(options.assetsDir, blobsDir))
   }
 
-  // The gen section is a RUN instruction: execute it during the build and
-  // bake the real artifacts as the top layer (unless --bake keeps the
+  // The run section is a build-time instruction: execute it during the build
+  // and bake the real artifacts as the top layer (unless --bake keeps the
   // recipe-only package). pkg:// refs in the spec resolve against the layers
   // assembled above.
-  let genRun: GenRunResult | undefined
-  if (options.gen !== undefined && options.bake !== true) {
-    genRun = await runGenSection(options, layers)
-    if (genRun.layer !== undefined) layers.push(genRun.layer)
+  let runExec: RunSectionResult | undefined
+  if (options.run !== undefined && options.bake !== true) {
+    runExec = await executeRunSection(options, layers)
+    if (runExec.layer !== undefined) layers.push(runExec.layer)
   }
 
   const configDescriptor =
-    options.gen === undefined
+    options.run === undefined
       ? await writeBlob(Buffer.from("{}"), blobsDir, EMPTY_CONFIG_MEDIA_TYPE)
-      : await writeGenConfigBlob(
+      : await writeRunConfigBlob(
           blobsDir,
-          genRun === undefined ? { gen: options.gen } : { gen: genRun.spec, result: genRun.result },
+          runExec === undefined
+            ? { run: options.run }
+            : { run: runExec.spec, result: runExec.result },
         )
 
   const manifest = buildManifest(configDescriptor, layers, options.annotations)
@@ -403,40 +405,40 @@ export async function runBuild(options: BuildOptions): Promise<BuildResult> {
     digest: manifestDescriptor.digest,
     outputDir,
     tag: options.tag,
-    ...(genRun === undefined ? {} : { artifacts: genRun.result.artifacts }),
+    ...(runExec === undefined ? {} : { artifacts: runExec.result.artifacts }),
   }
 }
 
-/** The build's gen config blob: the spec (executed or planned) + run meta. */
-async function writeGenConfigBlob(
+/** The build's run config blob: the spec (executed or planned) + run meta. */
+async function writeRunConfigBlob(
   blobsDir: string,
-  body: { gen: GenSpec; result?: GenResultMeta },
+  body: { run: RunSpec; result?: RunResultMeta },
 ): Promise<OCIDescriptor> {
   const blob = {
-    schemaVersion: GEN_SCHEMA_VERSION,
-    gen: body.gen,
+    schemaVersion: RUN_SCHEMA_VERSION,
+    run: body.run,
     ...(body.result === undefined ? {} : { result: body.result }),
   }
-  return writeBlob(Buffer.from(JSON.stringify(blob, null, 2)), blobsDir, GEN_CONFIG_MEDIA_TYPE)
+  return writeBlob(Buffer.from(JSON.stringify(blob, null, 2)), blobsDir, RUN_CONFIG_MEDIA_TYPE)
 }
 
-/** A build's executed gen section: its layer plus the recorded truth. */
-interface GenRunResult {
+/** A build's executed run section: its layer plus the recorded truth. */
+interface RunSectionResult {
   layer: OCIDescriptor | undefined
   /** The spec as actually executed (resolved provider/model). */
-  spec: GenSpec
-  result: GenResultMeta
+  spec: RunSpec
+  result: RunResultMeta
 }
 
 /**
- * Execute the manifest's gen section against the layers built so far:
+ * Execute the manifest's run section against the layers built so far:
  * pkg:// refs resolve into those layers, the provider runs once, and the
  * artifacts land as the top layer (artifact-N.<ext>, N stable per result
  * order). The config blob records the executed spec plus a result meta so
  * the digest pins this exact run.
  */
 /** Stage one artifact: bytes to disk when fetchable, else a url-only record. */
-async function stageGenArtifacts(
+async function stageRunArtifacts(
   artifacts: Artifact[],
   stage: string,
 ): Promise<{
@@ -448,7 +450,7 @@ async function stageGenArtifacts(
   for (const [i, artifact] of artifacts.entries()) {
     const bytes = await artifactBytes(artifact)
     if (bytes.isErr()) {
-      warnings.push(`gen: artifact ${i + 1} could not be fetched (${bytes.error.message})`)
+      warnings.push(`run: artifact ${i + 1} could not be fetched (${bytes.error.message})`)
       recorded.push({
         ...(artifact.url === undefined ? {} : { url: artifact.url }),
         ...(artifact.mimeType === undefined ? {} : { mimeType: artifact.mimeType }),
@@ -456,7 +458,7 @@ async function stageGenArtifacts(
       continue
     }
     if (bytes.value === undefined) {
-      warnings.push(`gen: artifact ${i + 1} has neither bytes nor a url`)
+      warnings.push(`run: artifact ${i + 1} has neither bytes nor a url`)
       continue
     }
     const name = `artifact-${i + 1}.${artifactExtension(artifact)}`
@@ -470,19 +472,19 @@ async function stageGenArtifacts(
   return { recorded, warnings }
 }
 
-async function runGenSection(
+async function executeRunSection(
   options: BuildOptions,
   priorLayers: OCIDescriptor[],
-): Promise<GenRunResult> {
-  const gen = options.gen
-  if (gen === undefined) throw usageError("internal: runGenSection without a gen section")
+): Promise<RunSectionResult> {
+  const spec = options.run
+  if (spec === undefined) throw usageError("internal: executeRunSection without a run section")
 
   // pkg:// inputs come from the layers assembled so far (from/copy/assets).
   // They are local paths relative to this build's own layer set — no
   // package ref needed — so materialize against a synthesized layout view.
-  const req = await genRequestFromSpec(gen, priorLayers, blobsDirOf(options))
-  status(`gen: running ${req.task} (${gen.provider ?? "default provider"})`)
-  const run = await runGenerateRequest(
+  const req = await runRequestFromSpec(spec, priorLayers, blobsDirOf(options))
+  status(`run: running ${req.task} (${spec.provider ?? "default provider"})`)
+  const run = await executeRunRequest(
     { ...req, noPack: true },
     {
       configPath: options.configPath,
@@ -491,15 +493,15 @@ async function runGenSection(
   )
   if (run.artifacts === undefined) {
     throw usageError(
-      `gen: task '${req.task}' returned no artifacts (text/embed tasks do not belong in a build gen section)`,
+      `run: task '${req.task}' returned no artifacts (text/embed tasks do not belong in a build run section)`,
     )
   }
 
   // Stage artifacts as a layer; undownloadable urls stay url-only records
-  // (same degradation as gen packages — the build stays self-describing).
-  const stage = await mkdtemp(join(tmpdir(), "creatifact-buildgen-"))
+  // (same degradation as run packages — the build stays self-describing).
+  const stage = await mkdtemp(join(tmpdir(), "creatifact-buildrun-"))
   try {
-    const { recorded, warnings } = await stageGenArtifacts(run.artifacts, stage)
+    const { recorded, warnings } = await stageRunArtifacts(run.artifacts, stage)
     for (const w of warnings) console.error(`⚠ ${w}`)
     const blobsDir = blobsDirOf(options)
     const layer = recorded.some((r) => r.name !== undefined)
@@ -507,7 +509,11 @@ async function runGenSection(
       : undefined
     return {
       layer,
-      spec: effectiveGenSpec(req, run.provider ?? gen.provider ?? "", run.model ?? gen.model ?? ""),
+      spec: effectiveRunSpec(
+        req,
+        run.provider ?? spec.provider ?? "",
+        run.model ?? spec.model ?? "",
+      ),
       result: {
         createdAt: new Date().toISOString(),
         ...(run.usage === undefined ? {} : { usage: run.usage }),
@@ -527,25 +533,25 @@ function blobsDirOf(options: BuildOptions): string {
 }
 
 /**
- * Turn the manifest's gen spec into a GenRequest, resolving pkg:// media
+ * Turn the manifest's run spec into a RunRequest, resolving pkg:// media
  * refs against the layers this build has assembled so far (from/copy/assets):
  * the bytes come out of the staged layer tarballs into temp files. Non-pkg
  * values pass through untouched.
  */
 /** True when any media field carries a pkg:// reference. */
-function specUsesPkg(gen: GenSpec): boolean {
+function specUsesPkg(spec: RunSpec): boolean {
   return (
-    gen.prompt?.startsWith("pkg://") === true ||
-    (gen.images ?? []).some((v) => v.startsWith("pkg://")) ||
-    (gen.inputs ?? []).some((v) => v.startsWith("pkg://")) ||
-    gen.firstFrame?.startsWith("pkg://") === true ||
-    gen.lastFrame?.startsWith("pkg://") === true
+    spec.prompt?.startsWith("pkg://") === true ||
+    (spec.images ?? []).some((v) => v.startsWith("pkg://")) ||
+    (spec.inputs ?? []).some((v) => v.startsWith("pkg://")) ||
+    spec.firstFrame?.startsWith("pkg://") === true ||
+    spec.lastFrame?.startsWith("pkg://") === true
   )
 }
 
 /** Materialize pkg:// media refs against the build's own prior layers. */
 async function extractPkgRefs(
-  gen: GenSpec,
+  spec: RunSpec,
   priorLayers: OCIDescriptor[],
   blobsDir: string,
 ): Promise<{
@@ -566,7 +572,7 @@ async function extractPkgRefs(
     const rel = value.slice("pkg://".length)
     const entry = view.get(rel)
     if (entry === undefined || entry.type !== "file") {
-      throw usageError(`gen: pkg ref '${value}' not found in the build's layers (from/copy/assets)`)
+      throw usageError(`run: pkg ref '${value}' not found in the build's layers (from/copy/assets)`)
     }
     return entry
   }
@@ -587,30 +593,30 @@ async function extractPkgRefs(
     lastFrame?: string
   } = {}
   // A prompt that is exactly one pkg:// ref becomes the file's text (same
-  // rule as generate <ref>): long instructions ship as layer files.
-  if (gen.prompt?.startsWith("pkg://") === true)
-    out.prompt = lookup(gen.prompt).data.toString("utf8")
-  if (gen.images !== undefined) out.images = extractAll([...gen.images])
-  if (gen.inputs !== undefined) out.inputs = extractAll([...gen.inputs])
-  if (gen.firstFrame !== undefined) out.firstFrame = extract(gen.firstFrame)
-  if (gen.lastFrame !== undefined) out.lastFrame = extract(gen.lastFrame)
+  // rule as run <ref>): long instructions ship as layer files.
+  if (spec.prompt?.startsWith("pkg://") === true)
+    out.prompt = lookup(spec.prompt).data.toString("utf8")
+  if (spec.images !== undefined) out.images = extractAll([...spec.images])
+  if (spec.inputs !== undefined) out.inputs = extractAll([...spec.inputs])
+  if (spec.firstFrame !== undefined) out.firstFrame = extract(spec.firstFrame)
+  if (spec.lastFrame !== undefined) out.lastFrame = extract(spec.lastFrame)
   return out
 }
 
-async function genRequestFromSpec(
-  gen: GenSpec,
+async function runRequestFromSpec(
+  spec: RunSpec,
   priorLayers: OCIDescriptor[],
   blobsDir: string,
-): Promise<GenRequest> {
+): Promise<RunRequest> {
   // Internal invariant: promptFile is an authoring reference the manifest
   // loader inlines; a spec reaching execution with it set came from a
   // hand-edited package whose prompt was never resolved.
-  if (gen.promptFile !== undefined) {
-    throw new Error("gen.promptFile must be resolved to gen.prompt before execution")
+  if (spec.promptFile !== undefined) {
+    throw new Error("run.promptFile must be resolved to run.prompt before execution")
   }
-  const req: GenRequest = { task: gen.task }
-  const passthrough = <K extends keyof GenSpec>(key: K, target: keyof GenRequest): void => {
-    const v = gen[key]
+  const req: RunRequest = { task: spec.task }
+  const passthrough = <K extends keyof RunSpec>(key: K, target: keyof RunRequest): void => {
+    const v = spec[key]
     if (v !== undefined) {
       ;(req as unknown as Record<string, unknown>)[target as string] = v
     }
@@ -620,14 +626,14 @@ async function genRequestFromSpec(
   passthrough("system", "system")
   passthrough("options", "options")
 
-  const media = specUsesPkg(gen)
-    ? await extractPkgRefs(gen, priorLayers, blobsDir)
+  const media = specUsesPkg(spec)
+    ? await extractPkgRefs(spec, priorLayers, blobsDir)
     : {
-        ...(gen.prompt === undefined ? {} : { prompt: gen.prompt }),
-        ...(gen.images === undefined ? {} : { images: [...gen.images] }),
-        ...(gen.inputs === undefined ? {} : { inputs: [...gen.inputs] }),
-        ...(gen.firstFrame === undefined ? {} : { firstFrame: gen.firstFrame }),
-        ...(gen.lastFrame === undefined ? {} : { lastFrame: gen.lastFrame }),
+        ...(spec.prompt === undefined ? {} : { prompt: spec.prompt }),
+        ...(spec.images === undefined ? {} : { images: [...spec.images] }),
+        ...(spec.inputs === undefined ? {} : { inputs: [...spec.inputs] }),
+        ...(spec.firstFrame === undefined ? {} : { firstFrame: spec.firstFrame }),
+        ...(spec.lastFrame === undefined ? {} : { lastFrame: spec.lastFrame }),
       }
   return { ...req, ...media }
 }
@@ -688,7 +694,7 @@ export async function runBuildFromParsed(
   const config = loadConfig(options.configPath)
   const ctx: BuildContext = {
     store: storeDir(envForConfigPath(options.configPath)),
-    defaultProvider: defaultGenProvider(config),
+    defaultProvider: defaultRunProvider(config),
     reuse: buildReuse(config),
     force: cliOpts.force === true,
   }
@@ -729,7 +735,7 @@ async function topLevelInputsDigest(options: BuildOptions, ctx: BuildContext): P
   }
   return fingerprintStage({
     ...(ctx.defaultProvider === undefined ? {} : { defaultProvider: ctx.defaultProvider }),
-    ...(options.gen === undefined ? {} : { gen: options.gen }),
+    ...(options.run === undefined ? {} : { run: options.run }),
     from,
     copy,
     ...(assets === undefined ? {} : { assets }),
@@ -764,7 +770,7 @@ async function stageInputsDigest(
   }
   const inputs: StageInputs = {
     ...(ctx.defaultProvider === undefined ? {} : { defaultProvider: ctx.defaultProvider }),
-    ...(stage.gen === undefined ? {} : { gen: stage.gen }),
+    ...(stage.run === undefined ? {} : { run: stage.run }),
     from,
     copy,
     ...(assets === undefined ? {} : { assets }),
@@ -929,7 +935,7 @@ async function runTopLevelPlan(options: BuildOptions, ctx: BuildContext): Promis
  * is a mini build whose package lands in the store under a derived tag
  * (`<repo>/<stage>:<tag>`), so later stages reference earlier results by
  * tag/digest/url. Stages whose resolved inputs fingerprint unchanged since
- * the store's previous run are reused instead of executed (gen stages keep
+ * the store's previous run are reused instead of executed (run stages keep
  * their previous result — no re-billing). The final product is the last
  * stage's package, aliased under the `-t` tag.
  */
@@ -1000,7 +1006,7 @@ async function runStagesBuild(
           annotations: (fields["annotations"] as Record<string, string>) ?? {},
           from: (fields["from"] as string[]) ?? [],
           copy: (fields["copy"] as CopyEntry[]) ?? [],
-          ...(stage.gen === undefined ? {} : { gen: stage.gen }),
+          ...(stage.run === undefined ? {} : { run: stage.run }),
           output: undefined,
           storeAnnotations: { [BUILD_INPUTS_ANNOTATION]: inputsDigest },
         })

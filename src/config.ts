@@ -187,14 +187,32 @@ export function getRegistryEntry(
   return config.auths?.[normalizeRegistry(registry)]
 }
 
-/** Default gen provider: config key `defaults.gen.provider` (e.g. "zhipu"). */
-export function defaultGenProvider(config: CreatifactConfig): string | undefined {
+let warnedLegacyGenProvider = false
+
+/**
+ * Default run provider: config key `defaults.run.provider` (e.g. "zhipu").
+ * Falls back to the pre-rename `defaults.gen.provider` once, with a warning,
+ * so existing configs keep working instead of silently losing the default.
+ */
+export function defaultRunProvider(config: CreatifactConfig): string | undefined {
   const defaults = config["defaults"]
   if (typeof defaults !== "object" || defaults === null) return undefined
-  const gen = (defaults as Record<string, unknown>)["gen"]
-  if (typeof gen !== "object" || gen === null) return undefined
-  const provider = (gen as Record<string, unknown>)["provider"]
-  return typeof provider === "string" && provider !== "" ? provider : undefined
+  const read = (key: string): string | undefined => {
+    const section = (defaults as Record<string, unknown>)[key]
+    if (typeof section !== "object" || section === null) return undefined
+    const provider = (section as Record<string, unknown>)["provider"]
+    return typeof provider === "string" && provider !== "" ? provider : undefined
+  }
+  const current = read("run")
+  if (current !== undefined) return current
+  const legacy = read("gen")
+  if (legacy !== undefined && !warnedLegacyGenProvider) {
+    warnedLegacyGenProvider = true
+    console.warn(
+      "config key 'defaults.gen.provider' was renamed to 'defaults.run.provider'; using the old value — run `creatifact config set defaults.run.provider <id>` and reset the old key",
+    )
+  }
+  return legacy
 }
 
 export const DEFAULT_REGISTRY = "localhost:5000"

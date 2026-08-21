@@ -1,6 +1,6 @@
 /** Typed client for the store browser API served by src/browse.ts. */
 
-export interface GenMeta {
+export interface RunMeta {
   task: string
   provider?: string
   model?: string
@@ -11,9 +11,9 @@ export interface Entry {
   ref: string
   digest: string
   size: number
-  kind: "gen" | "image"
+  kind: "run" | "image"
   annotations: Record<string, string>
-  gen?: GenMeta
+  run?: RunMeta
   cover?: string
 }
 
@@ -28,9 +28,9 @@ export interface Detail {
   ref: string
   digest: string
   size: number
-  kind: "gen" | "image"
+  kind: "run" | "image"
   annotations: Record<string, string>
-  gen?: Record<string, unknown>
+  run?: Record<string, unknown>
   result?: Record<string, unknown>
   files: FileEntry[]
 }
@@ -115,7 +115,7 @@ export function isText(path: string): boolean {
   return ["txt", "md", "json", "csv", "log"].includes(ext(path))
 }
 
-/** Field pickers for the loosely-typed gen/result records. */
+/** Field pickers for the loosely-typed run/result records. */
 export function str(rec: Record<string, unknown> | undefined, key: string): string | undefined {
   const value = rec?.[key]
   return typeof value === "string" ? value : undefined

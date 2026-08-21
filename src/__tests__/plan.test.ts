@@ -48,7 +48,7 @@ test("hashAssetsDir is stable across entry order and covers dotfiles", async () 
 test("fingerprintStage changes exactly with each resolved input", () => {
   const base = (): StageInputs => ({
     defaultProvider: "zhipu",
-    gen: { task: "text2image", prompt: "a crane" },
+    run: { task: "text2image", prompt: "a crane" },
     from: [{ from: "localhost:5000/base:1.0", digest: "sha256:aaa" }],
     copy: [{ from: "localhost:5000/cuda:12.0", digest: "sha256:bbb", paths: ["libs"] }],
     assets: "sha256:ccc",
@@ -59,12 +59,12 @@ test("fingerprintStage changes exactly with each resolved input", () => {
   // Key order and insertion order are irrelevant (stableStringify sorts).
   const reordered: StageInputs = {
     ...base(),
-    gen: { prompt: "a crane", task: "text2image" },
+    run: { prompt: "a crane", task: "text2image" },
   }
   expect(fingerprintStage(reordered)).toBe(d0)
 
   // Each input dimension moves the digest.
-  expect(fingerprintStage({ ...base(), gen: { task: "text2image", prompt: "a dog" } })).not.toBe(d0)
+  expect(fingerprintStage({ ...base(), run: { task: "text2image", prompt: "a dog" } })).not.toBe(d0)
   expect(fingerprintStage({ ...base(), defaultProvider: "ark" })).not.toBe(d0)
   expect(
     fingerprintStage({

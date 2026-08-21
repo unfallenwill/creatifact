@@ -58,7 +58,7 @@
       "type": "string",
       "minLength": 1
     },
-    "gen": {
+    "run": {
       "type": "object",
       "properties": {
         "task": {
@@ -87,7 +87,7 @@
           "minLength": 1
         },
         "prompt": {
-          "description": "Default prompt (overridable via the positional prompt at generate time).",
+          "description": "Default prompt (overridable via the positional prompt at run time).",
           "type": "string",
           "minLength": 1
         },
@@ -218,11 +218,11 @@
         "task"
       ],
       "additionalProperties": {},
-      "description": "Generation section (RUN): executed during build (unless --plan) — pkg:// refs resolve against the layers above; artifacts become the top layer and the config records the executed spec. Never contains credentials."
+      "description": "Run section: a generation task executed during build (unless --plan) — pkg:// refs resolve against the layers above; artifacts become the top layer and the config records the executed spec. Never contains credentials."
     }
   },
   "required": [
-    "gen"
+    "run"
   ],
   "additionalProperties": {},
   "$id": "https://raw.githubusercontent.com/unfallenwill/creatifact/main/schemas/creatifact-build.schema.json",
