@@ -208,7 +208,7 @@ test("createLayerFromView produces deterministic digests", async () => {
   const desc1 = await createLayerFromView(view, new Set(), blobsDir)
   const desc2 = await createLayerFromView(view, new Set(), blobsDir)
 
-  expect(desc1.digest).toBe(desc2.digest)
+  expect(desc1.descriptor.digest).toBe(desc2.descriptor.digest)
 
   await rm(tmp, { recursive: true })
 })
@@ -227,7 +227,7 @@ test("createLayerFromView synthesizes parents and re-emits opaque markers", asyn
   ])
 
   const desc = await createLayerFromView(view, new Set(["d"]), blobsDir)
-  const blobData = await readFile(join(blobsDir, desc.digest.slice(7)))
+  const blobData = await readFile(join(blobsDir, desc.descriptor.digest.slice(7)))
   const entries = await extractEntries(blobData)
 
   expect(entries.has("bin/")).toBe(true)

@@ -1,14 +1,18 @@
+import { createHash } from "node:crypto"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { gunzipSync } from "node:zlib"
 import { errAsync, okAsync } from "neverthrow"
 import { DownloadError } from "../download"
 import { mergeImageLayers } from "../layers"
+import { IMAGE_CONFIG_MEDIA_TYPE } from "../oci"
 import {
   artifactFromStore,
   buildResultPackage,
+  METADATA_FILE,
+  PACKAGE_ANNOTATION,
   parseRunConfigBlob,
-  RUN_CONFIG_MEDIA_TYPE,
   validateRunSpec,
 } from "../runPackage"
 
@@ -116,15 +120,41 @@ test("buildResultPackage downloads url artifacts and packs base64, keeping prove
   const manifest = JSON.parse(
     await readFile(join(outputDir, "blobs", "sha256", index.manifests[0].digest.slice(7)), "utf8"),
   )
-  expect(manifest.config.mediaType).toBe(RUN_CONFIG_MEDIA_TYPE)
+  expect(manifest.config.mediaType).toBe(IMAGE_CONFIG_MEDIA_TYPE)
   expect(manifest.layers).toHaveLength(1)
-  expect(manifest.annotations["org.creatifact.run.task"]).toBe("image2image")
-  expect(manifest.annotations["org.creatifact.run.provider"]).toBe("zhipu")
+  expect(manifest.annotations[PACKAGE_ANNOTATION]).toBe("v1")
 
-  const config = JSON.parse(
+  // the config blob is a standard image config docker/podman can unpack against
+  const imageConfig = JSON.parse(
     await readFile(join(outputDir, "blobs", "sha256", manifest.config.digest.slice(7)), "utf8"),
   )
-  expect(config.run).toEqual({
+  expect(imageConfig.architecture).toBe("amd64")
+  expect(imageConfig.os).toBe("linux")
+  expect(imageConfig.created).toBe("2026-08-17T00:00:00.000Z")
+  expect(imageConfig.rootfs.type).toBe("layers")
+  expect(imageConfig.rootfs.diff_ids).toHaveLength(1)
+
+  // the layer is self-contained: both files carry their real bytes
+  const layerBlob = await readFile(
+    join(outputDir, "blobs", "sha256", manifest.layers[0].digest.slice(7)),
+  )
+  // docker-compat: the diff_id is the sha256 of the UNCOMPRESSED tar stream
+  const diffId = `sha256:${createHash("sha256").update(gunzipSync(layerBlob)).digest("hex")}`
+  expect(imageConfig.rootfs.diff_ids[0]).toBe(diffId)
+
+  const { view } = await mergeImageLayers([layerBlob])
+  expect(view.get("artifact-1.png")).toMatchObject({ type: "file", data: urlBytes })
+  expect(view.get("artifact-2.png")).toMatchObject({
+    type: "file",
+    data: Buffer.from("png-bytes"),
+  })
+
+  // provenance rides the layer as the metadata record
+  const metadata = JSON.parse(
+    (view.get(METADATA_FILE) as { type: "file"; data: Buffer }).data.toString("utf8"),
+  )
+  expect(metadata.schemaVersion).toBe(1)
+  expect(metadata.run).toEqual({
     task: "image2image",
     provider: "zhipu",
     model: "cogview-4",
@@ -132,23 +162,12 @@ test("buildResultPackage downloads url artifacts and packs base64, keeping prove
     images: ["pkg://refs/cat.png"],
     options: { size: "1024x1024" },
   })
-  expect(config.result.from).toBe("example.com/xxxxxx:v1.0")
+  expect(metadata.result.from).toBe("example.com/xxxxxx:v1.0")
   // url artifact: downloaded into the layer AND url kept for provenance
-  expect(config.result.artifacts).toEqual([
+  expect(metadata.result.artifacts).toEqual([
     { name: "artifact-1.png", url: "https://cdn.test/a.png", mimeType: "image/png" },
     { name: "artifact-2.png", mimeType: "image/png" },
   ])
-
-  // the layer is self-contained: both files carry their real bytes
-  const layerBlob = await readFile(
-    join(outputDir, "blobs", "sha256", manifest.layers[0].digest.slice(7)),
-  )
-  const { view } = await mergeImageLayers([layerBlob])
-  expect(view.get("artifact-1.png")).toMatchObject({ type: "file", data: urlBytes })
-  expect(view.get("artifact-2.png")).toMatchObject({
-    type: "file",
-    data: Buffer.from("png-bytes"),
-  })
 
   await rm(tmp, { recursive: true, force: true })
 })
@@ -219,7 +238,8 @@ test("buildResultPackage degrades to a url-only record when the download fails",
     createdAt: "2026-08-17T00:00:00.000Z",
   })
 
-  // the paid-for result is preserved: url-only record, no layer, a warning
+  // the paid-for result is preserved: url-only record, a warning, and a
+  // metadata-only layer (the record rides the layer even with no artifacts)
   expect(built.warnings).toHaveLength(1)
   expect(built.warnings[0]).toContain("https://cdn.test/expired.mp4")
   expect(built.warnings[0]).toContain("not self-contained")
@@ -228,11 +248,9 @@ test("buildResultPackage degrades to a url-only record when the download fails",
   const manifest = JSON.parse(
     await readFile(join(outputDir, "blobs", "sha256", index.manifests[0].digest.slice(7)), "utf8"),
   )
-  expect(manifest.layers).toEqual([])
-  const config = JSON.parse(
-    await readFile(join(outputDir, "blobs", "sha256", manifest.config.digest.slice(7)), "utf8"),
-  )
-  expect(config.result.artifacts).toEqual([
+  expect(manifest.layers).toHaveLength(1)
+  const { metadata } = await readPackageMetadata(outputDir, manifest)
+  expect(metadata.result["artifacts"]).toEqual([
     { url: "https://cdn.test/expired.mp4", mimeType: "video/mp4" },
   ])
 
@@ -258,10 +276,33 @@ test("buildResultPackage refuses a non-empty output dir", async () => {
   await rm(tmp, { recursive: true, force: true })
 })
 
-async function readManifestConfig(dir: string): Promise<{
+/** manifest + image config + the layer-carried metadata record of a package. */
+async function readPackageMetadata(
+  dir: string,
+  manifest: { layers: Array<{ digest: string }>; config: { digest: string } },
+): Promise<{
   manifest: { layers: Array<{ digest: string }>; config: { digest: string } }
-  config: { result: Record<string, unknown> }
+  imageConfig: { rootfs: { diff_ids: string[] } }
+  metadata: { run: Record<string, unknown>; result: Record<string, unknown> }
 }> {
+  const imageConfig = JSON.parse(
+    await readFile(join(dir, "blobs", "sha256", manifest.config.digest.slice(7)), "utf8"),
+  ) as { rootfs: { diff_ids: string[] } }
+  const { view } = await mergeImageLayers(
+    await Promise.all(
+      manifest.layers.map((l) => readFile(join(dir, "blobs", "sha256", l.digest.slice(7)))),
+    ),
+  )
+  const entry = view.get(METADATA_FILE) as { type: "file"; data: Buffer }
+  const metadata = JSON.parse(entry.data.toString("utf8")) as {
+    run: Record<string, unknown>
+    result: Record<string, unknown>
+  }
+  return { manifest, imageConfig, metadata }
+}
+
+/** manifest via index.json, then readPackageMetadata's full triple. */
+async function readPackageFromIndex(dir: string) {
   const index = JSON.parse(await readFile(join(dir, "index.json"), "utf8")) as {
     manifests: Array<{ digest: string }>
   }
@@ -271,10 +312,7 @@ async function readManifestConfig(dir: string): Promise<{
       "utf8",
     ),
   ) as { layers: Array<{ digest: string }>; config: { digest: string } }
-  const config = JSON.parse(
-    await readFile(join(dir, "blobs", "sha256", manifest.config.digest.slice(7)), "utf8"),
-  ) as { result: Record<string, unknown> }
-  return { manifest, config }
+  return readPackageMetadata(dir, manifest)
 }
 
 async function layerFileText(dir: string, layerDigest: string, name: string): Promise<string> {
@@ -296,14 +334,14 @@ test("buildResultPackage stages text and vector payloads as referenceable layer 
     text: "a generated story",
     createdAt: "2026-08-17T00:00:00.000Z",
   })
-  const { manifest: textManifest, config: textConfig } = await readManifestConfig(textDir)
+  const { manifest: textManifest, metadata: textMeta } = await readPackageFromIndex(textDir)
   expect(textManifest.layers).toHaveLength(1)
   expect(await layerFileText(textDir, textManifest.layers[0]?.digest ?? "", "text.txt")).toBe(
     "a generated story",
   )
-  // text is inlined in the config for readability; the file rides the layer
-  expect(textConfig.result["text"]).toBe("a generated story")
-  expect(textConfig.result["artifacts"]).toEqual([{ name: "text.txt", mimeType: "text/plain" }])
+  // text is inlined in the metadata for readability; the file rides the layer
+  expect(textMeta.result["text"]).toBe("a generated story")
+  expect(textMeta.result["artifacts"]).toEqual([{ name: "text.txt", mimeType: "text/plain" }])
 
   const vecDir = join(tmp, "vec-out")
   await buildResultPackage({
@@ -318,7 +356,7 @@ test("buildResultPackage stages text and vector payloads as referenceable layer 
     dimensions: 2,
     createdAt: "2026-08-17T00:00:00.000Z",
   })
-  const { manifest: vecManifest, config: vecConfig } = await readManifestConfig(vecDir)
+  const { manifest: vecManifest, metadata: vecMeta } = await readPackageFromIndex(vecDir)
   expect(await layerFileText(vecDir, vecManifest.layers[0]?.digest ?? "", "vectors.json")).toBe(
     JSON.stringify(
       [
@@ -329,10 +367,10 @@ test("buildResultPackage stages text and vector payloads as referenceable layer 
       2,
     ),
   )
-  // vectors stay out of the config (size); dimensions records the shape
-  expect(vecConfig.result["vectors"]).toBeUndefined()
-  expect(vecConfig.result["dimensions"]).toBe(2)
-  expect(vecConfig.result["artifacts"]).toEqual([
+  // vectors stay out of the metadata (size); dimensions records the shape
+  expect(vecMeta.result["vectors"]).toBeUndefined()
+  expect(vecMeta.result["dimensions"]).toBe(2)
+  expect(vecMeta.result["artifacts"]).toEqual([
     { name: "vectors.json", mimeType: "application/json" },
   ])
 

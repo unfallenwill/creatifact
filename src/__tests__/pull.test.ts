@@ -1,5 +1,14 @@
+import { createHash } from "node:crypto"
 import { vi } from "vitest"
+import { registryApiHost } from "../oci"
 import { fetchBlob, fetchManifest } from "../pull"
+
+test("registryApiHost rewrites docker.io aliases to the API host", () => {
+  expect(registryApiHost("docker.io")).toBe("registry-1.docker.io")
+  expect(registryApiHost("index.docker.io")).toBe("registry-1.docker.io")
+  expect(registryApiHost("creatifact.dev")).toBe("creatifact.dev")
+  expect(registryApiHost("localhost:5000")).toBe("localhost:5000")
+})
 
 test("fetchManifest GETs manifest from registry", async () => {
   const manifestData = JSON.stringify({ schemaVersion: 2, config: {}, layers: [] })
@@ -25,9 +34,65 @@ test("fetchManifest GETs manifest from registry", async () => {
     expect.objectContaining({
       method: "GET",
       headers: expect.objectContaining({
-        Accept: "application/vnd.oci.image.manifest.v1+json",
+        Accept: expect.stringContaining("application/vnd.oci.image.manifest.v1+json"),
       }),
     }),
+  )
+  // the Accept list must cover every manifest type registries may serve
+  const sentAccept = (fetchMock.mock.calls[0]?.[1] as { headers?: { Accept?: string } })?.headers
+    ?.Accept
+  expect(sentAccept).toContain("application/vnd.oci.image.index.v1+json")
+  expect(sentAccept).toContain("application/vnd.docker.distribution.manifest.v2+json")
+  expect(sentAccept).toContain("application/vnd.docker.distribution.manifest.list.v2+json")
+
+  vi.unstubAllGlobals()
+})
+
+test("fetchManifest resolves a multi-arch index to the linux/amd64 child", async () => {
+  const armManifest = JSON.stringify({ schemaVersion: 2, config: {}, layers: [] })
+  const armDigest = `sha256:${createHash("sha256").update(armManifest).digest("hex")}`
+  const amdManifest = JSON.stringify({ schemaVersion: 2, config: {}, layers: [] })
+  const amdDigest = `sha256:${createHash("sha256").update(amdManifest).digest("hex")}`
+  const indexData = JSON.stringify({
+    schemaVersion: 2,
+    mediaType: "application/vnd.oci.image.index.v1+json",
+    manifests: [
+      {
+        mediaType: "application/vnd.oci.image.manifest.v1+json",
+        digest: armDigest,
+        size: armManifest.length,
+        platform: { architecture: "arm64", os: "linux" },
+      },
+      {
+        mediaType: "application/vnd.oci.image.manifest.v1+json",
+        digest: amdDigest,
+        size: amdManifest.length,
+        platform: { architecture: "amd64", os: "linux" },
+      },
+    ],
+  })
+  const fetchMock = vi.fn((url: string) =>
+    Promise.resolve({
+      ok: true,
+      status: 200,
+      headers: {
+        get: () =>
+          url.includes("sha256:")
+            ? "application/vnd.oci.image.manifest.v1+json"
+            : "application/vnd.oci.image.index.v1+json",
+      },
+      text: () => Promise.resolve(url.includes("sha256:") ? amdManifest : indexData),
+    }),
+  )
+  vi.stubGlobal("fetch", fetchMock)
+
+  const { manifestData } = await fetchManifest("http://localhost:5000", "myrepo", "latest", {})
+
+  expect(manifestData).toBe(amdManifest)
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(fetchMock).toHaveBeenLastCalledWith(
+    `http://localhost:5000/v2/myrepo/manifests/${amdDigest}`,
+    expect.objectContaining({ method: "GET" }),
   )
 
   vi.unstubAllGlobals()
@@ -81,7 +146,6 @@ test("fetchBlob throws on failure", async () => {
   vi.unstubAllGlobals()
 })
 
-import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"

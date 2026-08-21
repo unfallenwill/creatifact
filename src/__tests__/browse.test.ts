@@ -156,20 +156,20 @@ test("unknown packages, missing files, and traversal paths are 404 JSON", async 
 })
 
 test("DELETE untags, keeps shared blobs, and GCs the last reference", async () => {
-  // same artifact bytes → shared layer blob; different tasks → distinct manifests
+  // identical packages under two tags share every blob (content-addressed
+  // store — the metadata record rides the layer, so same input means same
+  // digest end to end); untagging one must not collect the other's blobs
   await addRunPackage("demo/a:v1", "text2image")
-  await addRunPackage("demo/b:v1", "image2image")
+  await addRunPackage("demo/b:v1", "text2image")
   const base = await start()
 
   const first = await fetch(`${base}/api/packages/${encodeURIComponent("demo/a:v1")}`, {
     method: "DELETE",
   })
   expect(first.status).toBe(200)
-  // a:v1's own manifest + config blobs become unreachable and are collected;
-  // the shared artifact layer survives — proven by b:v1 still serving below.
+  // b:v1 still references every blob — nothing is collectable yet
   const firstBody = (await first.json()) as { untagged: string[]; deletedBlobs: string[] }
-  expect(firstBody).toEqual({ untagged: ["demo/a:v1"], deletedBlobs: expect.any(Array) })
-  expect(firstBody.deletedBlobs).toHaveLength(2)
+  expect(firstBody).toEqual({ untagged: ["demo/a:v1"], deletedBlobs: [] })
 
   const remaining = (await (await fetch(`${base}/api/packages`)).json()) as Array<{ ref: string }>
   expect(remaining.map((e) => e.ref)).toEqual(["demo/b:v1"])
@@ -185,8 +185,9 @@ test("DELETE untags, keeps shared blobs, and GCs the last reference", async () =
     method: "DELETE",
   })
   const body = (await second.json()) as { untagged: string[]; deletedBlobs: string[] }
-  expect(body).toEqual({ untagged: ["demo/b:v1"], deletedBlobs: expect.any(Array) })
-  expect(body.deletedBlobs.length).toBeGreaterThan(0)
+  expect(body.untagged).toEqual(["demo/b:v1"])
+  // the last reference is gone: manifest + image config + layer all collected
+  expect(body.deletedBlobs).toHaveLength(3)
   expect(await listStoreEntries(configPath)).toEqual([])
 
   const gone = await fetch(`${base}/api/packages/${encodeURIComponent("demo/b:v1")}`, {

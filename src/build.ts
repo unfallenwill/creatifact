@@ -10,7 +10,16 @@ import { runDag } from "./dag"
 import { artifactBytes, artifactExtension } from "./download"
 import { usageError } from "./errors"
 import { ok, status } from "./format"
-import { createLayerFromView, createLayerTarball, mergeImageLayers, selectPaths } from "./layers"
+import {
+  type CreatedLayer,
+  computeBlobDiffId,
+  createEmptyLayer,
+  createLayerFromView,
+  createLayerTarball,
+  type FsView,
+  mergeImageLayers,
+  selectPaths,
+} from "./layers"
 import {
   type BuildManifestFile,
   type BuildStage,
@@ -20,7 +29,8 @@ import {
 import {
   BUILD_INPUTS_ANNOTATION,
   BUILD_PLAN_ANNOTATION,
-  EMPTY_CONFIG_MEDIA_TYPE,
+  IMAGE_CONFIG_MEDIA_TYPE,
+  imageConfigBuffer,
   type LoadedImage,
   MANIFEST_MEDIA_TYPE,
   materializeBlob,
@@ -48,8 +58,10 @@ import { fetchImage, type ImageFetchOptions } from "./pull"
 import { isLocalRef } from "./refs"
 import { effectiveRunSpec, executeRunRequest, type RunRequest } from "./run"
 import {
-  RUN_CONFIG_MEDIA_TYPE,
-  RUN_SCHEMA_VERSION,
+  METADATA_FILE,
+  metadataBuffer,
+  PACKAGE_ANNOTATION,
+  PACKAGE_ANNOTATION_VALUE,
   type RunResultMeta,
   type RunSpec,
 } from "./runPackage"
@@ -260,16 +272,32 @@ async function inheritFromLayers(
   blobsDir: string,
   auth: ImageFetchOptions,
   configPath?: string | undefined,
-): Promise<OCIDescriptor[]> {
+): Promise<Array<{ descriptor: OCIDescriptor; diffId: string }>> {
   const image = await resolveImageSource(spec, baseDir, auth, configPath)
-  for (const layer of image.manifest.layers) {
+  const sourceDiffIds = diffIdsOfImage(image)
+  const out: Array<{ descriptor: OCIDescriptor; diffId: string }> = []
+  for (const [i, layer] of image.manifest.layers.entries()) {
     const blob = image.blobs.get(layer.digest)
     if (!blob) {
       throw new Error(`Layer blob ${layer.digest} missing from source ${spec}`)
     }
     await materializeBlob(blobsDir, layer.digest, blob)
+    out.push({ descriptor: layer, diffId: sourceDiffIds[i] ?? (await computeBlobDiffId(blob)) })
   }
-  return image.manifest.layers
+  return out
+}
+
+/** A source image's config rootfs.diff_ids, positional with its layers ([] when the source config carries none). */
+function diffIdsOfImage(image: LoadedImage): string[] {
+  const blob = image.blobs.get(image.manifest.config.digest)
+  if (blob === undefined) return []
+  try {
+    const config = JSON.parse(blob.toString("utf8")) as { rootfs?: { diff_ids?: unknown } }
+    const ids = config.rootfs?.diff_ids
+    return Array.isArray(ids) ? (ids as string[]) : []
+  } catch {
+    return []
+  }
 }
 
 async function copyLayer(
@@ -278,7 +306,7 @@ async function copyLayer(
   blobsDir: string,
   auth: ImageFetchOptions,
   configPath?: string | undefined,
-): Promise<OCIDescriptor> {
+): Promise<CreatedLayer> {
   const image = await resolveImageSource(entry.from, baseDir, auth, configPath)
   const layerBlobs: Buffer[] = []
   for (const layer of image.manifest.layers) {
@@ -333,6 +361,68 @@ export interface BuildResult {
   artifacts?: Array<{ name?: string; url?: string; mimeType?: string | undefined }>
 }
 
+interface AssembledLayers {
+  layers: OCIDescriptor[]
+  /** rootfs.diff_ids, positional with layers. */
+  diffIds: string[]
+  annotations: Record<string, string>
+  runExec: RunSectionResult | undefined
+}
+
+/**
+ * Assemble the final layer chain: inherited `from:` layers, `copy:` layers,
+ * assets, the executed run section's artifacts, then a trailing metadata
+ * layer when a run section is present (bake or executed). An empty build
+ * pads one empty layer so every package carries a rootfs.
+ */
+async function assembleLayers(
+  options: BuildOptions,
+  blobsDir: string,
+  inherited: Array<Array<{ descriptor: OCIDescriptor; diffId: string }>>,
+  copied: CreatedLayer[],
+): Promise<AssembledLayers> {
+  const layers: OCIDescriptor[] = []
+  const diffIds: string[] = []
+  const addLayer = (layer: { descriptor: OCIDescriptor; diffId: string }): void => {
+    layers.push(layer.descriptor)
+    diffIds.push(layer.diffId)
+  }
+  for (const layer of inherited.flat()) addLayer(layer)
+  for (const layer of copied) addLayer(layer)
+  if (options.assetsDir !== undefined) {
+    await validateAssetsDir(options.assetsDir)
+    addLayer(await createLayerTarball(options.assetsDir, blobsDir))
+  }
+
+  // The run section is a build-time instruction: execute it during the build
+  // and bake the real artifacts as the top layer (unless --bake keeps the
+  // recipe-only package). pkg:// refs in the spec resolve against the layers
+  // assembled so far.
+  let runExec: RunSectionResult | undefined
+  if (options.run !== undefined && options.bake !== true) {
+    runExec = await executeRunSection(options, layers)
+    if (runExec.layer !== undefined) addLayer(runExec.layer)
+  }
+
+  // The metadata record rides its own final layer, keeping the config blob a
+  // standard image config that generic OCI clients can unpack against.
+  const annotations: Record<string, string> = { ...options.annotations }
+  if (options.run !== undefined) {
+    addLayer(
+      await createMetadataLayer(
+        blobsDir,
+        runExec === undefined
+          ? { run: options.run }
+          : { run: runExec.spec, result: runExec.result },
+      ),
+    )
+    annotations[PACKAGE_ANNOTATION] = PACKAGE_ANNOTATION_VALUE
+  }
+  if (layers.length === 0) addLayer(await createEmptyLayer(blobsDir))
+
+  return { layers, diffIds, annotations, runExec }
+}
+
 export async function runBuild(options: BuildOptions): Promise<BuildResult> {
   // Default target is the shared store (tag = pointer, blobs deduped);
   // an explicit --output exports a standalone layout (must be empty).
@@ -364,33 +454,15 @@ export async function runBuild(options: BuildOptions): Promise<BuildResult> {
     ),
   )
 
-  const layers: OCIDescriptor[] = [...inherited.flat(), ...copied]
-  if (options.assetsDir !== undefined) {
-    await validateAssetsDir(options.assetsDir)
-    layers.push(await createLayerTarball(options.assetsDir, blobsDir))
-  }
+  const assembled = await assembleLayers(options, blobsDir, inherited, copied)
 
-  // The run section is a build-time instruction: execute it during the build
-  // and bake the real artifacts as the top layer (unless --bake keeps the
-  // recipe-only package). pkg:// refs in the spec resolve against the layers
-  // assembled above.
-  let runExec: RunSectionResult | undefined
-  if (options.run !== undefined && options.bake !== true) {
-    runExec = await executeRunSection(options, layers)
-    if (runExec.layer !== undefined) layers.push(runExec.layer)
-  }
+  const configDescriptor = await writeBlob(
+    imageConfigBuffer(assembled.diffIds, assembled.runExec?.result.createdAt),
+    blobsDir,
+    IMAGE_CONFIG_MEDIA_TYPE,
+  )
 
-  const configDescriptor =
-    options.run === undefined
-      ? await writeBlob(Buffer.from("{}"), blobsDir, EMPTY_CONFIG_MEDIA_TYPE)
-      : await writeRunConfigBlob(
-          blobsDir,
-          runExec === undefined
-            ? { run: options.run }
-            : { run: runExec.spec, result: runExec.result },
-        )
-
-  const manifest = buildManifest(configDescriptor, layers, options.annotations)
+  const manifest = buildManifest(configDescriptor, assembled.layers, assembled.annotations)
   const manifestBuffer = Buffer.from(JSON.stringify(manifest))
   const manifestDescriptor = await writeBlob(manifestBuffer, blobsDir, MANIFEST_MEDIA_TYPE)
 
@@ -405,26 +477,23 @@ export async function runBuild(options: BuildOptions): Promise<BuildResult> {
     digest: manifestDescriptor.digest,
     outputDir,
     tag: options.tag,
-    ...(runExec === undefined ? {} : { artifacts: runExec.result.artifacts }),
+    ...(assembled.runExec === undefined ? {} : { artifacts: assembled.runExec.result.artifacts }),
   }
 }
 
-/** The build's run config blob: the spec (executed or planned) + run meta. */
-async function writeRunConfigBlob(
+/** The metadata layer: just `.creatifact/config.json` with the run recipe
+ * (and the executed result) — it keeps the config blob a standard image config. */
+async function createMetadataLayer(
   blobsDir: string,
   body: { run: RunSpec; result?: RunResultMeta },
-): Promise<OCIDescriptor> {
-  const blob = {
-    schemaVersion: RUN_SCHEMA_VERSION,
-    run: body.run,
-    ...(body.result === undefined ? {} : { result: body.result }),
-  }
-  return writeBlob(Buffer.from(JSON.stringify(blob, null, 2)), blobsDir, RUN_CONFIG_MEDIA_TYPE)
+): Promise<CreatedLayer> {
+  const view: FsView = new Map([[METADATA_FILE, { type: "file", data: metadataBuffer(body) }]])
+  return createLayerFromView(view, new Set(), blobsDir)
 }
 
 /** A build's executed run section: its layer plus the recorded truth. */
 interface RunSectionResult {
-  layer: OCIDescriptor | undefined
+  layer: CreatedLayer | undefined
   /** The spec as actually executed (resolved provider/model). */
   spec: RunSpec
   result: RunResultMeta

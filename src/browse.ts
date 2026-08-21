@@ -29,7 +29,13 @@ import {
   readIndexEntries,
 } from "./oci"
 import { emitResult } from "./output"
-import { RUN_CONFIG_MEDIA_TYPE } from "./runPackage"
+import {
+  isCreatifactPackage,
+  METADATA_FILE,
+  PACKAGE_ANNOTATION,
+  type RunResultMeta,
+  readMetadataFromLayout,
+} from "./runPackage"
 
 /** Run-package summary shown in the list (from the config blob). */
 interface BrowserRunMeta {
@@ -141,35 +147,25 @@ interface EntryMeta {
 }
 
 async function describeEntry(store: string, digest: string): Promise<EntryMeta> {
-  let manifest: { config?: { mediaType?: string; digest?: string } }
+  let manifest: { annotations?: Record<string, string> }
   try {
     manifest = JSON.parse(await readFile(blobPath(store, digest), "utf8"))
   } catch {
     // manifest blob missing — still list the tag with its index-level metadata
     return { kind: "image" }
   }
-  if (
-    manifest.config?.mediaType !== RUN_CONFIG_MEDIA_TYPE ||
-    manifest.config.digest === undefined
-  ) {
+  if (manifest.annotations?.[PACKAGE_ANNOTATION] === undefined) {
     return { kind: "image" }
   }
-  let config: Record<string, unknown> | undefined
-  try {
-    config = asRecord(JSON.parse(await readFile(blobPath(store, manifest.config.digest), "utf8")))
-  } catch {
-    config = undefined // unreadable config — the summary stays generic
-  }
-  const runRec = asRecord(config?.["run"])
-  const resultRec = asRecord(config?.["result"])
-  const run: BrowserRunMeta = { task: strField(runRec, "task") ?? "unknown" }
-  const provider = strField(runRec, "provider")
+  const metadata = await readMetadataFromLayout(store, manifest as OCIManifest)
+  const run: BrowserRunMeta = { task: strField(metadata?.run, "task") ?? "unknown" }
+  const provider = strField(metadata?.run, "provider")
   if (provider !== undefined) run.provider = provider
-  const model = strField(runRec, "model")
+  const model = strField(metadata?.run, "model")
   if (model !== undefined) run.model = model
-  const createdAt = strField(resultRec, "createdAt")
+  const createdAt = metadata?.result?.createdAt
   if (createdAt !== undefined) run.createdAt = createdAt
-  const coverName = coverNameFromResult(resultRec)
+  const coverName = coverNameFromResult(metadata?.result)
   return {
     kind: "run",
     ...(coverName === undefined ? {} : { coverName }),
@@ -178,11 +174,9 @@ async function describeEntry(store: string, digest: string): Promise<EntryMeta> 
 }
 
 /** First previewable artifact name of a run result (cover candidate). */
-function coverNameFromResult(resultRec: Record<string, unknown> | undefined): string | undefined {
-  const artifacts = Array.isArray(resultRec?.["artifacts"]) ? resultRec["artifacts"] : []
-  for (const a of artifacts) {
-    const name = strField(asRecord(a), "name")
-    if (name !== undefined && isPreviewableMedia(name)) return name
+function coverNameFromResult(result: RunResultMeta | undefined): string | undefined {
+  for (const a of result?.artifacts ?? []) {
+    if (a.name !== undefined && isPreviewableMedia(a.name)) return a.name
   }
   return undefined
 }
@@ -253,15 +247,7 @@ async function loadPackage(
   if (entry === undefined) return undefined
 
   const manifest = JSON.parse(await readFile(blobPath(store, entry.digest), "utf8")) as OCIManifest
-  const isRun = manifest.config?.mediaType === RUN_CONFIG_MEDIA_TYPE
-  let config: Record<string, unknown> | undefined
-  if (manifest.config !== undefined) {
-    try {
-      config = asRecord(JSON.parse(await readFile(blobPath(store, manifest.config.digest), "utf8")))
-    } catch {
-      config = undefined // metadata sections simply stay hidden
-    }
-  }
+  const isRun = isCreatifactPackage(manifest)
   const view = await cachedView(store, entry.digest, manifest, cache)
 
   const files: PackageFile[] = [...view.keys()].sort().map((path) => {
@@ -270,8 +256,22 @@ async function loadPackage(
     if (e?.type === "symlink") return { path, type: "symlink" as const, target: e.target }
     return { path, type: "dir" as const }
   })
-  const runRec = isRun ? asRecord(config?.["run"]) : undefined
-  const resultRec = isRun ? asRecord(config?.["result"]) : undefined
+
+  // Run summary comes from the `.creatifact/config.json` layer file.
+  let runRec: Record<string, unknown> | undefined
+  let resultRec: Record<string, unknown> | undefined
+  if (isRun) {
+    const metadata = view.get(METADATA_FILE)
+    if (metadata !== undefined && metadata.type === "file") {
+      try {
+        const parsed = asRecord(JSON.parse(metadata.data.toString("utf8")))
+        runRec = asRecord(parsed?.["run"])
+        resultRec = asRecord(parsed?.["result"])
+      } catch {
+        // unreadable metadata — the sections simply stay hidden
+      }
+    }
+  }
 
   return {
     detail: {

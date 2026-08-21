@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest"
-import { RUN_CONFIG_MEDIA_TYPE } from "../runPackage"
+import { METADATA_FILE, PACKAGE_ANNOTATION, PACKAGE_ANNOTATION_VALUE } from "../runPackage"
 import { modelSupportsTask, requestFieldsForTask, TASKS, tasksForModel } from "../tasks"
 
 test("TASKS registry keys cover all generation tasks plus resume", () => {
@@ -99,6 +99,8 @@ describe("requestFieldsForTask contract", () => {
   })
 })
 
-test("gen recipe media type is versioned", () => {
-  expect(RUN_CONFIG_MEDIA_TYPE).toBe("application/vnd.creatifact.run.v1+json")
+test("package metadata format markers are versioned", () => {
+  expect(METADATA_FILE).toBe(".creatifact/config.json")
+  expect(PACKAGE_ANNOTATION).toBe("org.creatifact.package")
+  expect(PACKAGE_ANNOTATION_VALUE).toBe("v1")
 })

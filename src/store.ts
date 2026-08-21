@@ -15,7 +15,7 @@ import {
   writeIndexAtomic,
 } from "./oci"
 import { emitResult } from "./output"
-import { RUN_CONFIG_MEDIA_TYPE } from "./runPackage"
+import { PACKAGE_ANNOTATION } from "./runPackage"
 import { addGlobalOptions, configOpts, prettyOpts } from "./util"
 
 export interface StoreEntry {
@@ -36,8 +36,8 @@ export async function listStoreEntries(configPath?: string): Promise<StoreEntry[
     try {
       const manifest = JSON.parse(
         await readFile(join(dir, "blobs", "sha256", digestHex(e.digest)), "utf8"),
-      ) as { config?: { mediaType?: string } }
-      if (manifest.config?.mediaType === RUN_CONFIG_MEDIA_TYPE) kind = "run"
+      ) as { annotations?: Record<string, string> }
+      if (manifest.annotations?.[PACKAGE_ANNOTATION] !== undefined) kind = "run"
     } catch {
       // blob missing — still list the tag with its index-level metadata
     }

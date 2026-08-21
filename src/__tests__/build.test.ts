@@ -17,7 +17,13 @@ import {
   runBuild,
   runBuildFromArgs,
 } from "../build"
-import { BUILD_INPUTS_ANNOTATION, REF_NAME_ANNOTATION, readIndexEntries } from "../oci"
+import {
+  BUILD_INPUTS_ANNOTATION,
+  IMAGE_CONFIG_MEDIA_TYPE,
+  REF_NAME_ANNOTATION,
+  readIndexEntries,
+} from "../oci"
+import { METADATA_FILE } from "../runPackage"
 
 const CONFIG: OCIDescriptor = {
   mediaType: "application/vnd.oci.image.config.v1+json",
@@ -247,8 +253,19 @@ test("runBuild produces an empty image with no sources", async () => {
   const manifest = JSON.parse(
     await readFile(join(outputDir, "blobs", "sha256", index.manifests[0].digest.slice(7)), "utf8"),
   )
-  expect(manifest.layers).toEqual([])
-  expect(manifest.config.mediaType).toBe("application/vnd.oci.empty.v1+json")
+  expect(manifest.layers).toHaveLength(1)
+  expect(manifest.config.mediaType).toBe(IMAGE_CONFIG_MEDIA_TYPE)
+  const config = JSON.parse(
+    await readFile(join(outputDir, "blobs", "sha256", manifest.config.digest.slice(7)), "utf8"),
+  )
+  expect(config.rootfs.type).toBe("layers")
+  // the pad empty layer's diff_id matches its uncompressed stream
+  const layerBlob = await readFile(
+    join(outputDir, "blobs", "sha256", manifest.layers[0].digest.slice(7)),
+  )
+  expect(config.rootfs.diff_ids).toEqual([
+    `sha256:${createHash("sha256").update(gunzipSync(layerBlob)).digest("hex")}`,
+  ])
 
   await rm(tmp, { recursive: true })
 })
@@ -280,19 +297,34 @@ test("runBuild --bake writes a run recipe into the config blob without executing
   const manifest = JSON.parse(
     await readFile(join(outputDir, "blobs", "sha256", index.manifests[0].digest.slice(7)), "utf8"),
   )
-  expect(manifest.config.mediaType).toBe("application/vnd.creatifact.run.v1+json")
+  expect(manifest.config.mediaType).toBe(IMAGE_CONFIG_MEDIA_TYPE)
+  expect(manifest.annotations["org.creatifact.package"]).toBe("v1")
+  expect(manifest.layers).toHaveLength(1)
   const config = JSON.parse(
     await readFile(join(outputDir, "blobs", "sha256", manifest.config.digest.slice(7)), "utf8"),
   )
-  expect(config).toEqual({
-    schemaVersion: 1,
-    run: {
-      task: "image2image",
-      provider: "zhipu",
-      model: "cogview-4",
-      options: { size: "1024x1024" },
-    },
-  })
+  expect(config.rootfs.diff_ids).toHaveLength(1)
+
+  // the recipe rides the metadata layer instead of the config blob
+  const metadataLayer = await readFile(
+    join(outputDir, "blobs", "sha256", manifest.layers[0].digest.slice(7)),
+  )
+  const entries = await extractTarEntries(gunzipSync(metadataLayer))
+  expect(entries.get(METADATA_FILE)).toBe(
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        run: {
+          task: "image2image",
+          provider: "zhipu",
+          model: "cogview-4",
+          options: { size: "1024x1024" },
+        },
+      },
+      null,
+      2,
+    ),
+  )
 
   await rm(tmp, { recursive: true, force: true })
 })
@@ -331,7 +363,7 @@ test("runBuild inherits layers from a local layout", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "build-test-"))
   const sourceDir = join(tmp, "source")
   const outputDir = join(tmp, "out")
-  await setupLayout(sourceDir)
+  await setupRealLayout(sourceDir, [{ name: "base.txt", data: "base-content" }])
 
   await runBuild({
     tag: "org/pkg:1.0.0",
@@ -350,8 +382,60 @@ test("runBuild inherits layers from a local layout", async () => {
     await readFile(join(outputDir, "blobs", "sha256", index.manifests[0].digest.slice(7)), "utf8"),
   )
   expect(manifest.layers).toHaveLength(1)
-  const layerDigest = manifest.layers[0].digest
-  expect(await readFile(join(outputDir, "blobs", "sha256", layerDigest.slice(7)))).toBeTruthy()
+  const layerBlob = await readFile(
+    join(outputDir, "blobs", "sha256", manifest.layers[0].digest.slice(7)),
+  )
+  expect(layerBlob).toBeTruthy()
+  // the source config has no diff_ids → the diff_id is computed from the
+  // inherited layer's uncompressed stream
+  const config = JSON.parse(
+    await readFile(join(outputDir, "blobs", "sha256", manifest.config.digest.slice(7)), "utf8"),
+  )
+  expect(config.rootfs.diff_ids).toEqual([
+    `sha256:${createHash("sha256").update(gunzipSync(layerBlob)).digest("hex")}`,
+  ])
+
+  await rm(tmp, { recursive: true })
+})
+
+test("runBuild maps a source image config's diff_ids positionally", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "build-test-"))
+  const sourceDir = join(tmp, "source")
+  const outputDir = join(tmp, "out")
+  await setupRealLayout(sourceDir, [{ name: "base.txt", data: "base-content" }], (diffId) => ({
+    architecture: "amd64",
+    os: "linux",
+    config: {},
+    rootfs: { type: "layers", diff_ids: [diffId] },
+  }))
+
+  await runBuild({
+    tag: "org/pkg:1.0.0",
+    assetsDir: undefined,
+    output: outputDir,
+    annotations: {},
+    from: [sourceDir],
+    copy: [],
+    plainHttp: false,
+    username: undefined,
+    password: undefined,
+  })
+
+  const index = JSON.parse(await readFile(join(outputDir, "index.json"), "utf8"))
+  const manifest = JSON.parse(
+    await readFile(join(outputDir, "blobs", "sha256", index.manifests[0].digest.slice(7)), "utf8"),
+  )
+  expect(manifest.layers).toHaveLength(1)
+  const layerBlob = await readFile(
+    join(outputDir, "blobs", "sha256", manifest.layers[0].digest.slice(7)),
+  )
+  const config = JSON.parse(
+    await readFile(join(outputDir, "blobs", "sha256", manifest.config.digest.slice(7)), "utf8"),
+  )
+  // the diff_id is inherited from the source config, not recomputed
+  expect(config.rootfs.diff_ids).toEqual([
+    `sha256:${createHash("sha256").update(gunzipSync(layerBlob)).digest("hex")}`,
+  ])
 
   await rm(tmp, { recursive: true })
 })
@@ -643,21 +727,27 @@ async function extractTarEntries(tarData: Buffer): Promise<Map<string, string>> 
 async function setupRealLayout(
   dir: string,
   files: Array<{ name: string; data: string }>,
+  /** Build the source config from the computed layer diff_id (image configs reference it). */
+  sourceConfig?: (diffId: string) => Record<string, unknown>,
 ): Promise<void> {
   const blobsDir = join(dir, "blobs", "sha256")
   await mkdir(blobsDir, { recursive: true })
 
-  const configData = "{}"
-  const configDigest = `sha256:${sha256hex(configData)}`
   const layerData = await makeLayerTar(files)
   const realLayerDigest = `sha256:${createHash("sha256").update(layerData).digest("hex")}`
+  const layerDiffId = `sha256:${createHash("sha256").update(gunzipSync(layerData)).digest("hex")}`
+  const configData = sourceConfig === undefined ? "{}" : JSON.stringify(sourceConfig(layerDiffId))
+  const configDigest = `sha256:${createHash("sha256").update(configData).digest("hex")}`
   const manifestObj = {
     schemaVersion: 2 as const,
     mediaType: "application/vnd.oci.image.manifest.v1+json",
     config: {
-      mediaType: "application/vnd.oci.empty.v1+json",
+      mediaType:
+        sourceConfig === undefined
+          ? "application/vnd.oci.empty.v1+json"
+          : "application/vnd.oci.image.config.v1+json",
       digest: configDigest,
-      size: 2,
+      size: configData.length,
     },
     layers: [
       {

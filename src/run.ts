@@ -30,12 +30,14 @@ import {
   artifactFromStore,
   buildResultPackage,
   type InputProvenance,
+  isCreatifactPackage,
   type LoadedImage,
   loadRunImage,
+  METADATA_FILE,
   packageFsView,
   parseRunConfigBlob,
-  RUN_CONFIG_MEDIA_TYPE,
   type RunSpec,
+  readPackageMetadata,
   type StepProvenance,
 } from "./runPackage"
 import { modelSupportsTask, type RunTaskName, TASKS, type TaskSpec } from "./tasks"
@@ -1681,17 +1683,17 @@ async function runPackageRef(
   const plainHttp = options.plainHttp === true
 
   const image = await loadRunImage(ref, { plainHttp, configPath: opts.configPath }, fetchImage)
-  if (image.manifest.config.mediaType !== RUN_CONFIG_MEDIA_TYPE) {
+  if (!isCreatifactPackage(image.manifest)) {
     fail(
-      `${ref}: not a run package (config mediaType ${image.manifest.config.mediaType}); ` +
+      `${ref}: not a run package (no 'org.creatifact.package' manifest annotation); ` +
         "build one by adding a 'run' field to creatifact.json",
     )
   }
-  const configBlob = image.blobs.get(image.manifest.config.digest)
-  if (configBlob === undefined) {
-    fail(`${ref}: config blob ${image.manifest.config.digest} is missing from the layout`)
+  const metadata = await readPackageMetadata(image)
+  if (metadata === undefined) {
+    fail(`${ref}: package metadata file ${METADATA_FILE} is missing or unreadable`)
   }
-  const recipe = parseRunConfigBlob(configBlob, ref).run
+  const recipe = parseRunConfigBlob(metadata.buffer, ref).run
 
   const overlay = overlayFromParsed(recipe.task, positionals, options, providerContext(opts), {
     packageMode: true,

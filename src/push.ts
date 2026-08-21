@@ -13,7 +13,7 @@ import {
 } from "./config"
 import { usageError } from "./errors"
 import { ok, status } from "./format"
-import { parseRef, readOciLayout } from "./oci"
+import { parseRef, readOciLayout, registryApiHost } from "./oci"
 
 export { type Credentials, encodeBasicAuth, toCredentials } from "./config"
 export { parseRef, readOciLayout }
@@ -304,7 +304,7 @@ export async function runPush(options: PushOptions): Promise<PushResult> {
     config,
   )
   const scheme = resolvePlainHttp(parsed.registry, options.plainHttp, config) ? "http" : "https"
-  const baseUrl = `${scheme}://${parsed.registry}`
+  const baseUrl = `${scheme}://${registryApiHost(parsed.registry)}`
 
   const authHeaders = await getAuthHeaders(
     baseUrl,

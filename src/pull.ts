@@ -2,11 +2,13 @@ import { createHash } from "node:crypto"
 import { mkdir } from "node:fs/promises"
 import { join } from "node:path"
 import {
+  INDEX_MEDIA_TYPE,
   type LoadedImage,
   MANIFEST_MEDIA_TYPE,
   materializeBlob,
   type OCIManifest,
   parseRef,
+  registryApiHost,
   saveLayout,
   upsertStoreEntry,
 } from "./oci"
@@ -45,7 +47,7 @@ export async function fetchImage(ref: string, opts: ImageFetchOptions): Promise<
     config,
   )
   const scheme = resolvePlainHttp(parsed.registry, opts.plainHttp, config) ? "http" : "https"
-  const baseUrl = `${scheme}://${parsed.registry}`
+  const baseUrl = `${scheme}://${registryApiHost(parsed.registry)}`
 
   const authHeaders = await getAuthHeaders(
     baseUrl,
@@ -87,28 +89,68 @@ export async function fetchImage(ref: string, opts: ImageFetchOptions): Promise<
   }
 }
 
+/** Every manifest type a registry may serve for a ref: OCI and docker,
+ * single-image and index. Registries 404 unknown types out of Accept lists. */
+const MANIFEST_ACCEPT = [
+  MANIFEST_MEDIA_TYPE,
+  INDEX_MEDIA_TYPE,
+  "application/vnd.docker.distribution.manifest.v2+json",
+  "application/vnd.docker.distribution.manifest.list.v2+json",
+].join(", ")
+
+interface IndexEntry {
+  mediaType?: string
+  digest: string
+  platform?: { architecture?: string; os?: string }
+}
+
+/** Prefer linux/amd64, then any linux, then the first entry. */
+function selectIndexEntry(entries: IndexEntry[]): IndexEntry | undefined {
+  const candidates = entries.filter((e) => typeof e.digest === "string")
+  return (
+    candidates.find((e) => e.platform?.os === "linux" && e.platform?.architecture === "amd64") ??
+    candidates.find((e) => e.platform?.os === "linux") ??
+    candidates[0]
+  )
+}
+
 export async function fetchManifest(
   baseUrl: string,
   repository: string,
   tag: string,
   headers: Record<string, string>,
 ): Promise<{ manifest: OCIManifest; mediaType: string; manifestData: string }> {
-  const resp = await fetch(`${baseUrl}/v2/${repository}/manifests/${tag}`, {
-    method: "GET",
-    headers: {
-      ...headers,
-      Accept: MANIFEST_MEDIA_TYPE,
-    },
-  })
-  if (!resp.ok) {
-    const body = await resp.text().catch(() => "")
-    throw new Error(`Failed to fetch manifest: ${resp.status} ${body}`)
-  }
+  // A ref may resolve to a multi-arch index; follow it (bounded) down to a
+  // single-image manifest so callers always see concrete config + layers.
+  let ref = tag
+  for (let depth = 0; ; depth++) {
+    const resp = await fetch(`${baseUrl}/v2/${repository}/manifests/${ref}`, {
+      method: "GET",
+      headers: {
+        ...headers,
+        Accept: MANIFEST_ACCEPT,
+      },
+    })
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "")
+      throw new Error(`Failed to fetch manifest: ${resp.status} ${body}`)
+    }
 
-  const mediaType = resp.headers.get("content-type") ?? MANIFEST_MEDIA_TYPE
-  const manifestData = await resp.text()
-  const manifest = JSON.parse(manifestData) as OCIManifest
-  return { manifest, mediaType, manifestData }
+    const mediaType = resp.headers.get("content-type") ?? MANIFEST_MEDIA_TYPE
+    const manifestData = await resp.text()
+    const manifest = JSON.parse(manifestData) as OCIManifest & { manifests?: unknown }
+    if (!Array.isArray(manifest.manifests)) {
+      return { manifest, mediaType, manifestData }
+    }
+    if (depth >= 3) {
+      throw new Error("manifest index nesting too deep")
+    }
+    const chosen = selectIndexEntry(manifest.manifests as IndexEntry[])
+    if (chosen === undefined) {
+      throw new Error("manifest index has no entries")
+    }
+    ref = chosen.digest
+  }
 }
 
 export async function fetchBlob(

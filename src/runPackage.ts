@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { envForConfigPath, loadConfig, storeDir } from "./config"
 import {
   formatIssuePath,
@@ -16,11 +16,13 @@ import {
   artifactExtension,
   fetchArtifactBytes,
 } from "./download"
-import { createLayerTarball, type FsView, mergeImageLayers } from "./layers"
+import { type CreatedLayer, createLayerTarball, type FsView, mergeImageLayers } from "./layers"
 import {
+  digestHex,
+  IMAGE_CONFIG_MEDIA_TYPE,
+  imageConfigBuffer,
   type LoadedImage,
   MANIFEST_MEDIA_TYPE,
-  type OCIDescriptor,
   type OCIManifest,
   REF_NAME_ANNOTATION,
   readIndexEntries,
@@ -36,8 +38,17 @@ import { ensureOutputDirEmpty } from "./util"
 
 export type { InputProvenance, InputProvenanceField, LoadedImage, RunSpec, StepProvenance }
 
-/** Media type of the OCI config blob that carries a run recipe (or a result's provenance). */
-export const RUN_CONFIG_MEDIA_TYPE = "application/vnd.creatifact.run.v1+json"
+/**
+ * Manifest annotation marking a creatifact package (run result or build
+ * output). It is the only classification signal — readers never need to
+ * extract layers to tell a creatifact package from a pulled generic image.
+ */
+export const PACKAGE_ANNOTATION = "org.creatifact.package"
+export const PACKAGE_ANNOTATION_VALUE = "v1"
+
+/** Package metadata record (run recipe + result), carried as this file inside the package layer. */
+export const METADATA_FILE = ".creatifact/config.json"
+
 export const RUN_SCHEMA_VERSION = 1
 
 export interface RunConfigBlob {
@@ -119,23 +130,107 @@ export function validateRunSpec(raw: unknown, path: string): RunSpec {
   return spec as RunSpec
 }
 
-/** Parse a package config blob produced by `build` (run recipe). */
+/** Serialize the package metadata record ({schemaVersion, run, result?}). */
+export function metadataBuffer(body: { run: RunSpec; result?: RunResultMeta }): Buffer {
+  return Buffer.from(
+    JSON.stringify(
+      {
+        schemaVersion: RUN_SCHEMA_VERSION,
+        run: body.run,
+        ...(body.result === undefined ? {} : { result: body.result }),
+      },
+      null,
+      2,
+    ),
+  )
+}
+
+/** Parse a package metadata blob produced by `build` (run recipe). */
 export function parseRunConfigBlob(data: Buffer, source: string): RunConfigBlob {
   let parsed: unknown
   try {
     parsed = JSON.parse(data.toString("utf8"))
   } catch (e) {
-    throw new Error(`${source}: run config blob is not valid JSON (${(e as Error).message})`)
+    throw new Error(`${source}: package metadata is not valid JSON (${(e as Error).message})`)
   }
   if (!isRecord(parsed)) {
-    throw new Error(`${source}: run config blob must be a JSON object`)
+    throw new Error(`${source}: package metadata must be a JSON object`)
   }
   if (parsed["schemaVersion"] !== RUN_SCHEMA_VERSION) {
     throw new Error(
-      `${source}: unsupported run config schemaVersion (expected ${RUN_SCHEMA_VERSION}, got ${String(parsed["schemaVersion"])})`,
+      `${source}: unsupported package metadata schemaVersion (expected ${RUN_SCHEMA_VERSION}, got ${String(parsed["schemaVersion"])})`,
     )
   }
   return { schemaVersion: RUN_SCHEMA_VERSION, run: validateRunSpec(parsed["run"], source) }
+}
+
+/** The metadata record as read back from a package. */
+export interface PackageMetadata {
+  /** Raw metadata bytes — `run <ref>` re-validates via parseRunConfigBlob. */
+  buffer: Buffer
+  /** The run recipe, untyped; strict consumers validate via parseRunConfigBlob. */
+  run: Record<string, unknown>
+  /** Result record, when the package carries one (recipe-only packages omit it). */
+  result?: RunResultMeta
+}
+
+function parseMetadataEntry(data: Buffer): PackageMetadata | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(data.toString("utf8"))
+  } catch {
+    return undefined
+  }
+  if (!isRecord(parsed) || !isRecord(parsed["run"])) return undefined
+  const result = parsed["result"]
+  return {
+    buffer: data,
+    run: parsed["run"],
+    ...(isRecord(result) ? { result: result as unknown as RunResultMeta } : {}),
+  }
+}
+
+/** True when a manifest declares itself a creatifact package. */
+export function isCreatifactPackage(manifest: OCIManifest): boolean {
+  return manifest.annotations?.[PACKAGE_ANNOTATION] !== undefined
+}
+
+/** Read `.creatifact/config.json` out of a package's merged layers. Callers
+ * gate on isCreatifactPackage; undefined means the file is absent or
+ * unreadable — the package then degrades to a generic image. */
+export async function readPackageMetadata(
+  image: LoadedImage,
+): Promise<PackageMetadata | undefined> {
+  let view: FsView
+  try {
+    view = await packageFsView(image)
+  } catch {
+    return undefined
+  }
+  const entry = view.get(METADATA_FILE)
+  if (entry === undefined || entry.type !== "file") return undefined
+  return parseMetadataEntry(entry.data)
+}
+
+/** readPackageMetadata for a manifest whose blobs live in an OCI layout dir
+ * (the shared store); undefined on any read/merge/parse failure. */
+export async function readMetadataFromLayout(
+  layoutDir: string,
+  manifest: OCIManifest,
+): Promise<PackageMetadata | undefined> {
+  let view: FsView
+  try {
+    const layerBlobs: Buffer[] = []
+    for (const layer of manifest.layers) {
+      layerBlobs.push(await readFile(join(layoutDir, "blobs", "sha256", digestHex(layer.digest))))
+    }
+    view = layerBlobs.length === 0 ? new Map() : (await mergeImageLayers(layerBlobs)).view
+  } catch {
+    return undefined
+  }
+  const entry = view.get(METADATA_FILE)
+  if (entry === undefined || entry.type !== "file") return undefined
+  return parseMetadataEntry(entry.data)
 }
 
 /**
@@ -209,32 +304,29 @@ export async function artifactFromStore(
   }
   if (!inStore) return undefined
 
-  let manifest: OCIManifest
-  let config: RunResultBlob
+  let view: FsView
   try {
-    manifest = JSON.parse(await readFile(blobPath(digest), "utf8")) as OCIManifest
-    config = JSON.parse(await readFile(blobPath(manifest.config.digest), "utf8")) as RunResultBlob
-  } catch {
-    return undefined
-  }
-  const artifact = (config.result.artifacts ?? []).find(
-    (a) => a.url === url && a.name !== undefined,
-  )
-  if (artifact?.name === undefined) return undefined
-
-  try {
+    const manifest = JSON.parse(await readFile(blobPath(digest), "utf8")) as OCIManifest
     const layerBlobs: Buffer[] = []
     for (const layer of manifest.layers) {
       layerBlobs.push(await readFile(blobPath(layer.digest)))
     }
-    if (layerBlobs.length === 0) return undefined
-    const { view } = await mergeImageLayers(layerBlobs)
-    const entry = view.get(artifact.name)
-    if (entry === undefined || entry.type !== "file") return undefined
-    return { name: artifact.name, bytes: entry.data }
+    view = layerBlobs.length === 0 ? new Map() : (await mergeImageLayers(layerBlobs)).view
   } catch {
     return undefined
   }
+
+  const metadataEntry = view.get(METADATA_FILE)
+  if (metadataEntry === undefined || metadataEntry.type !== "file") return undefined
+  const metadata = parseMetadataEntry(metadataEntry.data)
+  const artifact = (metadata?.result?.artifacts ?? []).find(
+    (a) => a.url === url && a.name !== undefined,
+  )
+  if (metadata === undefined || artifact?.name === undefined) return undefined
+
+  const entry = view.get(artifact.name)
+  if (entry === undefined || entry.type !== "file") return undefined
+  return { name: artifact.name, bytes: entry.data }
 }
 
 export interface ResultPackageOptions {
@@ -263,7 +355,6 @@ export interface ResultPackageOptions {
 
 export interface StagedArtifacts {
   recorded: Array<{ name?: string; url?: string; mimeType?: string | undefined }>
-  layers: OCIDescriptor[]
   /** Non-fatal download failures: the package kept the url reference only. */
   warnings: string[]
 }
@@ -271,12 +362,10 @@ export interface StagedArtifacts {
 async function stageArtifacts(
   artifacts: Artifact[],
   stage: string,
-  blobsDir: string,
   fetchBytes: ArtifactFetcher,
 ): Promise<StagedArtifacts> {
   const recorded: Array<{ name?: string; url?: string; mimeType?: string | undefined }> = []
   const warnings: string[] = []
-  let fileCount = 0
   for (const [i, artifact] of artifacts.entries()) {
     if (artifact.url !== undefined) {
       const bytes = await artifactBytes(artifact, fetchBytes)
@@ -292,7 +381,6 @@ async function stageArtifacts(
         const name = `artifact-${i + 1}.${artifactExtension(artifact)}`
         await writeFile(join(stage, name), bytes.value)
         recorded.push({ name, url: artifact.url, mimeType: artifact.mimeType })
-        fileCount++
       }
       continue
     }
@@ -300,13 +388,8 @@ async function stageArtifacts(
     const name = `artifact-${i + 1}.${artifactExtension(artifact)}`
     await writeFile(join(stage, name), Buffer.from(artifact.base64, "base64"))
     recorded.push({ name, mimeType: artifact.mimeType })
-    fileCount++
   }
-  return {
-    recorded,
-    layers: fileCount > 0 ? [await createLayerTarball(stage, blobsDir)] : [],
-    warnings,
-  }
+  return { recorded, warnings }
 }
 
 /** Layer file names for packed text / vector payloads. */
@@ -314,13 +397,15 @@ export const TEXT_RESULT_FILE = "text.txt"
 export const VECTORS_RESULT_FILE = "vectors.json"
 
 /**
- * Write generated media as an OCI layout: artifacts (base64 decoded, urls
- * downloaded) become a tar layer, and a config blob records the effective
- * run spec + result metadata so anyone can see exactly how the
- * image/video was produced. Url downloads that fail degrade to a url-only
- * record plus a returned warning — the package still preserves the result.
- * Text / vector payloads (packable tasks) stage as text.txt / vectors.json
- * in the same layer so downstream steps can reference them via pkg://.
+ * Write generated media as an OCI layout consumable by any OCI client: the
+ * artifacts (base64 decoded, urls downloaded) plus the `.creatifact/config.json`
+ * metadata record become a tar layer, and the config blob is a standard OCI
+ * image config whose rootfs.diff_ids match that layer — docker/podman can
+ * pull and unpack the package like any image. Url downloads that fail degrade
+ * to a url-only record plus a returned warning — the package still preserves
+ * the result. Text / vector payloads (packable tasks) stage as text.txt /
+ * vectors.json in the same layer so downstream steps can reference them via
+ * pkg://.
  */
 export async function buildResultPackage(opts: ResultPackageOptions): Promise<{
   digest: string
@@ -334,85 +419,77 @@ export async function buildResultPackage(opts: ResultPackageOptions): Promise<{
   await mkdir(blobsDir, { recursive: true })
 
   const stage = await mkdtemp(join(tmpdir(), "creatifact-run-"))
-  let recorded: Array<{ name?: string; url?: string; mimeType?: string | undefined }> = []
-  let layers: OCIDescriptor[] = []
   let warnings: string[] = []
   try {
     const staged = await stageArtifacts(
       opts.artifacts,
       stage,
-      blobsDir,
       opts.fetchBytes ?? fetchArtifactBytes,
     )
-    recorded = staged.recorded
-    layers = staged.layers
     warnings = staged.warnings
+    const recorded = [...staged.recorded]
 
-    // Text / vector payloads ride the same layer as pkg://-referenceable
-    // files; adding them to the stage requires one (re)build of the tarball.
-    let payloadAdded = false
+    // Text / vector payloads ride the same layer as pkg://-referenceable files.
     if (opts.text !== undefined) {
       await writeFile(join(stage, TEXT_RESULT_FILE), opts.text, "utf8")
       recorded.push({ name: TEXT_RESULT_FILE, mimeType: "text/plain" })
-      payloadAdded = true
     }
     if (opts.vectors !== undefined) {
       await writeFile(join(stage, VECTORS_RESULT_FILE), JSON.stringify(opts.vectors, null, 2))
       recorded.push({ name: VECTORS_RESULT_FILE, mimeType: "application/json" })
-      payloadAdded = true
     }
-    if (payloadAdded) {
-      layers = [await createLayerTarball(stage, blobsDir)]
+
+    const result: RunResultMeta = {
+      createdAt: opts.createdAt ?? new Date().toISOString(),
+      artifacts: recorded,
     }
+    if (opts.fromRef !== undefined) result.from = opts.fromRef
+    if (opts.usage !== undefined) result.usage = opts.usage
+    if (opts.text !== undefined) result.text = opts.text
+    if (opts.dimensions !== undefined) result.dimensions = opts.dimensions
+
+    const layer = await createLayerTarballWithMetadata(stage, blobsDir, {
+      run: opts.spec,
+      result,
+    })
+
+    const configDescriptor = await writeBlob(
+      imageConfigBuffer([layer.diffId], result.createdAt),
+      blobsDir,
+      IMAGE_CONFIG_MEDIA_TYPE,
+    )
+    const manifest: OCIManifest = {
+      schemaVersion: 2,
+      mediaType: MANIFEST_MEDIA_TYPE,
+      config: configDescriptor,
+      layers: [layer.descriptor],
+      annotations: { [PACKAGE_ANNOTATION]: PACKAGE_ANNOTATION_VALUE },
+    }
+    const manifestDescriptor = await writeBlob(
+      Buffer.from(JSON.stringify(manifest)),
+      blobsDir,
+      MANIFEST_MEDIA_TYPE,
+    )
+
+    if (opts.store === true) {
+      await upsertStoreEntry(opts.outputDir, manifestDescriptor, opts.tag)
+    } else {
+      await writeOciLayout(opts.outputDir, manifestDescriptor, opts.tag)
+    }
+    return { digest: manifestDescriptor.digest, warnings }
   } finally {
     await rm(stage, { recursive: true, force: true })
   }
+}
 
-  const result: RunResultMeta = {
-    createdAt: opts.createdAt ?? new Date().toISOString(),
-    artifacts: recorded,
-  }
-  if (opts.fromRef !== undefined) result.from = opts.fromRef
-  if (opts.usage !== undefined) result.usage = opts.usage
-  if (opts.text !== undefined) result.text = opts.text
-  if (opts.dimensions !== undefined) result.dimensions = opts.dimensions
-
-  const configBlob: RunResultBlob = {
-    schemaVersion: RUN_SCHEMA_VERSION,
-    run: opts.spec,
-    result,
-  }
-  const configDescriptor = await writeBlob(
-    Buffer.from(JSON.stringify(configBlob, null, 2)),
-    blobsDir,
-    RUN_CONFIG_MEDIA_TYPE,
-  )
-
-  const annotations: Record<string, string> = {
-    "org.creatifact.run.task": opts.spec.task,
-  }
-  if (opts.spec.provider !== undefined) {
-    annotations["org.creatifact.run.provider"] = opts.spec.provider
-  }
-  if (opts.spec.model !== undefined) annotations["org.creatifact.run.model"] = opts.spec.model
-
-  const manifest: OCIManifest = {
-    schemaVersion: 2,
-    mediaType: MANIFEST_MEDIA_TYPE,
-    config: configDescriptor,
-    layers,
-    annotations,
-  }
-  const manifestDescriptor = await writeBlob(
-    Buffer.from(JSON.stringify(manifest)),
-    blobsDir,
-    MANIFEST_MEDIA_TYPE,
-  )
-
-  if (opts.store === true) {
-    await upsertStoreEntry(opts.outputDir, manifestDescriptor, opts.tag)
-  } else {
-    await writeOciLayout(opts.outputDir, manifestDescriptor, opts.tag)
-  }
-  return { digest: manifestDescriptor.digest, warnings }
+/** Tar the staged directory plus the `.creatifact/config.json` metadata record
+ * (written into the stage first) into one layer. */
+export async function createLayerTarballWithMetadata(
+  stage: string,
+  blobsDir: string,
+  body: { run: RunSpec; result?: RunResultMeta },
+): Promise<CreatedLayer> {
+  await mkdir(join(stage, dirname(METADATA_FILE)), { recursive: true })
+  await writeFile(join(stage, METADATA_FILE), metadataBuffer(body))
+  return createLayerTarball(stage, blobsDir)
 }

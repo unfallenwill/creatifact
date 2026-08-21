@@ -23,6 +23,7 @@ export interface OCIManifest {
 
 export const MANIFEST_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
 export const INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json"
+export const IMAGE_CONFIG_MEDIA_TYPE = "application/vnd.oci.image.config.v1+json"
 export const EMPTY_CONFIG_MEDIA_TYPE = "application/vnd.oci.empty.v1+json"
 export const LAYER_MEDIA_TYPE = "application/vnd.oci.image.layer.v1.tar+gzip"
 
@@ -75,6 +76,35 @@ export function parseRef(ref: string, defaultRegistry = "docker.io"): ParsedRef 
 
 export function digestHex(digest: string): string {
   return digest.slice("sha256:".length)
+}
+
+/**
+ * The registry API host for a ref's registry: docker.io (and its legacy
+ * index.docker.io alias) serves the v2 API from registry-1.docker.io —
+ * https://docker.io/v2/ returns an HTML page instead. Mirrors the rewrite
+ * every docker client performs; credentials stay keyed by the ref's host.
+ */
+export function registryApiHost(registry: string): string {
+  return registry === "docker.io" || registry === "index.docker.io"
+    ? "registry-1.docker.io"
+    : registry
+}
+
+/**
+ * The standard OCI image config every creatifact package carries. Generic
+ * clients (docker, podman, containerd) unpack against it, so it must hold a
+ * rootfs.diff_ids chain matching the layers one-to-one; architecture/os are
+ * nominal — a package is a data artifact, never a runnable image.
+ */
+export function imageConfigBuffer(diffIds: string[], createdAt?: string): Buffer {
+  const config: Record<string, unknown> = {
+    ...(createdAt === undefined ? {} : { created: createdAt }),
+    architecture: "amd64",
+    os: "linux",
+    config: {},
+    rootfs: { type: "layers", diff_ids: diffIds },
+  }
+  return Buffer.from(JSON.stringify(config, null, 2))
 }
 
 export async function writeBlob(

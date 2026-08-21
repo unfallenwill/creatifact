@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import { createWriteStream } from "node:fs"
 import { readFile, rename, stat } from "node:fs/promises"
 import { join } from "node:path"
-import { Readable, type Readable as ReadableStream, Writable } from "node:stream"
+import { Readable, type Readable as ReadableStream, Transform, Writable } from "node:stream"
 import { pipeline } from "node:stream/promises"
 import { createGunzip, createGzip, type ZlibOptions } from "node:zlib"
 import { type Entry, extract, type Pack, pack } from "tar-stream"
@@ -256,7 +256,14 @@ function emitEntry(tarPack: Pack, key: string, entry: FsEntry | undefined): void
   }
 }
 
-async function writeLayerBlob(tarPack: Pack, blobsDir: string): Promise<OCIDescriptor> {
+/** A written layer: its registry descriptor plus the uncompressed-tar digest. */
+export interface CreatedLayer {
+  descriptor: OCIDescriptor
+  /** sha256 of the uncompressed tar stream — the config's rootfs.diff_ids entry. */
+  diffId: string
+}
+
+async function writeLayerBlob(tarPack: Pack, blobsDir: string): Promise<CreatedLayer> {
   // Unique temp name per writer: concurrent layers (parallel build stages,
   // multiple copy entries) must not collide on the same temp file.
   const tempPath = join(
@@ -265,6 +272,7 @@ async function writeLayerBlob(tarPack: Pack, blobsDir: string): Promise<OCIDescr
   )
   const fileStream = createWriteStream(tempPath)
   const hash = createHash("sha256")
+  const tarHash = createHash("sha256")
   let totalSize = 0
 
   const hashedWriter = new Writable({
@@ -278,29 +286,64 @@ async function writeLayerBlob(tarPack: Pack, blobsDir: string): Promise<OCIDescr
     },
   })
 
+  // The diff_id hashes the tar stream before compression, so generic image
+  // clients can verify the layer chain against config.rootfs.diff_ids.
+  const hashTar = new Transform({
+    transform(chunk, _encoding, callback) {
+      tarHash.update(chunk)
+      callback(null, chunk)
+    },
+  })
+
   tarPack.finalize()
   // mtime:0 keeps gzip headers deterministic → same dir content always
   // yields the same layer digest, so the shared store can dedup rebuilds
   // (runtime gzip option; absent from ZlibOptions typings)
   const deterministicGzip = { mtime: 0 } as ZlibOptions & { mtime: number }
-  await pipeline(tarPack, createGzip(deterministicGzip), hashedWriter)
+  await pipeline(tarPack, hashTar, createGzip(deterministicGzip), hashedWriter)
 
   const hex = hash.digest("hex")
   const digest = `sha256:${hex}`
   await rename(tempPath, join(blobsDir, hex))
 
   return {
-    mediaType: LAYER_MEDIA_TYPE,
-    digest,
-    size: totalSize,
+    descriptor: {
+      mediaType: LAYER_MEDIA_TYPE,
+      digest,
+      size: totalSize,
+    },
+    diffId: `sha256:${tarHash.digest("hex")}`,
   }
+}
+
+/** sha256 of a tar+gzip blob's uncompressed stream — the fallback diff_id for
+ * inherited layer descriptors whose source config carries none. */
+export async function computeBlobDiffId(tarGz: Buffer): Promise<string> {
+  const hash = createHash("sha256")
+  await pipeline(
+    Readable.from([tarGz]),
+    createGunzip(),
+    new Writable({
+      write(chunk, _encoding, callback) {
+        hash.update(chunk)
+        callback()
+      },
+    }),
+  )
+  return `sha256:${hash.digest("hex")}`
+}
+
+/** A valid empty layer (tar end-of-archive only): guarantees packages with no
+ * content still carry one rootfs layer, which image clients expect. */
+export async function createEmptyLayer(blobsDir: string): Promise<CreatedLayer> {
+  return writeLayerBlob(pack(), blobsDir)
 }
 
 export async function createLayerFromView(
   view: FsView,
   opaqueDirs: Set<string>,
   blobsDir: string,
-): Promise<OCIDescriptor> {
+): Promise<CreatedLayer> {
   const tarPack = pack()
 
   const syntheticDirs = new Set<string>()
@@ -327,7 +370,7 @@ export async function createLayerFromView(
   return writeLayerBlob(tarPack, blobsDir)
 }
 
-export async function createLayerTarball(dir: string, blobsDir: string): Promise<OCIDescriptor> {
+export async function createLayerTarball(dir: string, blobsDir: string): Promise<CreatedLayer> {
   const tarPack = pack()
 
   // tinyglobby traversal: every file, dotfiles included (dot:true — the

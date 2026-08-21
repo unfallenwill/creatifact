@@ -20,7 +20,12 @@ import { stableStringify } from "./contract"
 import { dagEdges } from "./dag"
 import { type OCIManifest, REF_NAME_ANNOTATION, readIndexEntries } from "./oci"
 import { isLocalRef } from "./refs"
-import { RUN_CONFIG_MEDIA_TYPE, type RunResultBlob, type RunSpec } from "./runPackage"
+import {
+  isCreatifactPackage,
+  type PackageMetadata,
+  type RunSpec,
+  readMetadataFromLayout,
+} from "./runPackage"
 
 export const PLAN_SCHEMA_VERSION = 1
 
@@ -164,18 +169,9 @@ export async function readPreviousStageResult(
   const manifest = await readManifestBlob(storeDir, digest)
   if (manifest === undefined) return undefined
   let artifacts: PreviousStageResult["artifacts"] = []
-  if (manifest.config.mediaType === RUN_CONFIG_MEDIA_TYPE) {
-    try {
-      const config = JSON.parse(
-        await readFile(
-          join(storeDir, "blobs", "sha256", manifest.config.digest.slice("sha256:".length)),
-          "utf8",
-        ),
-      ) as RunResultBlob
-      artifacts = config.result.artifacts ?? []
-    } catch {
-      artifacts = []
-    }
+  if (isCreatifactPackage(manifest)) {
+    const metadata: PackageMetadata | undefined = await readMetadataFromLayout(storeDir, manifest)
+    artifacts = metadata?.result?.artifacts ?? []
   }
   return { digest, tag, outputDir: storeDir, artifacts }
 }

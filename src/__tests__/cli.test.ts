@@ -5,6 +5,8 @@ import { pathToFileURL } from "node:url"
 import { gunzipSync } from "node:zlib"
 import { execa } from "execa"
 import { stripAnsi } from "../format"
+import { mergeImageLayers } from "../layers"
+import { METADATA_FILE } from "../runPackage"
 
 const CLI = path.resolve("dist/index.mjs")
 
@@ -998,8 +1000,22 @@ function lastRequest(recordPath: string): Record<string, unknown> {
   return JSON.parse(lines[lines.length - 1] ?? "{}")
 }
 
-/** Digest hex of a result layout's config blob. */
-function manifestConfigDigest(resultDir: string): string {
+/** Parsed `.creatifact/config.json` metadata (run + result) of a result layout. */
+async function readPackageMetadata(resultDir: string): Promise<{
+  run: {
+    task: string
+    images?: string[]
+    inputRefs?: Array<{ digest?: string }>
+    [key: string]: unknown
+  }
+  result: {
+    createdAt?: string
+    from?: string
+    text?: string
+    artifacts?: Array<Record<string, unknown>>
+    [key: string]: unknown
+  }
+}> {
   const index = JSON.parse(readFileSync(path.join(resultDir, "index.json"), "utf8"))
   const manifest = JSON.parse(
     readFileSync(
@@ -1007,7 +1023,13 @@ function manifestConfigDigest(resultDir: string): string {
       "utf8",
     ),
   )
-  return manifest.config.digest.slice(7)
+  const layerBlobs = (manifest.layers as Array<{ digest: string }>).map((l) =>
+    readFileSync(path.join(resultDir, "blobs", "sha256", l.digest.slice(7))),
+  )
+  const { view } = await mergeImageLayers(layerBlobs)
+  const entry = view.get(METADATA_FILE)
+  if (entry === undefined || entry.type !== "file") throw new Error("package metadata missing")
+  return JSON.parse(entry.data.toString("utf8"))
 }
 
 describe("cli run — integration", () => {
@@ -1120,12 +1142,7 @@ describe("cli run — integration", () => {
       expect((req["firstFrame"] as { localPath: string }).localPath).toBe(img)
       expect(req["lastFrame"]).toBeUndefined()
 
-      const config = JSON.parse(
-        readFileSync(
-          path.join(resultDir, "blobs", "sha256", manifestConfigDigest(resultDir)),
-          "utf8",
-        ),
-      )
+      const config = await readPackageMetadata(resultDir)
       expect(config.run.task).toBe("image2video")
       expect(config.run.images).toEqual([img])
       expect(config.result.from).toBeUndefined()
@@ -1442,11 +1459,10 @@ describe("cli run — integration", () => {
         ),
       )
       // Demo artifacts are cdn.test urls (unreachable) — the staging
-      // degrades to url-only records, so no artifact layer lands.
-      expect(manifest.layers).toHaveLength(0)
-      const config = JSON.parse(
-        readFileSync(path.join(outDir, "blobs", "sha256", manifest.config.digest.slice(7)), "utf8"),
-      )
+      // degrades to url-only records: no artifact layer, just the metadata
+      // layer recording the run.
+      expect(manifest.layers).toHaveLength(1)
+      const config = await readPackageMetadata(outDir)
       // The executed spec (provider/model resolved) plus a result meta —
       // the digest pins this exact run.
       expect(config.run).toEqual({
@@ -1582,12 +1598,13 @@ export default (settings) => ({
           { name: "dog", run: { task: "text2image", provider: "demo", prompt: "dog" } },
           {
             name: "combo",
-            // biome-ignore lint/suspicious/noTemplateCurlyInString: fixture for the ${...} stage-ref syntax
+            // biome-ignore-start lint/suspicious/noTemplateCurlyInString: fixture for the ${...} stage-ref syntax
             copy: [
               { from: "${cat.tag}", paths: ["artifact-1.png"] },
               { from: "${dog.tag}", paths: ["artifact-1.png"] },
             ],
             annotations: { t: "${cat.digest}", b: "${dog.digest}" },
+            // biome-ignore-end lint/suspicious/noTemplateCurlyInString: fixture for the ${...} stage-ref syntax
           },
         ],
       }),
@@ -1738,6 +1755,7 @@ export default (settings) => ({
     }
   })
 
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: fixture for the ${...} stage-ref syntax
   it("build stages resolve ${name.artifacts[0].url} references", async () => {
     const { env, dir } = demoEnv()
     const manifestPath = path.join(dir, "creatifact.json")
@@ -1829,18 +1847,7 @@ export default (settings) => ({
       expect(index.manifests[0].annotations["org.opencontainers.image.ref.name"]).toBe(
         "org/result:1.0",
       )
-      const manifest = JSON.parse(
-        readFileSync(
-          path.join(resultDir, "blobs", "sha256", index.manifests[0].digest.slice(7)),
-          "utf8",
-        ),
-      )
-      const config = JSON.parse(
-        readFileSync(
-          path.join(resultDir, "blobs", "sha256", manifest.config.digest.slice(7)),
-          "utf8",
-        ),
-      )
+      const config = await readPackageMetadata(resultDir)
       expect(config.run).toEqual({
         task: "text2image",
         provider: "demo",
@@ -1895,19 +1902,7 @@ export default (settings) => ({
       expect((req["image"] as { localPath: string }).localPath).toMatch(/creatifact-pkgref-/)
       expect((req["image"] as { localPath: string }).localPath).toContain("ref.png")
 
-      const index = JSON.parse(readFileSync(path.join(resultDir, "index.json"), "utf8"))
-      const manifest = JSON.parse(
-        readFileSync(
-          path.join(resultDir, "blobs", "sha256", index.manifests[0].digest.slice(7)),
-          "utf8",
-        ),
-      )
-      const config = JSON.parse(
-        readFileSync(
-          path.join(resultDir, "blobs", "sha256", manifest.config.digest.slice(7)),
-          "utf8",
-        ),
-      )
+      const config = await readPackageMetadata(resultDir)
       // provenance keeps the original pkg:// reference
       expect(config.run.images).toEqual(["pkg://ref.png"])
       expect(config.run["prompt"]).toBe("paint it")
@@ -1993,12 +1988,7 @@ export default (settings) => ({
         ),
       )
       expect(manifest.layers).toHaveLength(1)
-      const config = JSON.parse(
-        readFileSync(
-          path.join(resultDir, "blobs", "sha256", manifest.config.digest.slice(7)),
-          "utf8",
-        ),
-      )
+      const config = await readPackageMetadata(resultDir)
       expect(config.run.task).toBe("text2text")
       expect(config.result.text).toBe("demo text reply")
       expect(config.result.artifacts).toEqual([{ name: "text.txt", mimeType: "text/plain" }])
@@ -2447,21 +2437,9 @@ export default (settings) => ({
       expect(retryImage?.localPath).toMatch(/creatifact-fallback-[\w-]+[/\\]artifact-1\.png$/)
 
       // provenance keeps the original url + anchors; only execution swapped
-      const index = JSON.parse(readFileSync(path.join(resultDir, "index.json"), "utf8"))
-      const manifest = JSON.parse(
-        readFileSync(
-          path.join(resultDir, "blobs", "sha256", index.manifests[0].digest.slice(7)),
-          "utf8",
-        ),
-      )
-      const config = JSON.parse(
-        readFileSync(
-          path.join(resultDir, "blobs", "sha256", manifest.config.digest.slice(7)),
-          "utf8",
-        ),
-      )
+      const config = await readPackageMetadata(resultDir)
       expect(config.run.images).toEqual([servedUrl])
-      expect(config.run.inputRefs[0].digest).toBe(srcDigest)
+      expect(config.run.inputRefs?.[0]?.digest).toBe(srcDigest)
 
       // 4. negative: no inputRefs → the provider error propagates, no retry
       const bareDir = path.join(dir, "recipe-bare")
