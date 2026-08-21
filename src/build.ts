@@ -30,6 +30,7 @@ import {
   BUILD_INPUTS_ANNOTATION,
   BUILD_PLAN_ANNOTATION,
   IMAGE_CONFIG_MEDIA_TYPE,
+  type ImageHistoryEntry,
   imageConfigBuffer,
   type LoadedImage,
   MANIFEST_MEDIA_TYPE,
@@ -365,15 +366,24 @@ interface AssembledLayers {
   layers: OCIDescriptor[]
   /** rootfs.diff_ids, positional with layers. */
   diffIds: string[]
+  /** `docker history` rows, one per layer (positional with diffIds). */
+  history: ImageHistoryEntry[]
   annotations: Record<string, string>
   runExec: RunSectionResult | undefined
+}
+
+/** docker-history provenance text for one copy layer. */
+function copyCreatedBy(entry: CopyEntry | undefined): string {
+  if (entry === undefined) return "COPY source"
+  return `COPY ${entry.from} ${entry.paths.join(" ")}`
 }
 
 /**
  * Assemble the final layer chain: inherited `from:` layers, `copy:` layers,
  * assets, the executed run section's artifacts, then a trailing metadata
  * layer when a run section is present (bake or executed). An empty build
- * pads one empty layer so every package carries a rootfs.
+ * pads one empty layer so every package carries a rootfs. Every layer gets
+ * a history row carrying its provenance — the text docker history shows.
  */
 async function assembleLayers(
   options: BuildOptions,
@@ -383,15 +393,24 @@ async function assembleLayers(
 ): Promise<AssembledLayers> {
   const layers: OCIDescriptor[] = []
   const diffIds: string[] = []
-  const addLayer = (layer: { descriptor: OCIDescriptor; diffId: string }): void => {
+  const history: ImageHistoryEntry[] = []
+  const addLayer = (
+    layer: { descriptor: OCIDescriptor; diffId: string },
+    createdBy: string,
+  ): void => {
     layers.push(layer.descriptor)
     diffIds.push(layer.diffId)
+    history.push({ createdBy })
   }
-  for (const layer of inherited.flat()) addLayer(layer)
-  for (const layer of copied) addLayer(layer)
+  for (const [i, group] of inherited.entries()) {
+    for (const layer of group) addLayer(layer, `FROM ${options.from[i] ?? "source"}`)
+  }
+  for (const [i, layer] of copied.entries()) {
+    addLayer(layer, copyCreatedBy(options.copy[i]))
+  }
   if (options.assetsDir !== undefined) {
     await validateAssetsDir(options.assetsDir)
-    addLayer(await createLayerTarball(options.assetsDir, blobsDir))
+    addLayer(await createLayerTarball(options.assetsDir, blobsDir), `ASSETS ${options.assetsDir}`)
   }
 
   // The run section is a build-time instruction: execute it during the build
@@ -401,7 +420,7 @@ async function assembleLayers(
   let runExec: RunSectionResult | undefined
   if (options.run !== undefined && options.bake !== true) {
     runExec = await executeRunSection(options, layers)
-    if (runExec.layer !== undefined) addLayer(runExec.layer)
+    if (runExec.layer !== undefined) addLayer(runExec.layer, `RUN ${options.run.task}`)
   }
 
   // The metadata record rides its own final layer, keeping the config blob a
@@ -415,12 +434,13 @@ async function assembleLayers(
           ? { run: options.run }
           : { run: runExec.spec, result: runExec.result },
       ),
+      "METADATA .creatifact/config.json",
     )
     annotations[PACKAGE_ANNOTATION] = PACKAGE_ANNOTATION_VALUE
   }
-  if (layers.length === 0) addLayer(await createEmptyLayer(blobsDir))
+  if (layers.length === 0) addLayer(await createEmptyLayer(blobsDir), "EMPTY")
 
-  return { layers, diffIds, annotations, runExec }
+  return { layers, diffIds, history, annotations, runExec }
 }
 
 export async function runBuild(options: BuildOptions): Promise<BuildResult> {
@@ -457,7 +477,10 @@ export async function runBuild(options: BuildOptions): Promise<BuildResult> {
   const assembled = await assembleLayers(options, blobsDir, inherited, copied)
 
   const configDescriptor = await writeBlob(
-    imageConfigBuffer(assembled.diffIds, assembled.runExec?.result.createdAt),
+    imageConfigBuffer(assembled.diffIds, {
+      ...(assembled.runExec === undefined ? {} : { createdAt: assembled.runExec.result.createdAt }),
+      history: assembled.history,
+    }),
     blobsDir,
     IMAGE_CONFIG_MEDIA_TYPE,
   )

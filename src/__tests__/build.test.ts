@@ -266,6 +266,8 @@ test("runBuild produces an empty image with no sources", async () => {
   expect(config.rootfs.diff_ids).toEqual([
     `sha256:${createHash("sha256").update(gunzipSync(layerBlob)).digest("hex")}`,
   ])
+  expect(config.history).toHaveLength(1)
+  expect(config.history[0].created_by).toBe("EMPTY")
 
   await rm(tmp, { recursive: true })
 })
@@ -304,6 +306,8 @@ test("runBuild --bake writes a run recipe into the config blob without executing
     await readFile(join(outputDir, "blobs", "sha256", manifest.config.digest.slice(7)), "utf8"),
   )
   expect(config.rootfs.diff_ids).toHaveLength(1)
+  expect(config.history).toHaveLength(1)
+  expect(config.history[0].created_by).toBe("METADATA .creatifact/config.json")
 
   // the recipe rides the metadata layer instead of the config blob
   const metadataLayer = await readFile(
@@ -394,6 +398,8 @@ test("runBuild inherits layers from a local layout", async () => {
   expect(config.rootfs.diff_ids).toEqual([
     `sha256:${createHash("sha256").update(gunzipSync(layerBlob)).digest("hex")}`,
   ])
+  expect(config.history).toHaveLength(1)
+  expect(config.history[0].created_by.startsWith("FROM ")).toBe(true)
 
   await rm(tmp, { recursive: true })
 })
@@ -436,6 +442,8 @@ test("runBuild maps a source image config's diff_ids positionally", async () => 
   expect(config.rootfs.diff_ids).toEqual([
     `sha256:${createHash("sha256").update(gunzipSync(layerBlob)).digest("hex")}`,
   ])
+  expect(config.history).toHaveLength(1)
+  expect(config.history[0].created_by.startsWith("FROM ")).toBe(true)
 
   await rm(tmp, { recursive: true })
 })

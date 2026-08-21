@@ -133,6 +133,9 @@ test("buildResultPackage downloads url artifacts and packs base64, keeping prove
   expect(imageConfig.created).toBe("2026-08-17T00:00:00.000Z")
   expect(imageConfig.rootfs.type).toBe("layers")
   expect(imageConfig.rootfs.diff_ids).toHaveLength(1)
+  // history rows drive docker history / Docker Desktop's layer view
+  expect(imageConfig.history).toHaveLength(1)
+  expect(imageConfig.history[0].created_by).toBe("creatifact run image2image")
 
   // the layer is self-contained: both files carry their real bytes
   const layerBlob = await readFile(

@@ -90,19 +90,38 @@ export function registryApiHost(registry: string): string {
     : registry
 }
 
+/** One `docker history` row: a config-only step (emptyLayer) or a layer. */
+export interface ImageHistoryEntry {
+  createdBy: string
+  emptyLayer?: boolean
+}
+
 /**
  * The standard OCI image config every creatifact package carries. Generic
  * clients (docker, podman, containerd) unpack against it, so it must hold a
  * rootfs.diff_ids chain matching the layers one-to-one; architecture/os are
- * nominal — a package is a data artifact, never a runnable image.
+ * nominal — a package is a data artifact, never a runnable image. The history
+ * array drives `docker history` / Docker Desktop's layer view: one
+ * non-empty_layer entry per diff_id, in order.
  */
-export function imageConfigBuffer(diffIds: string[], createdAt?: string): Buffer {
+export function imageConfigBuffer(
+  diffIds: string[],
+  opts: { createdAt?: string; history?: ImageHistoryEntry[] } = {},
+): Buffer {
+  const history = (
+    opts.history ?? diffIds.map((): ImageHistoryEntry => ({ createdBy: "creatifact" }))
+  ).map((entry) => ({
+    ...(opts.createdAt === undefined ? {} : { created: opts.createdAt }),
+    created_by: entry.createdBy,
+    ...(entry.emptyLayer === true ? { empty_layer: true } : {}),
+  }))
   const config: Record<string, unknown> = {
-    ...(createdAt === undefined ? {} : { created: createdAt }),
+    ...(opts.createdAt === undefined ? {} : { created: opts.createdAt }),
     architecture: "amd64",
     os: "linux",
     config: {},
     rootfs: { type: "layers", diff_ids: diffIds },
+    history,
   }
   return Buffer.from(JSON.stringify(config, null, 2))
 }

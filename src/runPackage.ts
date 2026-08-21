@@ -454,7 +454,10 @@ export async function buildResultPackage(opts: ResultPackageOptions): Promise<{
     })
 
     const configDescriptor = await writeBlob(
-      imageConfigBuffer([layer.diffId], result.createdAt),
+      imageConfigBuffer([layer.diffId], {
+        createdAt: result.createdAt,
+        history: [{ createdBy: `creatifact run ${opts.spec.task}` }],
+      }),
       blobsDir,
       IMAGE_CONFIG_MEDIA_TYPE,
     )
