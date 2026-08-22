@@ -98,6 +98,89 @@ test("fetchManifest resolves a multi-arch index to the linux/amd64 child", async
   vi.unstubAllGlobals()
 })
 
+test("fetchManifest verifies a manifest fetched by digest", async () => {
+  const manifestData = JSON.stringify({ schemaVersion: 2, config: {}, layers: [] })
+  const digest = `sha256:${createHash("sha256").update(manifestData).digest("hex")}`
+  const fetchMock = vi.fn().mockResolvedValue({
+    ok: true,
+    status: 200,
+    headers: { get: () => "application/vnd.oci.image.manifest.v1+json" },
+    text: () => Promise.resolve(manifestData),
+  })
+  vi.stubGlobal("fetch", fetchMock)
+
+  const { manifestData: rawData } = await fetchManifest(
+    "http://localhost:5000",
+    "myrepo",
+    digest,
+    {},
+  )
+  expect(rawData).toBe(manifestData)
+
+  vi.unstubAllGlobals()
+})
+
+test("fetchManifest rejects bytes that don't hash to the requested digest", async () => {
+  const digest = `sha256:${createHash("sha256").update("expected").digest("hex")}`
+  // Valid JSON whose sha256 differs from the requested digest.
+  const tampered = JSON.stringify({ schemaVersion: 2, config: {}, layers: [], tampered: true })
+  const fetchMock = vi.fn().mockResolvedValue({
+    ok: true,
+    status: 200,
+    headers: { get: () => "application/vnd.oci.image.manifest.v1+json" },
+    text: () => Promise.resolve(tampered),
+  })
+  vi.stubGlobal("fetch", fetchMock)
+
+  await expect(fetchManifest("http://localhost:5000", "myrepo", digest, {})).rejects.toThrow(
+    "Manifest digest mismatch",
+  )
+
+  vi.unstubAllGlobals()
+})
+
+test("fetchManifest rejects an index child that doesn't hash to its declared digest", async () => {
+  const armManifest = JSON.stringify({ schemaVersion: 2, config: {}, layers: [] })
+  const armDigest = `sha256:${createHash("sha256").update(armManifest).digest("hex")}`
+  // Distinct bytes from armManifest so the two child digests differ.
+  const amdManifest = JSON.stringify({ schemaVersion: 2, config: {}, layers: [], amd64: true })
+  const amdDigest = `sha256:${createHash("sha256").update(amdManifest).digest("hex")}`
+  const indexData = JSON.stringify({
+    schemaVersion: 2,
+    mediaType: "application/vnd.oci.image.index.v1+json",
+    manifests: [
+      {
+        mediaType: "application/vnd.oci.image.manifest.v1+json",
+        digest: armDigest,
+        size: armManifest.length,
+        platform: { architecture: "arm64", os: "linux" },
+      },
+      {
+        mediaType: "application/vnd.oci.image.manifest.v1+json",
+        digest: amdDigest,
+        size: amdManifest.length,
+        platform: { architecture: "amd64", os: "linux" },
+      },
+    ],
+  })
+  // The registry lies: it serves arm64 bytes at the amd64 child's digest.
+  const fetchMock = vi.fn((url: string) =>
+    Promise.resolve({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: () => Promise.resolve(url.includes("sha256:") ? armManifest : indexData),
+    }),
+  )
+  vi.stubGlobal("fetch", fetchMock)
+
+  await expect(fetchManifest("http://localhost:5000", "myrepo", "latest", {})).rejects.toThrow(
+    "Manifest digest mismatch",
+  )
+
+  vi.unstubAllGlobals()
+})
+
 test("fetchManifest throws on failure", async () => {
   vi.stubGlobal(
     "fetch",

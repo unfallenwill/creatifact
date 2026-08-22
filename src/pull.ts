@@ -117,12 +117,18 @@ function selectIndexEntry(entries: IndexEntry[]): IndexEntry | undefined {
 export async function fetchManifest(
   baseUrl: string,
   repository: string,
-  tag: string,
+  ref: string,
   headers: Record<string, string>,
 ): Promise<{ manifest: OCIManifest; mediaType: string; manifestData: string }> {
   // A ref may resolve to a multi-arch index; follow it (bounded) down to a
   // single-image manifest so callers always see concrete config + layers.
-  let ref = tag
+  // Every hop below the first is by digest (the index entry's), so each
+  // manifest fetched by digest is verified against it — a corrupt or
+  // malicious index pointing at wrong bytes is caught here. The
+  // Docker-Content-Digest header is deliberately not enforced: too many
+  // registries send a value that doesn't match the body (crane skips it
+  // for the same reason, see GoogleContainerTools/kaniko#298), and for a
+  // tag pull there is nothing authoritative to verify against anyway.
   for (let depth = 0; ; depth++) {
     const resp = await fetch(`${baseUrl}/v2/${repository}/manifests/${ref}`, {
       method: "GET",
@@ -139,6 +145,14 @@ export async function fetchManifest(
     const mediaType = resp.headers.get("content-type") ?? MANIFEST_MEDIA_TYPE
     const manifestData = await resp.text()
     const manifest = JSON.parse(manifestData) as OCIManifest & { manifests?: unknown }
+    if (ref.startsWith("sha256:")) {
+      const computed = `sha256:${createHash("sha256").update(manifestData).digest("hex")}`
+      if (computed !== ref) {
+        throw new Error(
+          `Manifest digest mismatch: expected ${ref}, got ${computed} for ${repository}`,
+        )
+      }
+    }
     if (!Array.isArray(manifest.manifests)) {
       return { manifest, mediaType, manifestData }
     }
